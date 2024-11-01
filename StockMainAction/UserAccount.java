@@ -6,7 +6,7 @@ package StockMainAction;
  */
 public class UserAccount {
 
-    private double availableFunds;
+    public double availableFunds;
     public int availableStocks;
 
     public UserAccount(double initialFunds, int initialStocks) {
@@ -42,6 +42,10 @@ public class UserAccount {
 
     public void incrementStocks(int amount) {
         availableStocks += amount;
+    }
+
+    public void incrementFunds(double amount) {
+        availableFunds += amount;
     }
 
     // 其他方法，如解凍資金和股票等

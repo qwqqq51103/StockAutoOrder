@@ -17,7 +17,7 @@ public class OrderBook {
     private StockMarketSimulation simulation;
     private UserAccount account;
 
-    final double MAX_PRICE_DIFF_RATIO = 0.5;
+    final double MAX_PRICE_DIFF_RATIO = 0.9;
 
     public OrderBook(StockMarketSimulation simulation, UserAccount account) {
         this.buyOrders = new ArrayList<>();
