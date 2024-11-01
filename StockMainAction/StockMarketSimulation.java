@@ -51,8 +51,8 @@ public class StockMarketSimulation {
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
-    private double initialRetailCash = 50.0, initialMainForceCash = 5000.0;  // 初始現金
-    private int initialRetails = 0;  // 初始散戶數量
+    private double initialRetailCash = 5000.0, initialMainForceCash = 5000.0;  // 初始現金
+    private int initialRetails = 10;  // 初始散戶數量
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -90,7 +90,7 @@ public class StockMarketSimulation {
             } catch (Exception e) {
                 e.printStackTrace(); // 輸出異常的堆疊資訊
             }
-        }, 0, 1000, TimeUnit.MILLISECONDS);
+        }, 0, 100, TimeUnit.MILLISECONDS);
     }
 
     public MarketAnalyzer getMarketAnalyzer() {
