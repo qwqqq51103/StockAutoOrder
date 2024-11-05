@@ -17,7 +17,9 @@ public class OrderBook {
     private StockMarketSimulation simulation;
     private UserAccount account;
 
-    final double MAX_PRICE_DIFF_RATIO = 0.9;
+    final double MAX_PRICE_DIFF_RATIO = 0.5;
+    // 設置最大允許的波動範圍
+    final double MAX_ALLOWED_CHANGE = 0.05; // 允許每次成交後的價格波動不超過 5%
 
     public OrderBook(StockMarketSimulation simulation, UserAccount account) {
         this.buyOrders = new ArrayList<>();
@@ -129,69 +131,100 @@ public class OrderBook {
 
     // 處理訂單撮合
     public void processOrders(Stock stock) {
+        double totalTransactionValue = 0.0;
+        int totalTransactionVolume = 0;
+
         while (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
             Order buyOrder = buyOrders.get(0);
             Order sellOrder = sellOrders.get(0);
 
             System.out.println("嘗試匹配買單：" + buyOrder + " 與賣單：" + sellOrder);
 
-            // 計算買賣單的價格差異
             double priceDifference = buyOrder.getPrice() - sellOrder.getPrice();
             double allowableDifference = sellOrder.getPrice() * MAX_PRICE_DIFF_RATIO;
 
+            // 檢查價格差異和波動範圍
             if (buyOrder.getPrice() >= sellOrder.getPrice() && priceDifference <= allowableDifference) {
-                // 成交價格為賣方報價
-                double transactionPrice = sellOrder.getPrice();
+                double baseTransactionPrice = sellOrder.getPrice();
                 int transactionVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
 
-                // 更新買賣訂單的剩餘數量
-                buyOrder.setVolume(Math.max(0, buyOrder.getVolume() - transactionVolume));
-                sellOrder.setVolume(Math.max(0, sellOrder.getVolume() - transactionVolume));
+                // 累加成交價值和成交量
+                totalTransactionValue += baseTransactionPrice * transactionVolume;
+                totalTransactionVolume += transactionVolume;
 
-                // 更新股票價格
-                stock.setPrice(transactionPrice);
+                // 更新訂單的剩餘數量
+                buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
+                sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
 
-                // 判斷價格變動
-                double currentPrice = stock.getPrice();
-                double previousPrice = stock.getPreviousPrice();
-                if (currentPrice > previousPrice) {
-                    System.out.println("股價上升至 " + currentPrice);
-                } else if (currentPrice < previousPrice) {
-                    System.out.println("股價下跌至 " + currentPrice);
-                } else {
-                    System.out.println("股價保持不變 " + currentPrice);
-                }
+                // 計算加權平均價格，限制最大波動
+                double weightedAveragePrice = totalTransactionValue / totalTransactionVolume;
+                double lastPrice = stock.getPrice();
+                double priceChange = weightedAveragePrice - lastPrice;
+                double limitedPriceChange = Math.max(-MAX_ALLOWED_CHANGE, Math.min(MAX_ALLOWED_CHANGE, priceChange));
+                double adjustedPrice = lastPrice + limitedPriceChange;
 
-                // 更新主力的現金和持股量（若訂單屬於主力）
-                if (buyOrder.getTraderType().equals("MainForce")) {
-                    MainForceStrategyWithOrderBook mainForce = (MainForceStrategyWithOrderBook) buyOrder.getTrader();
-                    mainForce.updateAfterTransaction("buy", transactionVolume, transactionPrice);  // 更新主力數據
-                } else if (sellOrder.getTraderType().equals("MainForce")) {
-                    MainForceStrategyWithOrderBook mainForce = (MainForceStrategyWithOrderBook) sellOrder.getTrader();
-                    mainForce.updateAfterTransaction("sell", -transactionVolume, transactionPrice);  // 更新主力數據
-                } else {
-                    account.incrementStocks(transactionVolume);
-                }
+                // 更新股價並檢查變動
+                stock.setPrice(adjustedPrice);
+                checkPriceChange(stock);
+
+                // 更新主力現金和持股量
+                updateTraderStatus(buyOrder, sellOrder, transactionVolume, adjustedPrice);
 
                 // 移除已完成的訂單
-                if (buyOrder.getVolume() == 0) {
-                    buyOrders.remove(0);
-                    System.out.println("買單已完成，從列表中移除。");
-                    buyOrder = null;  // 清除引用
-                }
-                if (sellOrder.getVolume() == 0) {
-                    sellOrders.remove(0);
-                    System.out.println("賣單已完成，從列表中移除。");
-                    sellOrder = null;  // 清除引用
-                }
+                removeCompletedOrders(buyOrder, sellOrder);
 
                 // 更新成交量圖表
-                simulation.updateVolumeChart(transactionVolume);  // 傳入成交量，更新圖表
-//                simulation.updateOrderBookDisplay();
+                simulation.updateVolumeChart(transactionVolume);
+
             } else {
                 System.out.println("無法成交，買賣單價格差異過大。");
                 break;
             }
+        }
+
+        // 最後更新加權平均價格
+        if (totalTransactionVolume > 0) {
+            double finalWeightedPrice = totalTransactionValue / totalTransactionVolume;
+            stock.setPrice(finalWeightedPrice);
+            System.out.println("加權平均股價更新為: " + finalWeightedPrice);
+        }
+    }
+
+    //根據前一個股價資訊來判斷漲跌
+    private void checkPriceChange(Stock stock) {
+        double currentPrice = stock.getPrice();
+        double previousPrice = stock.getPreviousPrice();
+        if (currentPrice > previousPrice) {
+            System.out.println("股價上升至 " + currentPrice);
+        } else if (currentPrice < previousPrice) {
+            System.out.println("股價下跌至 " + currentPrice);
+        } else {
+            System.out.println("股價保持不變 " + currentPrice);
+        }
+    }
+
+    //更新所屬的交易者資訊
+    private void updateTraderStatus(Order buyOrder, Order sellOrder, int transactionVolume, double transactionPrice) {
+        if (buyOrder.getTraderType().equals("MainForce")) {
+            MainForceStrategyWithOrderBook mainForce = (MainForceStrategyWithOrderBook) buyOrder.getTrader();
+            mainForce.updateAfterTransaction("buy", transactionVolume, transactionPrice);
+        } else if (sellOrder.getTraderType().equals("MainForce")) {
+            MainForceStrategyWithOrderBook mainForce = (MainForceStrategyWithOrderBook) sellOrder.getTrader();
+            mainForce.updateAfterTransaction("sell", -transactionVolume, transactionPrice);
+        } else {
+            account.incrementStocks(transactionVolume);
+        }
+    }
+
+    //移除成交買賣單
+    private void removeCompletedOrders(Order buyOrder, Order sellOrder) {
+        if (buyOrder.getVolume() == 0) {
+            buyOrders.remove(0);
+            System.out.println("買單已完成，從列表中移除。");
+        }
+        if (sellOrder.getVolume() == 0) {
+            sellOrders.remove(0);
+            System.out.println("賣單已完成，從列表中移除。");
         }
     }
 

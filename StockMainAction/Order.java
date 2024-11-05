@@ -25,8 +25,8 @@ public class Order {
         this.traderType = traderType;
         this.trader = trader; // 將 trader 設置為 MainForceStrategyWithOrderBook
         this.traderAccount = traderAccount; // traderAccount 設置為 UserAccount
-        this.timestamp = System.currentTimeMillis();
         this.isSimulation = isSimulation;
+        this.timestamp = System.currentTimeMillis();
     }
 
     @Override

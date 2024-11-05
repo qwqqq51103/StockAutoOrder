@@ -19,11 +19,11 @@ public class MainForceStrategyWithOrderBook {
     private double averageCostPrice; // 目前籌碼的平均成本價格
     private Random random;
     private UserAccount account;  // 主力的 UserAccount
+    private int initStock = 0;
 
     // 目標價的期望利潤率（例如 50%）
     private static final double EXPECTED_PROFIT_MARGIN = 0.5;
     private static final double VOLATILITY_FACTOR = 0.5;
-    private int initialAccumulatedStocks; // 初始持股量
 
     // 最近價格、成交量、波動性
     private Queue<Integer> recentVolumes;
@@ -38,15 +38,14 @@ public class MainForceStrategyWithOrderBook {
         this.stock = stock;
         this.simulation = simulation;
         this.tradeLog = new StringBuilder();
-        this.accumulatedStocks = 0;
-        this.initialAccumulatedStocks = 0; // 初始持股量為 0
         this.random = new Random();
         this.recentVolumes = new LinkedList<>();
         this.recentPrices = new LinkedList<>();
         this.volatility = 0.0;
-        this.account = new UserAccount(initialCash, initialAccumulatedStocks);
+        this.account = new UserAccount(initialCash, initStock);
     }
 
+    //
     public void makeDecision() {
         double currentPrice = stock.getPrice();
         double availableFunds = account.getAvailableFunds(); // 使用帳戶資金
@@ -70,11 +69,11 @@ public class MainForceStrategyWithOrderBook {
             double actionProbability = random.nextDouble();
 
             // 決策邏輯
-            if (actionProbability < 0.05 && initialAccumulatedStocks > 0) {
+            if (actionProbability < 0.05 && getAccumulatedStocks() > 0) {
                 // 5% 機率進行洗盤
                 int washVolume = calculateWashVolume(volatility);
-                decisionReason += String.format("決定進行洗盤，賣出 %d 股。\n", 10);
-                simulateWashTrading(10);
+                decisionReason += String.format("決定進行洗盤，賣出 %d 股。\n", washVolume);
+                simulateWashTrading(washVolume);
 
             } else if (actionProbability < 0.1 && availableFunds > currentPrice) {
                 System.out.println("主力現金 : " + availableFunds);
@@ -83,16 +82,16 @@ public class MainForceStrategyWithOrderBook {
                 decisionReason += String.format("決定進行拉抬，買入 %d 股。\n", liftVolume);
                 liftStock(liftVolume);
 
-            } else if (currentPrice >= targetPrice && initialAccumulatedStocks > 0) {
+            } else if (currentPrice >= targetPrice && getAccumulatedStocks() > 0) {
                 // 賣出條件
-                int sellVolume = Math.min(500, initialAccumulatedStocks);
+                int sellVolume = Math.min(500, getAccumulatedStocks());
                 decisionReason += String.format("條件：股價超過目標價 %.2f，賣出 %d 股。\n", targetPrice, sellVolume);
                 sellStock(sellVolume);
 
-            } else if (priceDifferenceRatio > randomSellThreshold && initialAccumulatedStocks > 0 && actionProbability > 0.3) {
+            } else if (priceDifferenceRatio > randomSellThreshold && getAccumulatedStocks() > 0 && actionProbability > 0.3) {
                 // 賣出條件
-                int sellVolume = (int) (initialAccumulatedStocks * priceDifferenceRatio * (0.8 + 0.4 * random.nextDouble()));
-                sellVolume = Math.max(1, Math.min(sellVolume, initialAccumulatedStocks));
+                int sellVolume = (int) (getAccumulatedStocks() * priceDifferenceRatio * (0.8 + 0.4 * random.nextDouble()));
+                sellVolume = Math.max(1, Math.min(sellVolume, getAccumulatedStocks()));
 
                 decisionReason += String.format("條件：股價高於 SMA 的 %.2f%% 門檻（隨機化後），賣出 %d 股。\n", randomSellThreshold * 100, sellVolume);
                 sellStock(sellVolume);
@@ -129,6 +128,47 @@ public class MainForceStrategyWithOrderBook {
         return random.nextInt(500) + 100; // 隨機決定拉抬量，100 到 600 股之間
     }
 
+    // 計算目標價
+    public double calculateTargetPrice() {
+        // 基於平均成本和波動性來動態調整目標價
+        targetPrice = averageCostPrice * (1 + EXPECTED_PROFIT_MARGIN + VOLATILITY_FACTOR * volatility);
+        return targetPrice;
+    }
+
+    // 主力賣出操作，並考慮調整平均成本價
+    public void sellStock(int volume) {
+        double price = stock.getPrice();
+
+        // 檢查市場中是否有足夠的買單
+        int availableVolume = orderBook.getAvailableBuyVolume(price); // 假設此方法返回買單的總量
+        if (availableVolume < volume) {
+            //System.out.println("市場買單不足，無法完成賣出操作");
+            return;
+        }
+
+        if (getAccumulatedStocks() >= volume) {
+            Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false);
+            orderBook.submitSellOrder(sellOrder, price);
+            System.out.println(String.format("主力下賣單 %d 股，價格 %.2f，當前持股 %d 股", volume, price, getAccumulatedStocks()));
+        } else {
+            System.out.println("主力持股不足，無法賣出\n");
+        }
+    }
+
+    // 洗盤操作
+    public void simulateWashTrading(int volume) {
+        if (getAccumulatedStocks() >= volume) {
+            double price = stock.getPrice();
+            // 創建賣單（大量賣出以壓低股價），將主力帳戶作為交易者傳遞進去
+            Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false);
+            orderBook.submitSellOrder(sellOrder, price);
+
+            System.out.println(String.format("主力進行洗盤，賣出 %d 股，價格 %.2f", volume, price));
+        } else {
+            System.out.println("主力持股不足，無法進行洗盤\n");
+        }
+    }
+
     // 吸籌操作並更新平均成本價格
     public void accumulateStock(int volume) {
         double price = stock.getPrice();
@@ -153,47 +193,6 @@ public class MainForceStrategyWithOrderBook {
         System.out.println(String.format("主力下買單 %d 股，價格 %.2f，剩餘現金 %.2f 元", volume, price, account.getAvailableFunds()));
     }
 
-    // 計算目標價
-    public double calculateTargetPrice() {
-        // 基於平均成本和波動性來動態調整目標價
-        targetPrice = averageCostPrice * (1 + EXPECTED_PROFIT_MARGIN + VOLATILITY_FACTOR * volatility);
-        return targetPrice;
-    }
-
-    // 主力賣出操作，並考慮調整平均成本價
-    public void sellStock(int volume) {
-        double price = stock.getPrice();
-
-        // 檢查市場中是否有足夠的買單
-        int availableVolume = orderBook.getAvailableBuyVolume(price); // 假設此方法返回買單的總量
-        if (availableVolume < volume) {
-            System.out.println("市場買單不足，無法完成賣出操作");
-            return;
-        }
-
-        if (initialAccumulatedStocks >= volume) {
-            Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false);
-            orderBook.submitSellOrder(sellOrder, price);
-            System.out.println(String.format("主力下賣單 %d 股，價格 %.2f，當前持股 %d 股", volume, price, initialAccumulatedStocks));
-        } else {
-            System.out.println("主力持股不足，無法賣出\n");
-        }
-    }
-
-    // 洗盤操作
-    public void simulateWashTrading(int volume) {
-        if (initialAccumulatedStocks >= volume) {
-            double price = stock.getPrice();
-            // 創建賣單（大量賣出以壓低股價），將主力帳戶作為交易者傳遞進去
-            Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false);
-            orderBook.submitSellOrder(sellOrder, price);
-
-            System.out.println(String.format("主力進行洗盤，賣出 %d 股，價格 %.2f", volume, price));
-        } else {
-            System.out.println("主力持股不足，無法進行洗盤\n");
-        }
-    }
-
     // 拉抬操作
     public void liftStock(int volume) {
         double price = stock.getPrice();
@@ -206,27 +205,27 @@ public class MainForceStrategyWithOrderBook {
         System.out.println(String.format("主力進行拉抬，買入 %d 股，價格 %.2f，剩餘現金 %.2f 元", volume, price, account.getAvailableFunds()));
     }
 
-// 在訂單成交時更新現金和持股量
+    // 在訂單成交時更新現金和持股量
     public void updateAfterTransaction(String type, int volume, double price) {
         double transactionAmount = price * volume;
 
         if (type.equals("buy")) {
             // 已扣減資金和增加股票數量，這裡僅更新平均成本價
-            initialAccumulatedStocks += volume;
+            account.incrementStocks(volume);
 
             // 更新平均成本價
-            double totalInvestment = averageCostPrice * (initialAccumulatedStocks - volume) + transactionAmount;
-            averageCostPrice = totalInvestment / initialAccumulatedStocks;
+            double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
+            averageCostPrice = totalInvestment / getAccumulatedStocks();
 
             // 更新目標價
             calculateTargetPrice();
 
         } else if (type.equals("sell")) {
             // 已增加資金和減少股票數量，這裡僅更新平均成本價
-            initialAccumulatedStocks -= volume;
+            account.decrementStocks(volume);  // 減少股票數量
 
             // 若持股為零，重置平均成本價
-            if (initialAccumulatedStocks == 0) {
+            if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
             }
         }
@@ -241,7 +240,7 @@ public class MainForceStrategyWithOrderBook {
     }
 
     public int getAccumulatedStocks() {
-        return initialAccumulatedStocks;
+        return account.getStockInventory();
     }
 
     public double getCash() {

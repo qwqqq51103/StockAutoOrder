@@ -48,5 +48,21 @@ public class UserAccount {
         availableFunds += amount;
     }
 
+    public void decrementStocks(int amount) {
+        if (amount <= availableStocks) {
+            availableStocks -= amount;
+        } else {
+            throw new IllegalArgumentException("可用股票不足，無法減少指定數量的股票。");
+        }
+    }
+
+    public void decrementFunds(double amount) {
+        if (amount <= availableFunds) {
+            availableFunds -= amount;
+        } else {
+            throw new IllegalArgumentException("可用資金不足，無法減少指定數量的資金。");
+        }
+    }
+
     // 其他方法，如解凍資金和股票等
 }

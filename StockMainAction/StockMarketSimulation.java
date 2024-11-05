@@ -51,8 +51,9 @@ public class StockMarketSimulation {
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
-    private double initialRetailCash = 5000.0, initialMainForceCash = 5000.0;  // 初始現金
-    private int initialRetails = 10;  // 初始散戶數量
+    private double initialRetailCash = 5000.0, initialMainForceCash = 10000.0;  // 初始現金
+    private int initialRetails = 0
+            ;  // 初始散戶數量
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -132,8 +133,8 @@ public class StockMarketSimulation {
     private void initializeSimulation() {
         stock = new Stock("台積電", 10, 1000);
 
-        // 刪除 marketAccount，改為只初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
-        marketBehavior = new MarketBehavior(stock.getPrice(), 99999.0, 1000); // 初始化市場行為，包括資金和庫存
+        //初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
+        marketBehavior = new MarketBehavior(stock.getPrice(), 0.0, 10000); // 初始化市場行為，包括資金和庫存
 
         // 初始化 OrderBook，將 MarketBehavior 中的帳戶直接用於 OrderBook（假設 MarketBehavior 管理了資金和股票餘額）
         orderBook = new OrderBook(this, marketBehavior.getAccount());
