@@ -170,11 +170,50 @@ public class MainForceStrategyWithOrderBook {
 
     //取消掛單
     public void cancelOrder(String orderId) {
-        // 從買單列表中取消掛單
-        orderBook.getBuyOrders().removeIf(order -> order.getId().equals(orderId));
-        // 從賣單列表中取消掛單
-        orderBook.getSellOrders().removeIf(order -> order.getId().equals(orderId));
-        System.out.println("訂單 " + orderId + " 已取消");
+        // 找到並移除買單
+        Order canceledOrder = orderBook.getBuyOrders().stream()
+                .filter(order -> order.getId().equals(orderId))
+                .findFirst()
+                .orElse(null);
+
+        if (canceledOrder != null) {
+            // 從買單列表中移除
+            orderBook.getBuyOrders().removeIf(order -> order.getId().equals(orderId));
+
+            // 歸還凍結的資金
+            double refundAmount = canceledOrder.getPrice() * canceledOrder.getVolume();
+            canceledOrder.getTraderAccount().incrementFunds(refundAmount);
+
+            // 打印詳細信息
+            System.out.println("已取消買單：");
+            System.out.println("訂單ID：" + orderId);
+            System.out.println("股票數量：" + canceledOrder.getVolume());
+            System.out.println("單價：" + canceledOrder.getPrice());
+            System.out.println("已退還資金：" + refundAmount);
+        } else {
+            // 找到並移除賣單
+            canceledOrder = orderBook.getSellOrders().stream()
+                    .filter(order -> order.getId().equals(orderId))
+                    .findFirst()
+                    .orElse(null);
+
+            if (canceledOrder != null) {
+                // 從賣單列表中移除
+                orderBook.getSellOrders().removeIf(order -> order.getId().equals(orderId));
+
+                // 歸還凍結的股票數量
+                canceledOrder.getTraderAccount().incrementStocks(canceledOrder.getVolume());
+
+                // 打印詳細信息
+                System.out.println("已取消賣單：");
+                System.out.println("訂單ID：" + orderId);
+                System.out.println("股票數量：" + canceledOrder.getVolume());
+                System.out.println("單價：" + canceledOrder.getPrice());
+                System.out.println("已退還股票數量：" + canceledOrder.getVolume());
+            } else {
+                System.out.println("訂單ID " + orderId + " 未找到，無法取消。");
+            }
+        }
 
         // 更新 UI 顯示
         simulation.updateOrderBookDisplay();
