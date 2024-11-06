@@ -1,6 +1,7 @@
 package StockMainAction;
 
 import java.util.Deque;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Random;
@@ -45,7 +46,7 @@ public class MainForceStrategyWithOrderBook {
         this.account = new UserAccount(initialCash, initStock);
     }
 
-    //
+    //主力行為
     public void makeDecision() {
         double currentPrice = stock.getPrice();
         double availableFunds = account.getAvailableFunds(); // 使用帳戶資金
@@ -105,6 +106,18 @@ public class MainForceStrategyWithOrderBook {
                 decisionReason += String.format("條件：股價低於 SMA 的 %.2f%% 門檻（隨機化後），買入 %d 股。\n", randomBuyThreshold * 100, buyVolume);
                 accumulateStock(buyVolume);
 
+            } else if (actionProbability < 0.15 && availableFunds > stock.getPrice()) {
+                // 15% 的機率以市價買進
+                int buyQuantity = calculateLiftVolume();
+                System.out.println("主力決定進行市價買進，數量: " + buyQuantity);
+                marketBuy(buyQuantity);
+            } else if (actionProbability < 0.2) {
+                // 5% 的機率取消某個掛單（假設已有掛單）
+                if (!orderBook.getBuyOrders().isEmpty()) {
+                    Order orderToCancel = orderBook.getBuyOrders().get(0); // 例如取消第一個掛單
+                    cancelOrder(orderToCancel.getId());
+                    System.out.println("主力決定取消掛單 ID: " + orderToCancel.getId());
+                }
             } else {
                 decisionReason += "主力觀望，無操作。\n";
                 // System.out.println(decisionReason);
@@ -116,6 +129,55 @@ public class MainForceStrategyWithOrderBook {
 
         // 您可以選擇在此輸出決策原因
         //System.out.println(decisionReason);
+    }
+
+    //市價買入
+    public void marketBuy(int quantity) {
+        double remainingFunds = account.getAvailableFunds();
+        int remainingQuantity = quantity;
+
+        for (Iterator<Order> iterator = orderBook.getSellOrders().iterator(); iterator.hasNext() && remainingQuantity > 0;) {
+            Order sellOrder = iterator.next();
+            double transactionPrice = sellOrder.getPrice();
+            int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
+            double transactionCost = transactionPrice * transactionVolume;
+
+            if (remainingFunds >= transactionCost) {
+                remainingFunds -= transactionCost;
+                remainingQuantity -= transactionVolume;
+
+                // 更新主力的持股數量
+                account.incrementStocks(transactionVolume);
+                account.decrementFunds(transactionCost);
+
+                System.out.println("市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                // 若賣單已完全成交，從訂單簿中移除
+                if (sellOrder.getVolume() == transactionVolume) {
+                    iterator.remove();
+                } else {
+                    sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
+                }
+            } else {
+                System.out.println("主力現金不足，無法完成市價買進");
+                break;
+            }
+        }
+
+        // 更新資金餘額
+        simulation.updateLabels();
+    }
+
+    //取消掛單
+    public void cancelOrder(String orderId) {
+        // 從買單列表中取消掛單
+        orderBook.getBuyOrders().removeIf(order -> order.getId().equals(orderId));
+        // 從賣單列表中取消掛單
+        orderBook.getSellOrders().removeIf(order -> order.getId().equals(orderId));
+        System.out.println("訂單 " + orderId + " 已取消");
+
+        // 更新 UI 顯示
+        simulation.updateOrderBookDisplay();
     }
 
     // 根據波動性調整洗盤量
@@ -210,7 +272,7 @@ public class MainForceStrategyWithOrderBook {
         double transactionAmount = price * volume;
 
         if (type.equals("buy")) {
-            // 已扣減資金和增加股票數量，這裡僅更新平均成本價
+            // 已扣減資金，這裡僅更新平均成本價,增加股票
             account.incrementStocks(volume);
 
             // 更新平均成本價
@@ -223,6 +285,7 @@ public class MainForceStrategyWithOrderBook {
         } else if (type.equals("sell")) {
             // 已增加資金和減少股票數量，這裡僅更新平均成本價
             account.decrementStocks(volume);  // 減少股票數量
+            account.incrementFunds(transactionAmount);
 
             // 若持股為零，重置平均成本價
             if (getAccumulatedStocks() == 0) {

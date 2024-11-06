@@ -42,6 +42,7 @@ public class StockMarketSimulation {
     private DefaultCategoryDataset volumeDataset;  // 成交量的數據集
     private int timeStep;  // 時間步驟，控制模擬步驟增量
     private List<RetailInvestorAI> retailInvestors;  // 多個散戶的列表
+    private RetailInvestorAI retaillAI;  // 散戶策略實例
     private OrderBookTable orderBookTable;  // 顯示訂單簿的表格
     private ScheduledExecutorService executorService;  // 用於啟動模擬的執行緒池
     private Random random = new Random();  // 隨機數產生器
@@ -52,8 +53,7 @@ public class StockMarketSimulation {
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
     private double initialRetailCash = 5000.0, initialMainForceCash = 10000.0;  // 初始現金
-    private int initialRetails = 0
-            ;  // 初始散戶數量
+    private int initialRetails = 0;  // 初始散戶數量
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -70,7 +70,7 @@ public class StockMarketSimulation {
 
                 // 主力決策並提交訂單
                 mainForce.makeDecision();
-
+                
                 // 處理訂單簿，撮合訂單
                 orderBook.processOrders(stock);
 
@@ -134,15 +134,18 @@ public class StockMarketSimulation {
         stock = new Stock("台積電", 10, 1000);
 
         //初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
-        marketBehavior = new MarketBehavior(stock.getPrice(), 0.0, 10000); // 初始化市場行為，包括資金和庫存
+        marketBehavior = new MarketBehavior(stock.getPrice(), 0.0, 100000); // 初始化市場行為，包括資金和庫存
 
         // 初始化 OrderBook，將 MarketBehavior 中的帳戶直接用於 OrderBook（假設 MarketBehavior 管理了資金和股票餘額）
         orderBook = new OrderBook(this, marketBehavior.getAccount());
 
         timeStep = 0;
         marketAnalyzer = new MarketAnalyzer(10); // 設定適當的 SMA 週期
+
         mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, this, initialMainForceCash); // 設置初始現金
         initializeRetailInvestors(initialRetails); // 初始化散戶
+        // 在 initializeLabels() 調用之前進行初始化
+        retaillAI = new RetailInvestorAI(initialRetailCash, "RetailInvestor1");
 
         priceSeries = new XYSeries("股價");
         smaSeries = new XYSeries("SMA");
@@ -261,8 +264,12 @@ public class StockMarketSimulation {
         return retailInvestors.stream().mapToDouble(RetailInvestorAI::getCash).average().orElse(0.0);
     }
 
-    private double getAverageRetailStocks() {
-        return retailInvestors.stream().mapToInt(RetailInvestorAI::getStocksOwned).average().orElse(0.0);
+    private int getAverageRetailStocks() {
+        int totalStocks = 0;
+        for (RetailInvestorAI investor : retailInvestors) {
+            totalStocks += investor.getAccumulatedStocks();  // 假設 getAccumulatedStocks() 返回持股數量
+        }
+        return retailInvestors.size() > 0 ? totalStocks / retailInvestors.size() : 0;
     }
 
     // 更新主力的現金、持股數、目標價和平均成本
@@ -324,10 +331,10 @@ public class StockMarketSimulation {
 
             // 更新現金與持股數據
             retailDataset.setValue(investor.getCash(), "現金", category);
-            retailDataset.setValue(investor.getStocksOwned(), "持股", category);
+            retailDataset.setValue(investor.getAccumulatedStocks(), "持股", category);
 
             // 計算損益
-            double profit = (investor.getStocksOwned() * stock.getPrice()) + investor.getCash() - initialRetailCash;
+            double profit = (investor.getAccumulatedStocks() * stock.getPrice()) + investor.getCash() - initialRetailCash;
             retailDataset.setValue(profit, "損益", category);
         }
 

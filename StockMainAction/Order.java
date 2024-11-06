@@ -1,10 +1,13 @@
 package StockMainAction;
 
+import java.util.UUID;
+
 /**
  * 訂單類別，表示單個買賣訂單
  */
 public class Order {
 
+    private String id; //唯一識別符
     private String type; // "buy" 或 "sell"
     private double price;
     private int volume;
@@ -27,6 +30,7 @@ public class Order {
         this.traderAccount = traderAccount; // traderAccount 設置為 UserAccount
         this.isSimulation = isSimulation;
         this.timestamp = System.currentTimeMillis();
+        this.id = UUID.randomUUID().toString();  // 使用 UUID 生成唯一 ID
     }
 
     @Override
@@ -79,5 +83,9 @@ public class Order {
 
     public boolean isSimulation() {
         return isSimulation;
+    }
+
+    public String getId() {
+        return id;
     }
 }

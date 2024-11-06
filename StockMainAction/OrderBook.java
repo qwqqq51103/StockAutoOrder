@@ -9,7 +9,6 @@ import java.util.stream.Collectors;
  * 訂單簿類別，管理買賣訂單的提交和撮合
  */
 public class OrderBook {
-
     private List<Order> buyOrders;
     private List<Order> sellOrders;
     private MainForceStrategyWithOrderBook mainForceStrategy;
@@ -203,7 +202,7 @@ public class OrderBook {
         }
     }
 
-    //更新所屬的交易者資訊
+    //更新所屬的交易者資訊  
     private void updateTraderStatus(Order buyOrder, Order sellOrder, int transactionVolume, double transactionPrice) {
         if (buyOrder.getTraderType().equals("MainForce")) {
             MainForceStrategyWithOrderBook mainForce = (MainForceStrategyWithOrderBook) buyOrder.getTrader();
@@ -211,6 +210,12 @@ public class OrderBook {
         } else if (sellOrder.getTraderType().equals("MainForce")) {
             MainForceStrategyWithOrderBook mainForce = (MainForceStrategyWithOrderBook) sellOrder.getTrader();
             mainForce.updateAfterTransaction("sell", -transactionVolume, transactionPrice);
+        } else if (buyOrder.getTraderType().equals("散戶")) {
+            RetailInvestorAI retaillAI = (RetailInvestorAI) buyOrder.getTrader();
+            retaillAI.updateAfterTransaction("buy", transactionVolume, transactionPrice);
+        } else if (sellOrder.getTraderType().equals("散戶")) {
+            RetailInvestorAI retaillAI = (RetailInvestorAI) sellOrder.getTrader();
+            retaillAI.updateAfterTransaction("sell", -transactionVolume, transactionPrice);
         } else {
             account.incrementStocks(transactionVolume);
         }
