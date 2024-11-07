@@ -70,7 +70,7 @@ public class StockMarketSimulation {
 
                 // 主力決策並提交訂單
                 mainForce.makeDecision();
-                
+
                 // 處理訂單簿，撮合訂單
                 orderBook.processOrders(stock);
 
@@ -444,6 +444,12 @@ public class StockMarketSimulation {
         return chart;
     }
 
+    private JFreeChart createChart(String title, XYSeriesCollection dataset) {
+        JFreeChart chart = ChartFactory.createXYLineChart(title, "時間", "價格", dataset, PlotOrientation.VERTICAL, true, true, false);
+        setChartFont(chart);
+        return chart;
+    }
+
     private void updatePriceChart() {
         priceSeries.add(timeStep, stock.getPrice());
     }
@@ -462,12 +468,6 @@ public class StockMarketSimulation {
         // 根據漲跌設置顏色
         Color color = currentPrice > previousPrice ? Color.RED : Color.GREEN;
         colorList.add(color);
-    }
-
-    private JFreeChart createChart(String title, XYSeriesCollection dataset) {
-        JFreeChart chart = ChartFactory.createXYLineChart(title, "時間", "價格", dataset, PlotOrientation.VERTICAL, true, true, false);
-        setChartFont(chart);
-        return chart;
     }
 
     private void setChartFont(JFreeChart chart) {

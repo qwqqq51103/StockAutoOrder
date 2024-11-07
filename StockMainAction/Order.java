@@ -16,9 +16,10 @@ public class Order {
     private UserAccount traderAccount; // 交易者帳戶
     private long timestamp; // 用於時間優先
     private boolean isSimulation; // 新增屬性
+    private boolean isMarketOrder; // 用於標記是否為市價單
 
     // 構造函數
-    public Order(String type, double price, int volume, String traderType, Object trader, UserAccount traderAccount, boolean isSimulation) {
+    public Order(String type, double price, int volume, String traderType, Object trader, UserAccount traderAccount, boolean isSimulation, boolean isMarketOrder) {
         if (traderType == null) {
             traderType = "未知";
         }
@@ -29,6 +30,7 @@ public class Order {
         this.trader = trader; // 將 trader 設置為 MainForceStrategyWithOrderBook
         this.traderAccount = traderAccount; // traderAccount 設置為 UserAccount
         this.isSimulation = isSimulation;
+        this.isMarketOrder = isMarketOrder; // 設定是否為市價單
         this.timestamp = System.currentTimeMillis();
         this.id = UUID.randomUUID().toString();  // 使用 UUID 生成唯一 ID
     }
@@ -87,5 +89,10 @@ public class Order {
 
     public String getId() {
         return id;
+    }
+
+    // 用於檢查訂單是否為市價單
+    public boolean isMarketOrder() {
+        return isMarketOrder;
     }
 }

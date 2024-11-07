@@ -9,6 +9,7 @@ import java.util.stream.Collectors;
  * 訂單簿類別，管理買賣訂單的提交和撮合
  */
 public class OrderBook {
+
     private List<Order> buyOrders;
     private List<Order> sellOrders;
     private MainForceStrategyWithOrderBook mainForceStrategy;
@@ -17,6 +18,7 @@ public class OrderBook {
     private UserAccount account;
 
     final double MAX_PRICE_DIFF_RATIO = 0.5;
+    
     // 設置最大允許的波動範圍
     final double MAX_ALLOWED_CHANGE = 0.05; // 允許每次成交後的價格波動不超過 5%
 
@@ -53,10 +55,16 @@ public class OrderBook {
             return;
         }
 
-        // 檢查並凍結資金，若資金不足則拒絕掛單
-        if (!account.freezeFunds(totalCost)) {
-            System.out.println("資金不足，無法掛買單");
-            return;
+        // 市價單設定：如果是市價單，設定價格為 Double.MAX_VALUE 以表示無價格限制
+        if (order.isMarketOrder()) {
+            order.setPrice(Double.MAX_VALUE); // 市價單識別
+            // 市價單不需即時凍結總資金，只需確保可用資金足夠執行操作
+        } else {
+            // 檢查並凍結資金，若資金不足則拒絕掛單
+            if (!account.freezeFunds(totalCost)) {
+                System.out.println("資金不足，無法掛買單");
+                return;
+            }
         }
 
         // 調整訂單價格到最近的價格單位
@@ -69,6 +77,7 @@ public class OrderBook {
         // 更新訂單的價格為調整後的價格
         order.setPrice(adjustedPrice);
 
+        // 將訂單放入買單列表，並按價格排序
         int index = 0;
         while (index < buyOrders.size() && buyOrders.get(index).getPrice() > order.getPrice()) {
             index++;
@@ -82,6 +91,7 @@ public class OrderBook {
         }
 
         simulation.updateOrderBookDisplay();
+        processOrders(stock); // 新增，直接呼叫 processOrders 處理訂單撮合
     }
 
     //提交賣單 
@@ -139,42 +149,22 @@ public class OrderBook {
 
             System.out.println("嘗試匹配買單：" + buyOrder + " 與賣單：" + sellOrder);
 
-            double priceDifference = buyOrder.getPrice() - sellOrder.getPrice();
-            double allowableDifference = sellOrder.getPrice() * MAX_PRICE_DIFF_RATIO;
+            // 若買單或賣單為市價訂單，直接成交
+            boolean isMarketOrder = buyOrder.getPrice() == Double.MAX_VALUE || sellOrder.getPrice() == Double.MAX_VALUE;
 
-            // 檢查價格差異和波動範圍
-            if (buyOrder.getPrice() >= sellOrder.getPrice() && priceDifference <= allowableDifference) {
-                double baseTransactionPrice = sellOrder.getPrice();
-                int transactionVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
+            if (isMarketOrder || canExecuteOrder(buyOrder, sellOrder)) {
+                int transactionVolume = executeTransaction(buyOrder, sellOrder, stock);
+                double transactionPrice = isMarketOrder ? sellOrder.getPrice() : sellOrder.getPrice();
 
-                // 累加成交價值和成交量
-                totalTransactionValue += baseTransactionPrice * transactionVolume;
+                // 累加成交價值和成交量，用於加權平均價格
+                totalTransactionValue += transactionPrice * transactionVolume;
                 totalTransactionVolume += transactionVolume;
 
-                // 更新訂單的剩餘數量
-                buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
-                sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
-
-                // 計算加權平均價格，限制最大波動
-                double weightedAveragePrice = totalTransactionValue / totalTransactionVolume;
-                double lastPrice = stock.getPrice();
-                double priceChange = weightedAveragePrice - lastPrice;
-                double limitedPriceChange = Math.max(-MAX_ALLOWED_CHANGE, Math.min(MAX_ALLOWED_CHANGE, priceChange));
-                double adjustedPrice = lastPrice + limitedPriceChange;
-
-                // 更新股價並檢查變動
-                stock.setPrice(adjustedPrice);
-                checkPriceChange(stock);
-
                 // 更新主力現金和持股量
-                updateTraderStatus(buyOrder, sellOrder, transactionVolume, adjustedPrice);
-
-                // 移除已完成的訂單
-                removeCompletedOrders(buyOrder, sellOrder);
+                updateTraderStatus(buyOrder, sellOrder, transactionVolume, transactionPrice);
 
                 // 更新成交量圖表
                 simulation.updateVolumeChart(transactionVolume);
-
             } else {
                 System.out.println("無法成交，買賣單價格差異過大。");
                 break;
@@ -183,10 +173,37 @@ public class OrderBook {
 
         // 最後更新加權平均價格
         if (totalTransactionVolume > 0) {
-            double finalWeightedPrice = totalTransactionValue / totalTransactionVolume;
-            stock.setPrice(finalWeightedPrice);
-            System.out.println("加權平均股價更新為: " + finalWeightedPrice);
+            updateStockPrice(stock, totalTransactionValue, totalTransactionVolume);
         }
+    }
+
+    private boolean canExecuteOrder(Order buyOrder, Order sellOrder) {
+        boolean isMarketOrder = buyOrder.getPrice() == Double.MAX_VALUE || sellOrder.getPrice() == Double.MAX_VALUE;
+        double priceDifference = buyOrder.getPrice() - sellOrder.getPrice();
+        double allowableDifference = sellOrder.getPrice() * MAX_PRICE_DIFF_RATIO;
+        return isMarketOrder || (buyOrder.getPrice() >= sellOrder.getPrice() && priceDifference <= allowableDifference);
+    }
+
+    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) {
+        int transactionVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
+
+        // 更新訂單的剩餘數量
+        buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
+        sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
+
+        // 更新股價
+        stock.setPrice(sellOrder.getPrice());
+
+        // 移除已完成的訂單
+        removeCompletedOrders(buyOrder, sellOrder);
+
+        return transactionVolume;
+    }
+
+    private void updateStockPrice(Stock stock, double totalTransactionValue, int totalTransactionVolume) {
+        double finalWeightedPrice = totalTransactionValue / totalTransactionVolume;
+        stock.setPrice(finalWeightedPrice);
+        System.out.println("加權平均股價更新為: " + finalWeightedPrice);
     }
 
     //根據前一個股價資訊來判斷漲跌

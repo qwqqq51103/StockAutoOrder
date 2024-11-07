@@ -1,5 +1,6 @@
 package StockMainAction;
 
+import java.util.Iterator;
 import java.util.Random;
 import java.util.LinkedList;
 import java.util.Queue;
@@ -19,6 +20,7 @@ public class RetailInvestorAI {
     private Order Order;
     private UserAccount account;
     private OrderBook orderBook;
+    private StockMarketSimulation simulation;
 
     public RetailInvestorAI(double initialCash, String traderID) {
         this.traderID = traderID;
@@ -67,7 +69,6 @@ public class RetailInvestorAI {
             priceDifferenceRatio = Math.max(-0.5, Math.min(priceDifferenceRatio, 0.5));
 
             //decisionReason += String.format("當前股價：%.2f，SMA：%.2f，偏差比例：%.2f%%\n", currentPrice, sma, priceDifferenceRatio * 100);
-
             // 引入操作機率
             double actionProbability = random.nextDouble();
 
@@ -127,6 +128,39 @@ public class RetailInvestorAI {
         }
     }
 
+    // 市價買入方法
+    private void marketBuy(Stock stock, OrderBook orderBook, int quantity) {
+        double remainingFunds = account.getAvailableFunds();
+        int remainingQuantity = quantity;
+
+        for (Iterator<Order> iterator = orderBook.getSellOrders().iterator(); iterator.hasNext() && remainingQuantity > 0;) {
+            Order sellOrder = iterator.next();
+            double transactionPrice = sellOrder.getPrice();
+            int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
+            double transactionCost = transactionPrice * transactionVolume;
+
+            if (remainingFunds >= transactionCost) {
+                remainingFunds -= transactionCost;
+                remainingQuantity -= transactionVolume;
+
+                account.incrementStocks(transactionVolume);
+                account.decrementFunds(transactionCost);
+
+                System.out.println("散戶市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                if (sellOrder.getVolume() == transactionVolume) {
+                    iterator.remove();
+                } else {
+                    sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
+                }
+            } else {
+                System.out.println("散戶現金不足，無法完成市價買進");
+                break;
+            }
+        }
+        simulation.updateLabels();
+    }
+
     // 買入股票，生成並提交買單
     private void buyStock(Stock stock, int amount, OrderBook orderBook, String decisionReason) {
         double availableFunds = account.getAvailableFunds(); // 使用帳戶資金
@@ -134,7 +168,7 @@ public class RetailInvestorAI {
         double totalCost = price * amount;
         if (availableFunds >= totalCost) {
             // 使用散戶的 UserAccount 創建買單
-            Order buyOrder = new Order("buy", price, amount, "散戶", this, account, false);
+            Order buyOrder = new Order("buy", price, amount, "散戶", this, account, false, false);
             orderBook.submitBuyOrder(buyOrder, price);
 
             // 在訂單成交時更新現金和持股量，這裡暫不更新
@@ -152,7 +186,7 @@ public class RetailInvestorAI {
             double price = stock.getPrice();
 
             // 使用散戶的 UserAccount 創建賣單
-            Order sellOrder = new Order("sell", price, amount, "散戶", this, account, false);
+            Order sellOrder = new Order("sell", price, amount, "散戶", this, account, false, false);
             orderBook.submitSellOrder(sellOrder, price);
 
             // 在訂單成交時更新現金和持股量，這裡暫不更新

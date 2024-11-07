@@ -71,7 +71,7 @@ public class MarketBehavior {
             double totalCost = newOrderPrice * orderVolume;
             if (account.freezeFunds(totalCost)) {
                 // 創建並提交買單
-                Order buyOrder = new Order("buy", newOrderPrice, orderVolume, "市場買單", this, account, false);
+                Order buyOrder = new Order("buy", newOrderPrice, orderVolume, "市場買單", this, account, false, false);
                 orderBook.submitBuyOrder(buyOrder, newOrderPrice);
                 System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
             } else {
@@ -86,7 +86,7 @@ public class MarketBehavior {
 
             // 檢查是否有足夠的庫存來執行賣單
             if (sellVolume > 0) {
-                Order sellOrder = new Order("sell", newOrderPrice, sellVolume, "市場賣單", this, account, false);
+                Order sellOrder = new Order("sell", newOrderPrice, sellVolume, "市場賣單", this, account, false, false);
                 orderBook.submitSellOrder(sellOrder, newOrderPrice);
                 System.out.println("市場行為生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
             } else {
