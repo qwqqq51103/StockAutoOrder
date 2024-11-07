@@ -73,9 +73,17 @@ public class MainForceStrategyWithOrderBook {
             if (actionProbability < 0.05 && getAccumulatedStocks() > 0) {
                 // 5% 機率進行洗盤
                 int washVolume = calculateWashVolume(volatility);
-                decisionReason += String.format("決定進行洗盤，賣出 %d 股。\n", washVolume);
-                simulateWashTrading(washVolume);
+                double minimumRequiredFunds = stock.getPrice() * Math.max(washVolume, 50); // 計算進行洗盤所需的最低資金
 
+                // 檢查是否有足夠的現金進行洗盤
+                if (account.getAvailableFunds() >= minimumRequiredFunds) {
+                    //decisionReason += String.format("決定進行洗盤，賣出 %d 股。\n", washVolume);
+                    simulateWashTrading(washVolume);
+                } else {
+                    //System.out.println("主力現金不足，無法進行洗盤操作。");
+                    //decisionReason += "主力現金不足，無法進行洗盤操作。\n";
+                }
+                
             } else if (actionProbability < 0.1 && availableFunds > currentPrice) {
                 System.out.println("主力現金 : " + availableFunds);
                 // 5% 機率進行拉抬
@@ -261,7 +269,7 @@ public class MainForceStrategyWithOrderBook {
         if (getAccumulatedStocks() >= volume) {
             double price = stock.getPrice();
             // 創建賣單（大量賣出以壓低股價），將主力帳戶作為交易者傳遞進去
-            Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false);
+            Order sellOrder = new Order("sell", price + 500, volume, "MainForce", this, account, false);
             orderBook.submitSellOrder(sellOrder, price);
 
             System.out.println(String.format("主力進行洗盤，賣出 %d 股，價格 %.2f", volume, price));
