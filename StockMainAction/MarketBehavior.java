@@ -73,7 +73,7 @@ public class MarketBehavior {
                 // 創建並提交買單
                 Order buyOrder = new Order("buy", newOrderPrice, orderVolume, "市場買單", this, account, false, false);
                 orderBook.submitBuyOrder(buyOrder, newOrderPrice);
-                System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
+                //System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
             } else {
                 //System.out.println("資金不足，無法生成市場買單");
             }
@@ -88,7 +88,7 @@ public class MarketBehavior {
             if (sellVolume > 0) {
                 Order sellOrder = new Order("sell", newOrderPrice, sellVolume, "市場賣單", this, account, false, false);
                 orderBook.submitSellOrder(sellOrder, newOrderPrice);
-                System.out.println("市場行為生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
+                //System.out.println("市場行為生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
             } else {
                 //System.out.println("股票不足，無法生成市場賣單");
             }

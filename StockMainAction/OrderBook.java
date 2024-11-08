@@ -18,7 +18,7 @@ public class OrderBook {
     private UserAccount account;
 
     final double MAX_PRICE_DIFF_RATIO = 0.5;
-    
+
     // 設置最大允許的波動範圍
     final double MAX_ALLOWED_CHANGE = 0.05; // 允許每次成交後的價格波動不超過 5%
 
@@ -91,7 +91,6 @@ public class OrderBook {
         }
 
         simulation.updateOrderBookDisplay();
-        processOrders(stock); // 新增，直接呼叫 processOrders 處理訂單撮合
     }
 
     //提交賣單 
@@ -147,14 +146,19 @@ public class OrderBook {
             Order buyOrder = buyOrders.get(0);
             Order sellOrder = sellOrders.get(0);
 
-            System.out.println("嘗試匹配買單：" + buyOrder + " 與賣單：" + sellOrder);
-
             // 若買單或賣單為市價訂單，直接成交
             boolean isMarketOrder = buyOrder.getPrice() == Double.MAX_VALUE || sellOrder.getPrice() == Double.MAX_VALUE;
 
             if (isMarketOrder || canExecuteOrder(buyOrder, sellOrder)) {
                 int transactionVolume = executeTransaction(buyOrder, sellOrder, stock);
-                double transactionPrice = isMarketOrder ? sellOrder.getPrice() : sellOrder.getPrice();
+
+                // 設定成交價格為市價單或買賣雙方價格的中間值
+                double transactionPrice;
+                if (isMarketOrder) {
+                    transactionPrice = sellOrder.getPrice();  // 若為市價單，直接以賣單價格成交
+                } else {
+                    transactionPrice = (buyOrder.getPrice() + sellOrder.getPrice()) / 2.0; // 使用買賣價格平均值
+                }
 
                 // 累加成交價值和成交量，用於加權平均價格
                 totalTransactionValue += transactionPrice * transactionVolume;
@@ -166,7 +170,6 @@ public class OrderBook {
                 // 更新成交量圖表
                 simulation.updateVolumeChart(transactionVolume);
             } else {
-                System.out.println("無法成交，買賣單價格差異過大。");
                 break;
             }
         }
@@ -185,6 +188,18 @@ public class OrderBook {
     }
 
     private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) {
+        // 檢查 Stock 是否為 null
+        if (stock == null) {
+            System.out.println("Error: Stock is null. Unable to update stock price.");
+            return 0; // 若 stock 為 null，則停止執行交易
+        }
+
+        // 檢查交易者帳戶是否為 null
+        if (buyOrder.getTraderAccount() == null || sellOrder.getTraderAccount() == null) {
+            System.out.println("Error: Trader account is null for one of the orders.");
+            return 0;  // 若發現問題，可以返回 0 或進行其他處理
+        }
+
         int transactionVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
 
         // 更新訂單的剩餘數量
@@ -195,7 +210,14 @@ public class OrderBook {
         stock.setPrice(sellOrder.getPrice());
 
         // 移除已完成的訂單
-        removeCompletedOrders(buyOrder, sellOrder);
+        if (buyOrder.getVolume() == 0) {
+            buyOrders.remove(buyOrder);
+            //System.out.println("買單已完成，從列表中移除。");
+        }
+        if (sellOrder.getVolume() == 0) {
+            sellOrders.remove(sellOrder);
+            //System.out.println("賣單已完成，從列表中移除。");
+        }
 
         return transactionVolume;
     }
@@ -203,6 +225,7 @@ public class OrderBook {
     private void updateStockPrice(Stock stock, double totalTransactionValue, int totalTransactionVolume) {
         double finalWeightedPrice = totalTransactionValue / totalTransactionVolume;
         stock.setPrice(finalWeightedPrice);
+        checkPriceChange(stock);
         System.out.println("加權平均股價更新為: " + finalWeightedPrice);
     }
 
