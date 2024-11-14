@@ -96,6 +96,12 @@ public class MainForceStrategyWithOrderBook {
                 //decisionReason += String.format("條件：股價超過目標價 %.2f，賣出 %d 股。\n", targetPrice, sellVolume);
                 sellStock(sellVolume);
 
+                // 市價賣出操作
+            } else if (actionProbability < 0.15 && getAccumulatedStocks() > 0) {
+                int sellQuantity = calculateSellVolume(); // 假設已有此方法計算賣出量
+                System.out.println("主力決定進行市價賣出，數量: " + sellQuantity);
+                marketSell(sellQuantity);
+
             } else if (priceDifferenceRatio > randomSellThreshold && getAccumulatedStocks() > 0 && actionProbability > 0.3) {
                 // 賣出條件
                 int sellVolume = (int) (getAccumulatedStocks() * priceDifferenceRatio * (0.8 + 0.4 * random.nextDouble()));
@@ -118,6 +124,7 @@ public class MainForceStrategyWithOrderBook {
                 int buyQuantity = calculateLiftVolume();
                 //System.out.println("主力決定進行市價買進，數量: " + buyQuantity);
                 marketBuy(buyQuantity);
+                
             } else if (actionProbability < 0.2) {
                 // 5% 的機率取消某個掛單（假設已有掛單）
                 if (!orderBook.getBuyOrders().isEmpty()) {
@@ -130,7 +137,7 @@ public class MainForceStrategyWithOrderBook {
                 // System.out.println(decisionReason);
             }
             if (actionProbability < 0.15 && availableFunds > stock.getPrice()) {
-                 //15% 的機率以市價買進
+                //15% 的機率以市價買進
                 int buyQuantity = calculateLiftVolume();
                 System.out.println("主力決定進行市價買進，數量: " + buyQuantity);
                 marketBuy(buyQuantity);
@@ -147,10 +154,19 @@ public class MainForceStrategyWithOrderBook {
     //市價買入
     public void marketBuy(int quantity) {
         // 創建一個市價訂單（價格設為極大值以確保優先成交）
-        Order marketBuyOrder = new Order("buy", Double.MAX_VALUE, quantity, "MainForce", this, account, true, true);
+        Order marketBuyOrder = new Order("marketBuy", Double.MAX_VALUE, quantity, "MarketMainForce", this, account, true, true);
 
         // 將市價訂單提交到訂單簿
         orderBook.submitBuyOrder(marketBuyOrder, stock.getPrice());
+    }
+
+    //市價賣出方法
+    public void marketSell(int quantity) {
+        // 創建一個市價訂單（價格設為極小值以保證優先成交）
+        Order marketSellOrder = new Order("marketSell", Double.MIN_VALUE, quantity, "MarketMainForce", this, account, true, true);
+
+        // 將市價訂單提交到訂單簿
+        orderBook.submitSellOrder(marketSellOrder, stock.getPrice());
     }
 
     //取消掛單
@@ -257,6 +273,7 @@ public class MainForceStrategyWithOrderBook {
 
     // 吸籌操作並更新平均成本價格
     public void accumulateStock(int volume) {
+
         double price = stock.getPrice();
         double cost = price * volume;
 
@@ -264,12 +281,6 @@ public class MainForceStrategyWithOrderBook {
         int availableVolume = orderBook.getAvailableSellVolume(price); // 假設此方法返回賣單的總量
         if (availableVolume < volume) {
             System.out.println("市場賣單不足，無法完成吸籌操作");
-            return;
-        }
-
-        // 檢查並凍結資金
-        if (!account.freezeFunds(cost)) {
-            System.out.println("主力現金不足，無法進行吸籌操作");
             return;
         }
 
@@ -292,11 +303,13 @@ public class MainForceStrategyWithOrderBook {
     }
 
     // 在訂單成交時更新現金和持股量
+    //限價單買入 不扣資金 增加股數 //市價買入 扣資金 增加股數
+    //現價賣出 不扣股數 增加現金 // 市價賣出 
     public void updateAfterTransaction(String type, int volume, double price) {
         double transactionAmount = price * volume;
 
-        if (type.equals("buy")) {
-            // 已扣減資金，這裡僅更新平均成本價,增加股票
+        if (type.equals("buy") || type.equals("marketBuy")) { // 包含市價買入
+            // 已扣減資金，這裡僅更新平均成本價，增加股票
             account.incrementStocks(volume);
 
             // 更新平均成本價
@@ -306,10 +319,20 @@ public class MainForceStrategyWithOrderBook {
             // 更新目標價
             calculateTargetPrice();
 
-        } else if (type.equals("sell")) {
+            if (type.equals("marketBuy")) {
+                // 針對市價買入，不需再凍結資金，直接減少資金
+                account.decrementFunds(transactionAmount);
+            }
+
+        } else if (type.equals("sell") || type.equals("marketSell")) { // 包含市價賣出
             // 已增加資金和減少股票數量，這裡僅更新平均成本價
             account.decrementStocks(volume);  // 減少股票數量
             account.incrementFunds(transactionAmount);
+
+            if (type.equals("marketSell")) {
+                // 針對市價賣出，直接增加資金收入
+                account.incrementFunds(transactionAmount);
+            }
 
             // 若持股為零，重置平均成本價
             if (getAccumulatedStocks() == 0) {
@@ -319,6 +342,24 @@ public class MainForceStrategyWithOrderBook {
 
         // 更新界面上的標籤
         simulation.updateLabels();
+    }
+
+    // 根據市場條件計算賣出量
+    private int calculateSellVolume() {
+        int accumulatedStocks = getAccumulatedStocks(); // 當前主力持有的股票量
+        if (accumulatedStocks <= 0) {
+            return 0; // 如果無持股，返回0
+        }
+
+        // 設置賣出量比例 (例如，賣出 10% 到 30% 的持股)
+        double sellPercentage = 0.1 + (0.2 * random.nextDouble()); // 隨機取10%到30%之間
+        int sellVolume = (int) (accumulatedStocks * sellPercentage);
+
+        // 確保賣出量至少為1，且不超過當前持股量
+        sellVolume = Math.max(1, Math.min(sellVolume, accumulatedStocks));
+
+        System.out.println("計算的市價賣出量為: " + sellVolume);
+        return sellVolume;
     }
 
     // 返回交易紀錄

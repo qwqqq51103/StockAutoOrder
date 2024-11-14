@@ -69,14 +69,10 @@ public class MarketBehavior {
         if (priceChangeRatio > 0) {
             // 檢查是否有足夠的資金來執行買單
             double totalCost = newOrderPrice * orderVolume;
-            if (account.freezeFunds(totalCost)) {
-                // 創建並提交買單
-                Order buyOrder = new Order("buy", newOrderPrice, orderVolume, "市場買單", this, account, false, false);
-                orderBook.submitBuyOrder(buyOrder, newOrderPrice);
-                //System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
-            } else {
-                //System.out.println("資金不足，無法生成市場買單");
-            }
+            // 創建並提交買單
+            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, "市場買單", this, account, false, false);
+            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
+            //System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
         } else {
             // 獲取當前可用的庫存量
             int availableStocks = account.getStockInventory();
