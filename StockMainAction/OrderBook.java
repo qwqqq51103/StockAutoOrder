@@ -19,6 +19,9 @@ public class OrderBook {
 
     final double MAX_PRICE_DIFF_RATIO = 0.5;
 
+    private double accumulatedMarketTransactionValue = 0.0;
+    private int accumulatedMarketTransactionVolume = 0;
+
     // 設置最大允許的波動範圍
     final double MAX_ALLOWED_CHANGE = 0.05; // 允許每次成交後的價格波動不超過 5%
 
@@ -62,7 +65,7 @@ public class OrderBook {
         } else {
             // 檢查並凍結資金，若資金不足則拒絕掛單
             if (!account.freezeFunds(totalCost)) {
-                System.out.println("資金不足，無法掛買單");
+//                System.out.println("資金不足，無法掛買單");
                 return;
             }
         }
@@ -109,7 +112,7 @@ public class OrderBook {
         } else {
             // 檢查並凍結股票數量，若持股不足則拒絕掛單
             if (!account.freezeStocks(order.getVolume())) {
-                System.out.println("持股不足，無法掛賣單");
+//                System.out.println("持股不足，無法掛賣單");
                 return;
             }
         }
@@ -142,36 +145,23 @@ public class OrderBook {
 
     // 處理訂單撮合
     public void processOrders(Stock stock) {
-        double totalTransactionValue = 0.0;
-        int totalTransactionVolume = 0;
+        double totalTransactionValue = accumulatedMarketTransactionValue;
+        int totalTransactionVolume = accumulatedMarketTransactionVolume;
+
+        // 清除累計的市價單數據
+        accumulatedMarketTransactionValue = 0.0;
+        accumulatedMarketTransactionVolume = 0;
 
         while (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
             Order buyOrder = buyOrders.get(0);
             Order sellOrder = sellOrders.get(0);
 
-            // 判斷是否有市價訂單
-            boolean isMarketOrder = buyOrder.getPrice() == Double.MAX_VALUE || sellOrder.getPrice() == Double.MIN_VALUE;
-
-            if (isMarketOrder || canExecuteOrder(buyOrder, sellOrder)) {
+            // 僅處理限價單的匹配
+            if (canExecuteOrder(buyOrder, sellOrder)) {
                 int transactionVolume = executeTransaction(buyOrder, sellOrder, stock);
 
-                // 設定成交價格根據市價單或限價單的不同情況
-                double transactionPrice;
-                if (isMarketOrder) {
-                    if (buyOrder.getPrice() == Double.MAX_VALUE && sellOrder.getPrice() != Double.MIN_VALUE) {
-                        // 市價買單以賣單價格成交
-                        transactionPrice = sellOrder.getPrice();
-                    } else if (sellOrder.getPrice() == Double.MIN_VALUE && buyOrder.getPrice() != Double.MAX_VALUE) {
-                        // 市價賣單以買單價格成交
-                        transactionPrice = buyOrder.getPrice();
-                    } else {
-                        // 若同時存在市價買單和市價賣單，使用當前市場價格（可設定為股票的上一成交價格）
-                        transactionPrice = stock.getPrice();
-                    }
-                } else {
-                    // 限價單則以買賣雙方的價格平均值成交
-                    transactionPrice = (buyOrder.getPrice() + sellOrder.getPrice()) / 2.0;
-                }
+                // 限價單成交價格設為買賣雙方的價格平均值
+                double transactionPrice = (buyOrder.getPrice() + sellOrder.getPrice()) / 2.0;
 
                 // 累加成交價值和成交量，用於計算加權平均價格
                 totalTransactionValue += transactionPrice * transactionVolume;
@@ -183,7 +173,6 @@ public class OrderBook {
                 // 更新成交量圖表
                 simulation.updateVolumeChart(transactionVolume);
             } else {
-                // 當買賣雙方無法成交時跳出迴圈
                 break;
             }
         }
@@ -226,13 +215,14 @@ public class OrderBook {
         // 移除已完成的訂單
         if (buyOrder.getVolume() == 0) {
             buyOrders.remove(buyOrder);
-//            System.out.println("買單已完成，從列表中移除。");
+            System.out.println("買單已完成，從列表中移除。");
         }
         if (sellOrder.getVolume() == 0) {
             sellOrders.remove(sellOrder);
-//            System.out.println("賣單已完成，從列表中移除。");
+            System.out.println("賣單已完成，從列表中移除。");
         }
 
+        simulation.updateOrderBookDisplay();
         return transactionVolume;
     }
 
@@ -272,36 +262,14 @@ public class OrderBook {
         } else if (sellOrder.getTraderType().equals("RetailInvestor")) {
             RetailInvestorAI retailAI = (RetailInvestorAI) sellOrder.getTrader();
             retailAI.updateAfterTransaction("sell", -transactionVolume, transactionPrice);
-        } // 市價主力買入或賣出
-        else if (buyOrder.getTraderType().equals("MarketMainForce")) {
-            MainForceStrategyWithOrderBook marketMainForce = (MainForceStrategyWithOrderBook) buyOrder.getTrader();
-            marketMainForce.updateAfterTransaction("marketBuy", transactionVolume, transactionPrice);
-        } else if (sellOrder.getTraderType().equals("MarketMainForce")) {
-            MainForceStrategyWithOrderBook marketMainForce = (MainForceStrategyWithOrderBook) sellOrder.getTrader();
-            marketMainForce.updateAfterTransaction("marketSell", -transactionVolume, transactionPrice);
-        } // 市價散戶買入或賣出
-        else if (buyOrder.getTraderType().equals("MarketRetailInvestor")) {
-            RetailInvestorAI marketRetailAI = (RetailInvestorAI) buyOrder.getTrader();
-            marketRetailAI.updateAfterTransaction("marketBuy", transactionVolume, transactionPrice);
-        } else if (sellOrder.getTraderType().equals("MarketRetailInvestor")) {
-            RetailInvestorAI marketRetailAI = (RetailInvestorAI) sellOrder.getTrader();
-            marketRetailAI.updateAfterTransaction("marketSell", -transactionVolume, transactionPrice);
-        } // 若無特定交易者，默認增持股數
-        else {
+        } else {
             account.incrementStocks(transactionVolume);
         }
     }
 
-    //移除成交買賣單
-    private void removeCompletedOrders(Order buyOrder, Order sellOrder) {
-        if (buyOrder.getVolume() == 0) {
-            buyOrders.remove(0);
-            System.out.println("買單已完成，從列表中移除。");
-        }
-        if (sellOrder.getVolume() == 0) {
-            sellOrders.remove(0);
-            System.out.println("賣單已完成，從列表中移除。");
-        }
+    public void addMarketTransactionData(double transactionValue, int transactionVolume) {
+        accumulatedMarketTransactionValue += transactionValue;
+        accumulatedMarketTransactionVolume += transactionVolume;
     }
 
     // 獲取當前的買賣訂單列表（可用於視覺化訂單簿）

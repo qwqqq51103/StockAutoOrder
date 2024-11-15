@@ -3,6 +3,7 @@ package StockMainAction;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.ListIterator;
 import java.util.Queue;
 import java.util.Random;
 
@@ -99,7 +100,7 @@ public class MainForceStrategyWithOrderBook {
                 // 市價賣出操作
             } else if (actionProbability < 0.15 && getAccumulatedStocks() > 0) {
                 int sellQuantity = calculateSellVolume(); // 假設已有此方法計算賣出量
-                System.out.println("主力決定進行市價賣出，數量: " + sellQuantity);
+                //System.out.println("主力決定進行市價賣出，數量: " + sellQuantity);
                 marketSell(sellQuantity);
 
             } else if (priceDifferenceRatio > randomSellThreshold && getAccumulatedStocks() > 0 && actionProbability > 0.3) {
@@ -124,7 +125,7 @@ public class MainForceStrategyWithOrderBook {
                 int buyQuantity = calculateLiftVolume();
                 //System.out.println("主力決定進行市價買進，數量: " + buyQuantity);
                 marketBuy(buyQuantity);
-                
+
             } else if (actionProbability < 0.2) {
                 // 5% 的機率取消某個掛單（假設已有掛單）
                 if (!orderBook.getBuyOrders().isEmpty()) {
@@ -139,7 +140,7 @@ public class MainForceStrategyWithOrderBook {
             if (actionProbability < 0.15 && availableFunds > stock.getPrice()) {
                 //15% 的機率以市價買進
                 int buyQuantity = calculateLiftVolume();
-                System.out.println("主力決定進行市價買進，數量: " + buyQuantity);
+                //System.out.println("主力決定進行市價買進，數量: " + buyQuantity);
                 marketBuy(buyQuantity);
             }
 
@@ -153,20 +154,107 @@ public class MainForceStrategyWithOrderBook {
 
     //市價買入
     public void marketBuy(int quantity) {
-        // 創建一個市價訂單（價格設為極大值以確保優先成交）
-        Order marketBuyOrder = new Order("marketBuy", Double.MAX_VALUE, quantity, "MarketMainForce", this, account, true, true);
+        double remainingFunds = account.getAvailableFunds();
+        int remainingQuantity = quantity;
+        double marketTotalTransactionValue = 0.0;
+        int marketTotalTransactionVolume = 0;
 
-        // 將市價訂單提交到訂單簿
-        orderBook.submitBuyOrder(marketBuyOrder, stock.getPrice());
+        // 使用 ListIterator 來安全地進行修改
+        ListIterator<Order> iterator = orderBook.getSellOrders().listIterator();
+        while (iterator.hasNext() && remainingQuantity > 0) {
+            Order sellOrder = iterator.next();
+            double transactionPrice = sellOrder.getPrice();
+            int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
+            double transactionCost = transactionPrice * transactionVolume;
+
+            if (remainingFunds >= transactionCost) {
+                remainingFunds -= transactionCost;
+                remainingQuantity -= transactionVolume;
+
+                // 更新持股量和資金
+                account.incrementStocks(transactionVolume);
+                account.decrementFunds(transactionCost);
+
+                System.out.println("市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                // 累加市價單的成交值和成交量
+                marketTotalTransactionValue += transactionPrice * transactionVolume;
+                marketTotalTransactionVolume += transactionVolume;
+
+                // 如果賣單已全部成交，移除該賣單
+                if (sellOrder.getVolume() == transactionVolume) {
+                    iterator.remove();  // 使用 iterator 的 remove 方法來移除
+                } else {
+                    sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
+                }
+            } else {
+                System.out.println("主力現金不足，無法完成市價買進剩餘數量");
+                break;
+            }
+        }
+
+        if (marketTotalTransactionVolume > 0) {
+            orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
+        }
+
+        simulation.updateLabels();
+        simulation.updateVolumeChart(marketTotalTransactionVolume);
+        simulation.updateOrderBookDisplay();
     }
 
     //市價賣出方法
     public void marketSell(int quantity) {
-        // 創建一個市價訂單（價格設為極小值以保證優先成交）
-        Order marketSellOrder = new Order("marketSell", Double.MIN_VALUE, quantity, "MarketMainForce", this, account, true, true);
+        double remainingQuantity = quantity;
+        double marketTotalTransactionValue = 0.0;
+        int marketTotalTransactionVolume = 0;
 
-        // 將市價訂單提交到訂單簿
-        orderBook.submitSellOrder(marketSellOrder, stock.getPrice());
+        // 使用 ListIterator 來進行買單列表的遍歷
+        ListIterator<Order> iterator = orderBook.getBuyOrders().listIterator();
+
+        while (iterator.hasNext() && remainingQuantity > 0) {
+            Order buyOrder = iterator.next();
+            double transactionPrice = buyOrder.getPrice();
+            int transactionVolume = Math.min(buyOrder.getVolume(), (int) remainingQuantity);
+            double transactionRevenue = transactionPrice * transactionVolume;
+
+            // 確認持股量足夠進行賣出
+            if (account.getStockInventory() >= transactionVolume) {
+                // 減少持股量和剩餘賣出數量
+                account.decrementStocks(transactionVolume);
+                remainingQuantity -= transactionVolume;
+
+                // 增加資金
+                account.incrementFunds(transactionRevenue);
+
+                System.out.println("市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                // 累加市價單的成交值和成交量
+                marketTotalTransactionValue += transactionPrice * transactionVolume;
+                marketTotalTransactionVolume += transactionVolume;
+
+                // 如果買單已全部成交，移除該買單
+                if (buyOrder.getVolume() == transactionVolume) {
+                    iterator.remove();
+                } else {
+                    // 否則更新買單的剩餘數量
+                    buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
+                }
+            } else {
+                // 持股量不足以完成市價賣出，退出
+                System.out.println("主力持股不足，無法完成市價賣出剩餘數量");
+                break;
+            }
+        }
+
+        // 更新累計的成交值和成交量，供後續使用
+        if (marketTotalTransactionVolume > 0) {
+            orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
+        }
+
+        // 更新用戶界面資金和持股量顯示
+        simulation.updateLabels();
+        simulation.updateVolumeChart(marketTotalTransactionVolume);
+        simulation.updateOrderBookDisplay();
     }
 
     //取消掛單
@@ -262,7 +350,7 @@ public class MainForceStrategyWithOrderBook {
         if (getAccumulatedStocks() >= volume) {
             double price = stock.getPrice();
             // 創建賣單（大量賣出以壓低股價），將主力帳戶作為交易者傳遞進去
-            Order sellOrder = new Order("sell", price + 500, volume, "MainForce", this, account, false, false);
+            Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false, false);
             orderBook.submitSellOrder(sellOrder, price);
 
             System.out.println(String.format("主力進行洗盤，賣出 %d 股，價格 %.2f", volume, price));

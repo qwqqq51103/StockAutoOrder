@@ -53,7 +53,7 @@ public class StockMarketSimulation {
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
     private double initialRetailCash = 50000.0, initialMainForceCash = 5000000.0;  // 初始現金
-    private int initialRetails = 15;  // 初始散戶數量
+    private int initialRetails = 0;  // 初始散戶數量
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -66,8 +66,7 @@ public class StockMarketSimulation {
                 marketBehavior.marketFluctuation(stock, orderBook, marketAnalyzer.calculateVolatility(), marketAnalyzer.getRecentAverageVolume());
 
                 // 散戶決策並提交訂單
-                executeRetailInvestorDecisions();
-
+                //executeRetailInvestorDecisions();
                 // 主力決策並提交訂單
                 mainForce.makeDecision();
 
@@ -134,7 +133,7 @@ public class StockMarketSimulation {
         stock = new Stock("台積電", 10, 1000);
 
         //初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
-        marketBehavior = new MarketBehavior(stock.getPrice(), 0, 10000); // 初始化市場行為，包括資金和庫存
+        marketBehavior = new MarketBehavior(stock.getPrice(), 0, 100); // 初始化市場行為，包括資金和庫存
 
         // 初始化 OrderBook，將 MarketBehavior 中的帳戶直接用於 OrderBook（假設 MarketBehavior 管理了資金和股票餘額）
         orderBook = new OrderBook(this, marketBehavior.getAccount());
@@ -454,20 +453,50 @@ public class StockMarketSimulation {
         priceSeries.add(timeStep, stock.getPrice());
     }
 
-    // 更新成交量的方法（這裡需要您實現成交量的更新邏輯，根據實際成交量來更新 volumeDataset）
+    // 初始化累積的成交量變量
+    private static int accumulatedVolume = 0;
+
     public void updateVolumeChart(int volume) {
-        // 更新成交量數據集
-        volumeDataset.addValue(volume, "Volume", String.valueOf(timeStep));
+        // 累加每次成交的量到總成交量
+        accumulatedVolume += volume;
 
-        // 確認 priceSeries 的索引在範圍內，防止越界
-        double currentPrice = stock.getPrice();
-        double previousPrice = (timeStep > 0 && timeStep - 1 < priceSeries.getItemCount())
-                ? priceSeries.getY(timeStep - 1).doubleValue()
-                : currentPrice;
+        // 僅在新的時間步長時才更新圖表
+        if (isNewTimeStep()) {
+            // 如果累積成交量為 0，也強制添加一個零成交量的條目
+            volumeDataset.addValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
 
-        // 根據漲跌設置顏色
-        Color color = currentPrice > previousPrice ? Color.RED : Color.GREEN;
-        colorList.add(color);
+            // 取得當前股價，並確保與前一價格進行比較
+            double currentPrice = stock.getPrice();
+            double previousPrice = timeStep > 0 && timeStep - 1 < priceSeries.getItemCount()
+                    ? priceSeries.getY(timeStep - 1).doubleValue()
+                    : currentPrice;
+
+            // 若時間步長大於當前 priceSeries 的項數，則新增當前股價
+            if (timeStep >= priceSeries.getItemCount()) {
+                priceSeries.add(timeStep, currentPrice);
+            }
+
+            // 設定顏色：累積成交量為 0 時設為藍色；若當前價格高於前一價格設為紅色，否則設為綠色
+            Color color = accumulatedVolume == 0 ? Color.BLUE : (currentPrice > previousPrice ? Color.RED : Color.GREEN);
+            colorList.add(color);
+
+            // 重置累積成交量
+            accumulatedVolume = 0;
+
+            // 自增時間步長
+            timeStep++;
+        }
+    }
+
+    private int previousTimeStep = -1;
+
+    // 用於檢查是否進入新的時間步長
+    private boolean isNewTimeStep() {
+        if (timeStep != previousTimeStep) {
+            previousTimeStep = timeStep; // 更新 previousTimeStep 為當前的 timeStep
+            return true; // 表示進入新的時間步長
+        }
+        return false; // 否則仍在當前的時間步長內
     }
 
     private void setChartFont(JFreeChart chart) {
