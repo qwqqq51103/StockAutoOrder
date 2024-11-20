@@ -52,8 +52,8 @@ public class StockMarketSimulation {
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
-    private double initialRetailCash = 50000.0, initialMainForceCash = 5000000.0;  // 初始現金
-    private int initialRetails = 0;  // 初始散戶數量
+    private double initialRetailCash = 6666, initialMainForceCash = 66666;  // 初始現金
+    private int initialRetails = 1;  // 初始散戶數量
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -66,7 +66,8 @@ public class StockMarketSimulation {
                 marketBehavior.marketFluctuation(stock, orderBook, marketAnalyzer.calculateVolatility(), marketAnalyzer.getRecentAverageVolume());
 
                 // 散戶決策並提交訂單
-                //executeRetailInvestorDecisions();
+                executeRetailInvestorDecisions();
+                
                 // 主力決策並提交訂單
                 mainForce.makeDecision();
 
@@ -90,7 +91,7 @@ public class StockMarketSimulation {
             } catch (Exception e) {
                 e.printStackTrace(); // 輸出異常的堆疊資訊
             }
-        }, 0, 1000, TimeUnit.MILLISECONDS);
+        }, 0, 100, TimeUnit.MILLISECONDS);
     }
 
     public MarketAnalyzer getMarketAnalyzer() {
@@ -123,7 +124,7 @@ public class StockMarketSimulation {
     private void initializeRetailInvestors(int numberOfInvestors) {
         retailInvestors = new ArrayList<>();
         for (int i = 0; i < numberOfInvestors; i++) {
-            RetailInvestorAI investor = new RetailInvestorAI(initialRetailCash, "RetailInvestor" + (i + 1));
+            RetailInvestorAI investor = new RetailInvestorAI(initialRetailCash, "RetailInvestor" + (i + 1), this);
             retailInvestors.add(investor);
         }
     }
@@ -133,7 +134,7 @@ public class StockMarketSimulation {
         stock = new Stock("台積電", 10, 1000);
 
         //初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
-        marketBehavior = new MarketBehavior(stock.getPrice(), 0, 100); // 初始化市場行為，包括資金和庫存
+        marketBehavior = new MarketBehavior(stock.getPrice(), 0, 5000); // 初始化市場行為，包括資金和庫存
 
         // 初始化 OrderBook，將 MarketBehavior 中的帳戶直接用於 OrderBook（假設 MarketBehavior 管理了資金和股票餘額）
         orderBook = new OrderBook(this, marketBehavior.getAccount());
@@ -144,7 +145,7 @@ public class StockMarketSimulation {
         mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, this, initialMainForceCash); // 設置初始現金
         initializeRetailInvestors(initialRetails); // 初始化散戶
         // 在 initializeLabels() 調用之前進行初始化
-        retaillAI = new RetailInvestorAI(initialRetailCash, "RetailInvestor1");
+        retaillAI = new RetailInvestorAI(initialRetailCash, "RetailInvestor1", this);
 
         priceSeries = new XYSeries("股價");
         smaSeries = new XYSeries("SMA");

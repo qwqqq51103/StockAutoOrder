@@ -140,6 +140,12 @@ public class MainForceStrategyWithOrderBook {
             double transactionPrice = sellOrder.getPrice();
             int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
             double transactionCost = transactionPrice * transactionVolume;
+            
+            // 自成交檢查，避免買到自己的限價賣單
+            if (sellOrder.getTrader() == this) {
+                System.out.println("警告：散戶無法買入自己掛的賣單。跳過此交易。");
+                continue;
+            }
 
             if (remainingFunds >= transactionCost) {
                 remainingFunds -= transactionCost;
@@ -182,13 +188,20 @@ public class MainForceStrategyWithOrderBook {
         double marketTotalTransactionValue = 0.0;
         int marketTotalTransactionVolume = 0;
 
-        // 使用 ListIterator 來進行買單列表的遍歷
+        // 使用 ListIterator 安全地遍歷買單列表
         ListIterator<Order> iterator = orderBook.getBuyOrders().listIterator();
 
         while (iterator.hasNext() && remainingQuantity > 0) {
             Order buyOrder = iterator.next();
             double transactionPrice = buyOrder.getPrice();
             int transactionVolume = Math.min(buyOrder.getVolume(), (int) remainingQuantity);
+
+            // 檢查是否與自己交易（避免自我匹配）
+            if (buyOrder.getTrader() == this) {
+                System.out.println("跳過與自己的訂單匹配，買單資訊：" + buyOrder);
+                continue;
+            }
+
             double transactionRevenue = transactionPrice * transactionVolume;
 
             // 確認持股量足夠進行賣出
@@ -200,7 +213,8 @@ public class MainForceStrategyWithOrderBook {
                 // 增加資金
                 account.incrementFunds(transactionRevenue);
 
-                System.out.println("市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume);
+                System.out.println("市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume
+                        + "，匹配的買單資訊：" + buyOrder);
 
                 // 累加市價單的成交值和成交量
                 marketTotalTransactionValue += transactionPrice * transactionVolume;
@@ -214,18 +228,17 @@ public class MainForceStrategyWithOrderBook {
                     buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
                 }
             } else {
-                // 持股量不足以完成市價賣出，退出
                 System.out.println("主力持股不足，無法完成市價賣出剩餘數量");
                 break;
             }
         }
 
-        // 更新累計的成交值和成交量，供後續使用
+        // 更新累計的成交值和成交量
         if (marketTotalTransactionVolume > 0) {
             orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
         }
 
-        // 更新用戶界面資金和持股量顯示
+        // 更新用戶界面
         simulation.updateLabels();
         simulation.updateVolumeChart(marketTotalTransactionVolume);
         simulation.updateOrderBookDisplay();

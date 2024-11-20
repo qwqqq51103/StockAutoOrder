@@ -140,7 +140,13 @@ public class OrderBook {
             Order buyOrder = buyOrders.get(0);
             Order sellOrder = sellOrders.get(0);
 
-            // 僅處理限價單的匹配
+            // 僅處理限價單或跳過自我匹配
+            if (buyOrder.getTrader() == sellOrder.getTrader()) {
+                System.out.println("跳過自我匹配，買單：" + buyOrder + "，賣單：" + sellOrder);
+                buyOrders.remove(buyOrder); // 或直接更新
+                continue;
+            }
+
             if (canExecuteOrder(buyOrder, sellOrder)) {
                 int transactionVolume = executeTransaction(buyOrder, sellOrder, stock);
 

@@ -71,7 +71,7 @@ public class MarketBehavior {
             double totalCost = newOrderPrice * orderVolume;
             // 創建並提交買單
             Order buyOrder = new Order("buy", newOrderPrice, orderVolume, "市場買單", this, account, false, false);
-            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
+            //orderBook.submitBuyOrder(buyOrder, newOrderPrice);
             //System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
         } else {
             // 獲取當前可用的庫存量

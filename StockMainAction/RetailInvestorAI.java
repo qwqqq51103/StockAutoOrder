@@ -3,6 +3,7 @@ package StockMainAction;
 import java.util.Iterator;
 import java.util.Random;
 import java.util.LinkedList;
+import java.util.ListIterator;
 import java.util.Queue;
 
 /**
@@ -11,6 +12,7 @@ import java.util.Queue;
 public class RetailInvestorAI {
 
     private int stocksOwned = 0;
+    private StockMarketSimulation simulation;
     private static final Random random = new Random();
     private double buyThreshold;
     private double sellThreshold;
@@ -20,8 +22,9 @@ public class RetailInvestorAI {
     private Order Order;
     private UserAccount account;
 
-    public RetailInvestorAI(double initialCash, String traderID) {
+    public RetailInvestorAI(double initialCash, String traderID, StockMarketSimulation simulation) {
         this.traderID = traderID;
+        this.simulation = simulation;
 
         // 初始化價格歷史
         this.priceHistory = new LinkedList<>();
@@ -160,22 +163,119 @@ public class RetailInvestorAI {
         }
     }
 
-    // 市價買入方法，使用傳遞的 orderBook 和 stock
     public void marketBuy(int quantity, Stock stock, OrderBook orderBook) {
-        // 創建市價買入訂單（價格設為極大值）
-        Order marketBuyOrder = new Order("marketBuy", Double.MAX_VALUE, quantity, "MarketRetailInvestor", this, account, true, true);
+        double remainingFunds = account.getAvailableFunds();
+        int remainingQuantity = quantity;
+        double marketTotalTransactionValue = 0.0;
+        int marketTotalTransactionVolume = 0;
 
-        // 將市價訂單提交到訂單簿
-        orderBook.submitBuyOrder(marketBuyOrder, stock.getPrice());
+        // 使用 ListIterator 安全地遍歷賣單列表
+        ListIterator<Order> iterator = orderBook.getSellOrders().listIterator();
+        while (iterator.hasNext() && remainingQuantity > 0) {
+            Order sellOrder = iterator.next();
+            double transactionPrice = sellOrder.getPrice();
+            int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
+            double transactionCost = transactionPrice * transactionVolume;
+
+            // 檢查是否為自己的訂單
+            if (sellOrder.getTrader() == this) {
+                System.out.println("跳過自己的賣單，價格: " + transactionPrice + "，數量: " + sellOrder.getVolume());
+                continue; // 跳過自己的訂單
+            }
+
+            // 檢查資金是否足夠
+            if (remainingFunds >= transactionCost) {
+                remainingFunds -= transactionCost;
+                remainingQuantity -= transactionVolume;
+
+                // 更新持股量和資金
+                account.incrementStocks(transactionVolume);
+                account.decrementFunds(transactionCost);
+
+                System.out.println("散戶市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                // 累加市價單的成交值和成交量
+                marketTotalTransactionValue += transactionPrice * transactionVolume;
+                marketTotalTransactionVolume += transactionVolume;
+
+                // 如果賣單已全部成交，移除該賣單
+                if (sellOrder.getVolume() == transactionVolume) {
+                    iterator.remove();
+                } else {
+                    sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
+                }
+            } else {
+                System.out.println("散戶資金不足，無法完成市價買進剩餘數量");
+                break;
+            }
+        }
+
+        // 更新累計的成交值和成交量，供後續使用
+        if (marketTotalTransactionVolume > 0) {
+            orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
+        }
+
+        // 更新用戶界面
+        simulation.updateLabels();
+        simulation.updateVolumeChart(marketTotalTransactionVolume);
+        simulation.updateOrderBookDisplay();
     }
 
     // 市價賣出方法，使用傳遞的 orderBook 和 stock
     public void marketSell(int quantity, Stock stock, OrderBook orderBook) {
-        // 創建市價賣出訂單（價格設為極小值）
-        Order marketSellOrder = new Order("marketsell", Double.MIN_VALUE, quantity, "MarketRetailInvestor", this, account, true, true);
+        double remainingQuantity = quantity;
+        double marketTotalTransactionValue = 0.0;
+        int marketTotalTransactionVolume = 0;
 
-        // 將市價訂單提交到訂單簿
-        orderBook.submitSellOrder(marketSellOrder, stock.getPrice());
+        // 使用 ListIterator 安全地遍歷買單列表
+        ListIterator<Order> iterator = orderBook.getBuyOrders().listIterator();
+        while (iterator.hasNext() && remainingQuantity > 0) {
+            Order buyOrder = iterator.next();
+            double transactionPrice = buyOrder.getPrice();
+            int transactionVolume = Math.min(buyOrder.getVolume(), (int) remainingQuantity);
+            double transactionRevenue = transactionPrice * transactionVolume;
+
+            // 檢查是否為自己的訂單
+            if (buyOrder.getTrader() == this) {
+                System.out.println("跳過自己的買單，價格: " + transactionPrice + "，數量: " + buyOrder.getVolume());
+                continue; // 跳過自己的訂單
+            }
+
+            // 檢查持股量是否足夠
+            if (account.getStockInventory() >= transactionVolume) {
+                account.decrementStocks(transactionVolume);
+                remainingQuantity -= transactionVolume;
+
+                // 增加資金
+                account.incrementFunds(transactionRevenue);
+
+                System.out.println("散戶市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                // 累加市價單的成交值和成交量
+                marketTotalTransactionValue += transactionPrice * transactionVolume;
+                marketTotalTransactionVolume += transactionVolume;
+
+                // 如果買單已全部成交，移除該買單
+                if (buyOrder.getVolume() == transactionVolume) {
+                    iterator.remove();
+                } else {
+                    buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
+                }
+            } else {
+                System.out.println("散戶持股不足，無法完成市價賣出剩餘數量");
+                break;
+            }
+        }
+
+        // 更新累計的成交值和成交量，供後續使用
+        if (marketTotalTransactionVolume > 0) {
+            orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
+        }
+
+        // 更新用戶界面
+        simulation.updateLabels();
+        simulation.updateVolumeChart(marketTotalTransactionVolume);
+        simulation.updateOrderBookDisplay();
     }
 
     // 買入股票，生成並提交買單
@@ -183,7 +283,7 @@ public class RetailInvestorAI {
         double availableFunds = account.getAvailableFunds(); // 使用帳戶資金
         double price = stock.getPrice();
         double totalCost = price * amount;
-        
+
         if (availableFunds >= totalCost) {
             // 使用散戶的 UserAccount 創建買單
             Order buyOrder = new Order("buy", price, amount, "RetailInvestor", this, account, false, false);
@@ -205,7 +305,7 @@ public class RetailInvestorAI {
             // 使用散戶的 UserAccount 創建賣單
             Order sellOrder = new Order("sell", price, amount, "RetailInvestor", this, account, false, false);
             orderBook.submitSellOrder(sellOrder, price);
-            
+
             // 可以選擇輸出賣出操作資訊
 //             System.out.println(decisionReason);
             System.out.println(String.format("散戶下賣單 %d 股，價格 %.2f，剩餘持股 %d 股", amount, price, getAccumulatedStocks()));
