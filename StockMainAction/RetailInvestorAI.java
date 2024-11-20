@@ -45,6 +45,7 @@ public class RetailInvestorAI {
         priceHistory.add(currentPrice);
     }
 
+    //散戶行為
     public void makeDecision(Stock stock, OrderBook orderBook, StockMarketSimulation simulation) {
         double availableFunds = account.getAvailableFunds(); // 使用帳戶資金
         double currentPrice = stock.getPrice();
@@ -161,16 +162,6 @@ public class RetailInvestorAI {
 
     // 市價買入方法，使用傳遞的 orderBook 和 stock
     public void marketBuy(int quantity, Stock stock, OrderBook orderBook) {
-        if (account == null) {
-            System.out.println("Error: Account is null.");
-            return;
-        }
-
-        if (stock == null) {
-            System.out.println("Error: Stock is null.");
-            return;
-        }
-
         // 創建市價買入訂單（價格設為極大值）
         Order marketBuyOrder = new Order("marketBuy", Double.MAX_VALUE, quantity, "MarketRetailInvestor", this, account, true, true);
 
@@ -180,16 +171,6 @@ public class RetailInvestorAI {
 
     // 市價賣出方法，使用傳遞的 orderBook 和 stock
     public void marketSell(int quantity, Stock stock, OrderBook orderBook) {
-        if (account == null) {
-            System.out.println("Error: Account is null.");
-            return;
-        }
-
-        if (stock == null) {
-            System.out.println("Error: Stock is null.");
-            return;
-        }
-
         // 創建市價賣出訂單（價格設為極小值）
         Order marketSellOrder = new Order("marketsell", Double.MIN_VALUE, quantity, "MarketRetailInvestor", this, account, true, true);
 
@@ -202,12 +183,12 @@ public class RetailInvestorAI {
         double availableFunds = account.getAvailableFunds(); // 使用帳戶資金
         double price = stock.getPrice();
         double totalCost = price * amount;
+        
         if (availableFunds >= totalCost) {
             // 使用散戶的 UserAccount 創建買單
             Order buyOrder = new Order("buy", price, amount, "RetailInvestor", this, account, false, false);
             orderBook.submitBuyOrder(buyOrder, price);
 
-            // 在訂單成交時更新現金和持股量，這裡暫不更新
             // 可以選擇輸出買入操作資訊
 //             System.out.println(decisionReason);
             System.out.println(String.format("散戶下買單 %d 股，價格 %.2f，剩餘現金 %.2f 元", amount, price, availableFunds));
@@ -224,8 +205,7 @@ public class RetailInvestorAI {
             // 使用散戶的 UserAccount 創建賣單
             Order sellOrder = new Order("sell", price, amount, "RetailInvestor", this, account, false, false);
             orderBook.submitSellOrder(sellOrder, price);
-
-            // 在訂單成交時更新現金和持股量，這裡暫不更新
+            
             // 可以選擇輸出賣出操作資訊
 //             System.out.println(decisionReason);
             System.out.println(String.format("散戶下賣單 %d 股，價格 %.2f，剩餘持股 %d 股", amount, price, getAccumulatedStocks()));
@@ -234,31 +214,27 @@ public class RetailInvestorAI {
         }
     }
 
-    // 在訂單成交時更新現金和持股量
-    //限價單買入 不扣資金 增加股數 //市價買入 扣資金 增加股數
-    //現價賣出 不扣股數 增加現金 // 市價賣出 
+    //在訂單成交時更新現金和持股量
     public void updateAfterTransaction(String type, int volume, double price) {
         double transactionAmount = price * volume; // 計算交易金額
 
-        if (type.equals("buy") || type.equals("marketBuy")) { // 包括市價買入
-            // 更新資金和持股
-            account.decrementFunds(transactionAmount); // 扣除資金
+        if (type.equals("buy")) {
+            //限價單買入 不扣資金 增加股數 
             account.incrementStocks(volume); // 增加股票
 
-            System.out.println(String.format("散戶 %s 成交買入 %d 股，價格 %.2f，總金額 %.2f",
-                    type.equals("marketBuy") ? "市價" : "限價", volume, price, transactionAmount));
+            System.out.println(String.format("散戶限價成交買入 %d 股，價格 %.2f，總金額 %.2f",
+                    volume, price, transactionAmount));
 
-        } else if (type.equals("sell") || type.equals("marketSell")) { // 包括市價賣出
-            // 更新持股和資金
+        } else if (type.equals("sell")) {
+            //現價賣出 不扣股數 增加現金
             account.incrementFunds(transactionAmount); // 增加資金
-            account.decrementStocks(volume); // 減少股票
 
-            System.out.println(String.format("散戶 %s 成交賣出 %d 股，價格 %.2f，總金額 %.2f",
-                    type.equals("marketSell") ? "市價" : "限價", volume, price, transactionAmount));
+            System.out.println(String.format("散戶限價成交賣出 %d 股，價格 %.2f，總金額 %.2f",
+                    volume, price, transactionAmount));
         }
 
         // 更新界面上的標籤
-//        simulation.updateLabels();
+//    simulation.updateLabels();
     }
 
     public double getBuyThreshold() {
@@ -269,18 +245,22 @@ public class RetailInvestorAI {
         return sellThreshold;
     }
 
+    //表示是否忽略門檻
     public boolean shouldIgnoreThreshold() {
         return ignoreThreshold;
     }
 
+    //獲取散戶的唯一標識符
     public String getTraderID() {
         return traderID;
     }
 
+    //獲取散戶股票數量
     public int getAccumulatedStocks() {
         return account.getStockInventory();
     }
 
+    //獲取散戶現金
     public double getCash() {
         return account.getAvailableFunds();
     }

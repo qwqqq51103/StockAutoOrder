@@ -90,7 +90,7 @@ public class StockMarketSimulation {
             } catch (Exception e) {
                 e.printStackTrace(); // 輸出異常的堆疊資訊
             }
-        }, 0, 100, TimeUnit.MILLISECONDS);
+        }, 0, 1000, TimeUnit.MILLISECONDS);
     }
 
     public MarketAnalyzer getMarketAnalyzer() {
