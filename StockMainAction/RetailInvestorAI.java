@@ -221,7 +221,7 @@ public class RetailInvestorAI {
         simulation.updateOrderBookDisplay();
     }
 
-    // 市價賣出方法，使用傳遞的 orderBook 和 stock
+    // 市價賣出方法1，使用傳遞的 orderBook 和 stock
     public void marketSell(int quantity, Stock stock, OrderBook orderBook) {
         double remainingQuantity = quantity;
         double marketTotalTransactionValue = 0.0;
@@ -363,5 +363,9 @@ public class RetailInvestorAI {
     //獲取散戶現金
     public double getCash() {
         return account.getAvailableFunds();
+    }
+
+    public UserAccount getAccount() {
+        return account;
     }
 }

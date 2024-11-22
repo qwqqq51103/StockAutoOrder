@@ -134,7 +134,7 @@ public class StockMarketSimulation {
         stock = new Stock("台積電", 10, 1000);
 
         //初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
-        marketBehavior = new MarketBehavior(stock.getPrice(), 0, 5000); // 初始化市場行為，包括資金和庫存
+        marketBehavior = new MarketBehavior(stock.getPrice(), 0, 500); // 初始化市場行為，包括資金和庫存
 
         // 初始化 OrderBook，將 MarketBehavior 中的帳戶直接用於 OrderBook（假設 MarketBehavior 管理了資金和股票餘額）
         orderBook = new OrderBook(this, marketBehavior.getAccount());

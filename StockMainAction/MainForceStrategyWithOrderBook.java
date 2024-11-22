@@ -140,7 +140,7 @@ public class MainForceStrategyWithOrderBook {
             double transactionPrice = sellOrder.getPrice();
             int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
             double transactionCost = transactionPrice * transactionVolume;
-            
+
             // 自成交檢查，避免買到自己的限價賣單
             if (sellOrder.getTrader() == this) {
                 System.out.println("警告：散戶無法買入自己掛的賣單。跳過此交易。");
@@ -151,11 +151,19 @@ public class MainForceStrategyWithOrderBook {
                 remainingFunds -= transactionCost;
                 remainingQuantity -= transactionVolume;
 
-                // 更新持股量和資金
+                // 更新主力的持股量和資金
                 account.incrementStocks(transactionVolume);
                 account.decrementFunds(transactionCost);
 
                 System.out.println("市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
+
+                // 更新散戶的帳戶（賣單交易者）
+                if (sellOrder.getTrader() instanceof RetailInvestorAI) {
+                    RetailInvestorAI seller = (RetailInvestorAI) sellOrder.getTrader();
+                    seller.getAccount().decrementStocks(transactionVolume);
+                    seller.getAccount().incrementFunds(transactionCost);
+                    System.out.println("更新散戶帳戶，增加資金：" + transactionCost + "，扣減股票：" + transactionVolume);
+                }
 
                 // 累加市價單的成交值和成交量
                 marketTotalTransactionValue += transactionPrice * transactionVolume;
@@ -163,7 +171,7 @@ public class MainForceStrategyWithOrderBook {
 
                 // 如果賣單已全部成交，移除該賣單
                 if (sellOrder.getVolume() == transactionVolume) {
-                    iterator.remove();  // 使用 iterator 的 remove 方法來移除
+                    iterator.remove(); // 使用 iterator 的 remove 方法來移除
                 } else {
                     sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
                 }
