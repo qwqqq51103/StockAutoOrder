@@ -13,6 +13,7 @@ public class MarketBehavior {
     private int timeStep = 0; // 時間步長，用於模擬時間因素
     private UserAccount account;
 
+    //構造函數
     public MarketBehavior(double initialPrice, double initialFunds, int initialStocks) {
         this.longTermMeanPrice = initialPrice;
         this.account = new UserAccount(initialFunds, initialStocks); // 設定初始資金
@@ -119,14 +120,17 @@ public class MarketBehavior {
         }
     }
 
+    //獲取金錢
     public double getAvailableFunds() {
-        return account.getAvailableFunds(); // 假設 UserAccount 有這個方法
+        return account.getAvailableFunds();
     }
 
+    //獲取數量
     public int getStockInventory() {
-        return account.getStockInventory(); // 假設 UserAccount 有這個方法
+        return account.getStockInventory(); 
     }
 
+    //獲取帳戶
     public UserAccount getAccount() {
         return account;
     }

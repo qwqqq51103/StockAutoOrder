@@ -53,76 +53,74 @@ public class MainForceStrategyWithOrderBook {
         double availableFunds = account.getAvailableFunds();
         double sma = simulation.getMarketAnalyzer().calculateSMA();
         double volatility = simulation.getMarketAnalyzer().calculateVolatility();
+        double riskFactor = getRiskFactor(); // 計算主力的風險係數
 
         if (!Double.isNaN(sma)) {
             double priceDifferenceRatio = (currentPrice - sma) / sma;
-
-            // 限制偏差比例在 -0.5 到 0.5 之間
             priceDifferenceRatio = Math.max(-0.5, Math.min(priceDifferenceRatio, 0.5));
 
-            // 隨機化門檻值
             double randomBuyThreshold = buyThreshold * (1 + (random.nextDouble() - 0.5) * 0.4);
             double randomSellThreshold = sellThreshold * (1 + (random.nextDouble() - 0.5) * 0.4);
-
-            // 生成隨機操作機率
             double actionProbability = random.nextDouble();
 
-            if (actionProbability < 0.05 && getAccumulatedStocks() > 0) {
-                // 5% 機率進行洗盤
-                int washVolume = calculateWashVolume(volatility);
-                double minimumRequiredFunds = stock.getPrice() * Math.max(washVolume, 50);
+            // 1. 動量交易策略
+            if (actionProbability < 0.1 && currentPrice > sma && volatility > 0.02) {
+                int momentumVolume = calculateMomentumVolume(volatility);
+                accumulateStock(momentumVolume);
+                System.out.println("動量交易：追漲買入 " + momentumVolume + " 股。");
 
-                if (account.getAvailableFunds() >= minimumRequiredFunds) {
-                    simulateWashTrading(washVolume);
+                // 2. 均值回歸策略
+            } else if (actionProbability < 0.15 && Math.abs(priceDifferenceRatio) > 0.1) {
+                if (priceDifferenceRatio > 0) {
+                    int revertSellVolume = calculateRevertSellVolume(priceDifferenceRatio);
+                    sellStock(revertSellVolume);
+                    System.out.println("均值回歸：賣出 " + revertSellVolume + " 股。");
+                } else {
+                    int revertBuyVolume = calculateRevertBuyVolume(priceDifferenceRatio);
+                    accumulateStock(revertBuyVolume);
+                    System.out.println("均值回歸：買入 " + revertBuyVolume + " 股。");
                 }
 
-            } else if (actionProbability < 0.1 && availableFunds > currentPrice) {
-                // 5% 機率進行拉抬
-                int liftVolume = calculateLiftVolume();
-                liftStock(liftVolume);
+                // 3. 價值投資策略
+            } else if (currentPrice < sma * 0.9 && actionProbability < 0.2) {
+                int valueBuyVolume = calculateValueBuyVolume();
+                accumulateStock(valueBuyVolume);
+                System.out.println("價值投資：低估買入 " + valueBuyVolume + " 股。");
 
-            } else if (currentPrice >= targetPrice && getAccumulatedStocks() > 0) {
-                // 賣出條件：股價超過目標價
-                int sellVolume = Math.min(500, getAccumulatedStocks());
-                sellStock(sellVolume);
+                // 4. 風險控制策略
+            } else if (riskFactor > 0.7) {
+//                System.out.println("風險過高，主力觀望，暫停操作。");1
+                return;
 
-            } else if (priceDifferenceRatio > randomSellThreshold && getAccumulatedStocks() > 0 && actionProbability > 0.3) {
-                // 賣出條件：股價高於 SMA 門檻
-                int sellVolume = (int) (getAccumulatedStocks() * priceDifferenceRatio * (0.8 + 0.4 * random.nextDouble()));
-                sellVolume = Math.max(1, Math.min(sellVolume, getAccumulatedStocks()));
-                sellStock(sellVolume);
-
-            } else if (priceDifferenceRatio < -randomBuyThreshold && availableFunds >= currentPrice && actionProbability > 0.3) {
-                // 買入條件：股價低於 SMA 門檻
-                int maxAffordableAmount = (int) (availableFunds / currentPrice);
-                int buyVolume = (int) (maxAffordableAmount * Math.abs(priceDifferenceRatio) * (0.8 + 0.4 * random.nextDouble()));
-                buyVolume = Math.max(1, Math.min(buyVolume, 500));
-                accumulateStock(buyVolume);
-
-            } else if (actionProbability < 0.15 && availableFunds > currentPrice) {
-                // 15% 機率進行市價買入
+                // 5. 市價買入（追蹤市場流動性）
+            } else if (actionProbability < 0.25 && availableFunds > currentPrice) {
                 int buyQuantity = calculateLiftVolume();
                 marketBuy(buyQuantity);
+//                System.out.println("市價買入：買入 " + buyQuantity + " 股。");
 
-            } else if (actionProbability < 0.2 && getAccumulatedStocks() > 0) {
-                // 5% 機率進行市價賣出
+                // 6. 市價賣出（減少風險）
+            } else if (actionProbability < 0.3 && getAccumulatedStocks() > 0) {
                 int sellQuantity = calculateSellVolume();
                 marketSell(sellQuantity);
+//                System.out.println("市價賣出：賣出 " + sellQuantity + " 股。");
 
-            } else if (actionProbability < 0.25) {
-                // 5% 機率取消某個掛單
+                // 7. 高風險行為：洗盤
+            } else if (actionProbability < 0.35 && getAccumulatedStocks() > 0) {
+                int washVolume = calculateWashVolume(volatility);
+                simulateWashTrading(washVolume);
+//                System.out.println("洗盤：模擬交易 " + washVolume + " 股。");
+
+                // 8. 隨機取消掛單
+            } else if (actionProbability < 0.4) {
                 if (!orderBook.getBuyOrders().isEmpty()) {
                     Order orderToCancel = orderBook.getBuyOrders().get(0);
                     cancelOrder(orderToCancel.getId());
+//                    System.out.println("取消掛單，單號：" + orderToCancel.getId());1
                 }
-
-            } else {
-                // 無操作
-                //System.out.println("主力觀望，無操作。\n");
             }
 
         } else {
-            System.out.println("主力正在收集趨勢數據，無法計算 SMA。\n");
+//            System.out.println("主力正在收集趨勢數據，無法計算 SMA。\n");1
         }
     }
 
@@ -143,7 +141,7 @@ public class MainForceStrategyWithOrderBook {
 
             // 自成交檢查，避免買到自己的限價賣單
             if (sellOrder.getTrader() == this) {
-                System.out.println("警告：散戶無法買入自己掛的賣單。跳過此交易。");
+//                System.out.println("主力 跳過與自己的訂單匹配，賣單資訊：" + sellOrder);
                 continue;
             }
 
@@ -155,7 +153,7 @@ public class MainForceStrategyWithOrderBook {
                 account.incrementStocks(transactionVolume);
                 account.decrementFunds(transactionCost);
 
-                System.out.println("市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
+                System.out.println("主力 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
 
                 // 更新散戶的帳戶（賣單交易者）
                 if (sellOrder.getTrader() instanceof RetailInvestorAI) {
@@ -176,7 +174,7 @@ public class MainForceStrategyWithOrderBook {
                     sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
                 }
             } else {
-                System.out.println("主力現金不足，無法完成市價買進剩餘數量");
+//                System.out.println("主力現金不足，無法完成市價買進剩餘數量");
                 break;
             }
         }
@@ -206,7 +204,7 @@ public class MainForceStrategyWithOrderBook {
 
             // 檢查是否與自己交易（避免自我匹配）
             if (buyOrder.getTrader() == this) {
-                System.out.println("跳過與自己的訂單匹配，買單資訊：" + buyOrder);
+//                System.out.println("主力 跳過與自己的訂單匹配，買單資訊：" + buyOrder);
                 continue;
             }
 
@@ -221,9 +219,8 @@ public class MainForceStrategyWithOrderBook {
                 // 增加資金
                 account.incrementFunds(transactionRevenue);
 
-                System.out.println("市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume
-                        + "，匹配的買單資訊：" + buyOrder);
-
+                System.out.println("主力 市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume + "，匹配的買單資訊：" + buyOrder);
+                
                 // 累加市價單的成交值和成交量
                 marketTotalTransactionValue += transactionPrice * transactionVolume;
                 marketTotalTransactionVolume += transactionVolume;
@@ -236,7 +233,7 @@ public class MainForceStrategyWithOrderBook {
                     buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
                 }
             } else {
-                System.out.println("主力持股不足，無法完成市價賣出剩餘數量");
+//                System.out.println("主力 持股不足，無法完成市價賣出剩餘數量");
                 break;
             }
         }
@@ -269,11 +266,11 @@ public class MainForceStrategyWithOrderBook {
             canceledOrder.getTraderAccount().incrementFunds(refundAmount);
 
             // 打印詳細信息
-            System.out.println("已取消買單：");
-            System.out.println("訂單ID：" + orderId);
-            System.out.println("股票數量：" + canceledOrder.getVolume());
-            System.out.println("單價：" + canceledOrder.getPrice());
-            System.out.println("已退還資金：" + refundAmount);
+//            System.out.println("已取消買單：");
+//            System.out.println("訂單ID：" + orderId);
+//            System.out.println("股票數量：" + canceledOrder.getVolume());
+//            System.out.println("單價：" + canceledOrder.getPrice());
+//            System.out.println("已退還資金：" + refundAmount);
         } else {
             // 找到並移除賣單
             canceledOrder = orderBook.getSellOrders().stream()
@@ -289,13 +286,13 @@ public class MainForceStrategyWithOrderBook {
                 canceledOrder.getTraderAccount().incrementStocks(canceledOrder.getVolume());
 
                 // 打印詳細信息
-                System.out.println("已取消賣單：");
-                System.out.println("訂單ID：" + orderId);
-                System.out.println("股票數量：" + canceledOrder.getVolume());
-                System.out.println("單價：" + canceledOrder.getPrice());
-                System.out.println("已退還股票數量：" + canceledOrder.getVolume());
+//                System.out.println("已取消賣單：");
+//                System.out.println("訂單ID：" + orderId);
+//                System.out.println("股票數量：" + canceledOrder.getVolume());
+//                System.out.println("單價：" + canceledOrder.getPrice());
+//                System.out.println("已退還股票數量：" + canceledOrder.getVolume());
             } else {
-                System.out.println("訂單ID " + orderId + " 未找到，無法取消。");
+//                System.out.println("訂單ID " + orderId + " 未找到，無法取消。");
             }
         }
 
@@ -334,9 +331,9 @@ public class MainForceStrategyWithOrderBook {
         if (getAccumulatedStocks() >= volume) {
             Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false, false);
             orderBook.submitSellOrder(sellOrder, price);
-            System.out.println(String.format("主力下賣單 %d 股，價格 %.2f，當前持股 %d 股", volume, price, getAccumulatedStocks()));
+//            System.out.println(String.format("主力下賣單 %d 股，價格 %.2f，當前持股 %d 股", volume, price, getAccumulatedStocks()));
         } else {
-            System.out.println("主力持股不足，無法賣出\n");
+//            System.out.println("主力持股不足，無法賣出\n");
         }
     }
 
@@ -348,9 +345,9 @@ public class MainForceStrategyWithOrderBook {
             Order sellOrder = new Order("sell", price, volume, "MainForce", this, account, false, false);
             orderBook.submitSellOrder(sellOrder, price);
 
-            System.out.println(String.format("主力進行洗盤，賣出 %d 股，價格 %.2f", volume, price));
+//            System.out.println(String.format("主力進行洗盤，賣出 %d 股，價格 %.2f", volume, price));
         } else {
-            System.out.println("主力持股不足，無法進行洗盤\n");
+//            System.out.println("主力持股不足，無法進行洗盤\n");
         }
     }
 
@@ -363,14 +360,14 @@ public class MainForceStrategyWithOrderBook {
         // 檢查市場中是否有足夠的賣單
         int availableVolume = orderBook.getAvailableSellVolume(price); // 假設此方法返回賣單的總量
         if (availableVolume < volume) {
-            System.out.println("市場賣單不足，無法完成吸籌操作");
+//            System.out.println("市場賣單不足，無法完成吸籌操作");
             return;
         }
 
         // 創建並提交買單
         Order buyOrder = new Order("buy", price, volume, "MainForce", this, account, false, false);
         orderBook.submitBuyOrder(buyOrder, price);
-        System.out.println(String.format("主力下買單 %d 股，價格 %.2f，剩餘現金 %.2f 元", volume, price, account.getAvailableFunds()));
+//      System.out.println(String.format("主力下買單 %d 股，價格 %.2f，剩餘現金 %.2f 元", volume, price, account.getAvailableFunds()));
     }
 
     // 拉抬操作
@@ -382,7 +379,7 @@ public class MainForceStrategyWithOrderBook {
         Order buyOrder = new Order("buy", price, volume, "MainForce", this, account, true, false);
         orderBook.submitBuyOrder(buyOrder, price);
 
-        System.out.println(String.format("主力進行拉抬，買入 %d 股，價格 %.2f，剩餘現金 %.2f 元", volume, price, account.getAvailableFunds()));
+//        System.out.println(String.format("主力進行拉抬，買入 %d 股，價格 %.2f，剩餘現金 %.2f 元", volume, price, account.getAvailableFunds()));
     }
 
     // 在訂單成交時更新現金和持股量
@@ -447,6 +444,11 @@ public class MainForceStrategyWithOrderBook {
         return account.getAvailableFunds();
     }
 
+    //獲取帳戶
+    public UserAccount getAccount() {
+        return account;
+    }
+
     //獲取主力目標價格
     public double getTargetPrice() {
         return targetPrice;
@@ -456,4 +458,37 @@ public class MainForceStrategyWithOrderBook {
     public double getAverageCostPrice() {
         return averageCostPrice;
     }
+
+    //動量交易
+    private int calculateMomentumVolume(double volatility) {
+        return (int) (500 * volatility * (0.8 + random.nextDouble() * 0.4));
+    }
+
+    //均值回歸
+    private int calculateRevertSellVolume(double priceDifferenceRatio) {
+        return (int) (getAccumulatedStocks() * priceDifferenceRatio * (0.5 + random.nextDouble() * 0.5));
+    }
+
+    //均值回歸
+    private int calculateRevertBuyVolume(double priceDifferenceRatio) {
+        double availableFunds = account.getAvailableFunds();
+        double currentPrice = stock.getPrice();
+        int maxAffordable = (int) (availableFunds / currentPrice);
+        return (int) (maxAffordable * -priceDifferenceRatio * (0.5 + random.nextDouble() * 0.5));
+    }
+
+    //價值投資
+    private int calculateValueBuyVolume() {
+        double availableFunds = account.getAvailableFunds();
+        double currentPrice = stock.getPrice();
+        return (int) (availableFunds / currentPrice * 0.5); // 資金的 50% 投入
+    }
+
+    //風險管控
+    private double getRiskFactor() {
+        double totalAssets = account.getAvailableFunds() + stock.getPrice() * getAccumulatedStocks();
+        double risk = 1 - (account.getAvailableFunds() / totalAssets);
+        return Math.max(0, Math.min(risk, 1)); // 保證在 [0, 1] 區間內
+    }
+
 }

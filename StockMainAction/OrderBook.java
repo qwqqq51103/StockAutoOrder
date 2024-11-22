@@ -25,6 +25,7 @@ public class OrderBook {
     // 設置最大允許的波動範圍
     final double MAX_ALLOWED_CHANGE = 0.05; // 允許每次成交後的價格波動不超過 5%
 
+    //構造函數
     public OrderBook(StockMarketSimulation simulation, UserAccount account) {
         this.buyOrders = new ArrayList<>();
         this.sellOrders = new ArrayList<>();
@@ -32,6 +33,7 @@ public class OrderBook {
         this.account = account; // 正確賦值給 account
     }
 
+    //股價變動規則
     public double adjustPriceToUnit(double price) {
         if (price < 100) {
             // 當價格小於 100 時，每單位為 0.1
@@ -42,6 +44,7 @@ public class OrderBook {
         }
     }
 
+    //
     public double[] calculatePriceRange(double currentPrice, double percentage) {
         double lowerLimit = currentPrice * (1 - percentage);
         double upperLimit = currentPrice * (1 + percentage);
@@ -60,7 +63,7 @@ public class OrderBook {
 
         // 檢查並凍結資金，若資金不足則拒絕掛單
         if (!account.freezeFunds(totalCost)) {
-            System.out.println("資金不足，無法掛買單");
+//            System.out.println("資金不足，無法掛買單");
             return;
         }
 
@@ -101,7 +104,7 @@ public class OrderBook {
 
         // 檢查並凍結股票數量，若持股不足則拒絕掛單
         if (!account.freezeStocks(order.getVolume())) {
-            System.out.println("持股不足，無法掛賣單");
+//            System.out.println("持股不足，無法掛賣單");
             return;
         }
 
@@ -180,6 +183,7 @@ public class OrderBook {
         return buyOrder.getPrice() >= sellOrder.getPrice() && priceDifference <= allowableDifference;
     }
 
+    //
     private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) {
         // 檢查 Stock 是否為 null
         if (stock == null) {
@@ -205,17 +209,18 @@ public class OrderBook {
         // 移除已完成的訂單
         if (buyOrder.getVolume() == 0) {
             buyOrders.remove(buyOrder);
-            System.out.println("買單已完成，從列表中移除。");
+//            System.out.println("買單已完成，從列表中移除。");
         }
         if (sellOrder.getVolume() == 0) {
             sellOrders.remove(sellOrder);
-            System.out.println("賣單已完成，從列表中移除。");
+//            System.out.println("賣單已完成，從列表中移除。");
         }
 
         simulation.updateOrderBookDisplay();
         return transactionVolume;
     }
 
+    //更新加權股價
     private void updateStockPrice(Stock stock, double totalTransactionValue, int totalTransactionVolume) {
         double finalWeightedPrice = totalTransactionValue / totalTransactionVolume;
         stock.setPrice(finalWeightedPrice);
@@ -257,6 +262,7 @@ public class OrderBook {
         }
     }
 
+    //
     public void addMarketTransactionData(double transactionValue, int transactionVolume) {
         accumulatedMarketTransactionValue += transactionValue;
         accumulatedMarketTransactionVolume += transactionVolume;
@@ -272,6 +278,7 @@ public class OrderBook {
         return sellOrders;
     }
 
+    //
     public List<Order> getTopBuyOrders(int n) {
         return buyOrders.stream()
                 .sorted(Comparator.comparing(Order::getPrice).reversed())
@@ -279,6 +286,7 @@ public class OrderBook {
                 .collect(Collectors.toList());
     }
 
+    //
     public List<Order> getTopSellOrders(int n) {
         return sellOrders.stream()
                 .sorted(Comparator.comparing(Order::getPrice))
@@ -286,6 +294,7 @@ public class OrderBook {
                 .collect(Collectors.toList());
     }
 
+    //獲取平均賣出交易量
     public int getAvailableSellVolume(double price) {
         return sellOrders.stream()
                 .filter(order -> order.getPrice() <= price)
@@ -293,6 +302,7 @@ public class OrderBook {
                 .sum();
     }
 
+    //獲取平均買出交易量
     public int getAvailableBuyVolume(double price) {
         return buyOrders.stream()
                 .filter(order -> order.getPrice() >= price)
