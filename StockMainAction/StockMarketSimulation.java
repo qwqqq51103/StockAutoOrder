@@ -43,7 +43,6 @@ public class StockMarketSimulation {
     private DefaultCategoryDataset volumeDataset;  // 成交量的數據集
     private int timeStep;  // 時間步驟，控制模擬步驟增量
     private List<RetailInvestorAI> retailInvestors;  // 多個散戶的列表
-    private RetailInvestorAI retaillAI;  // 散戶策略實例
     private OrderBookTable orderBookTable;  // 顯示訂單簿的表格
     private ScheduledExecutorService executorService;  // 用於啟動模擬的執行緒池
     private Random random = new Random();  // 隨機數產生器
@@ -54,8 +53,8 @@ public class StockMarketSimulation {
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
     private double initialRetailCash = 6666, initialMainForceCash = 66666;  // 初始現金
-    private int initialRetails = 1;  // 初始散戶數量
-    private int marketBehaviorStock = 100; //市場數量
+    private int initialRetails = 10;  // 初始散戶數量
+    private int marketBehaviorStock = 100000; //市場數量
     private double marketBehaviorGash = 0; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
@@ -64,7 +63,7 @@ public class StockMarketSimulation {
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
         int initialDelay = 0; // 初始延遲
-        int period = 100; // 執行間隔（單位：毫秒）
+        int period = 10; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -145,7 +144,7 @@ public class StockMarketSimulation {
         }, initialDelay, period, TimeUnit.MILLISECONDS);
     }
 
-    //獲取SMA
+    // 獲取 SMA
     public MarketAnalyzer getMarketAnalyzer() {
         return marketAnalyzer;
     }
@@ -185,19 +184,17 @@ public class StockMarketSimulation {
     private void initializeSimulation() {
         stock = new Stock("台積電", 10, 1000);
 
-        //初始化 marketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
+        // 初始化 MarketBehavior，將市場的資金和庫存管理統一放在 MarketBehavior 中
         marketBehavior = new MarketBehavior(stock.getPrice(), marketBehaviorGash, marketBehaviorStock); // 初始化市場行為，包括資金和庫存
 
-        // 初始化 OrderBook，將 MarketBehavior 中的帳戶直接用於 OrderBook（假設 MarketBehavior 管理了資金和股票餘額）
-        orderBook = new OrderBook(this, marketBehavior.getAccount());
+        // 初始化 OrderBook，將 MarketBehavior 作為一個 Trader 參與
+        orderBook = new OrderBook(this); // 假設 OrderBook 的構造函數現在只需要模擬實例
 
         timeStep = 0;
         marketAnalyzer = new MarketAnalyzer(10); // 設定適當的 SMA 週期
 
         mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, this, initialMainForceCash); // 設置初始現金
         initializeRetailInvestors(initialRetails); // 初始化散戶
-        // 在 initializeLabels() 調用之前進行初始化
-        retaillAI = new RetailInvestorAI(initialRetailCash, "RetailInvestor1", this);
 
         priceSeries = new XYSeries("股價");
         smaSeries = new XYSeries("SMA");
@@ -224,7 +221,7 @@ public class StockMarketSimulation {
         chartPanel.add(new ChartPanel(createPriceChart()));
         chartPanel.add(new ChartPanel(createVolumeChart()));
 
-        JPanel labelPanel = new JPanel(new GridLayout(3, 1));
+        JPanel labelPanel = new JPanel(new GridLayout(5, 2)); // 調整為5行2列
         initializeLabels(labelPanel);
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chartPanel, labelPanel);
@@ -250,7 +247,7 @@ public class StockMarketSimulation {
 
         // 創建損益表分頁
         JPanel profitPanel = new JPanel(new GridLayout(2, 1));
-        retailProfitChart = createProfitChart("散戶損益", "散戶", initialRetails);
+        retailProfitChart = createProfitChart("散戶損益", "散戶", retailInvestors.size());
         mainForceProfitChart = createProfitChart("主力損益", "主力", 1);
 
         ChartPanel retailProfitChartPanel = new ChartPanel(retailProfitChart);
@@ -279,7 +276,7 @@ public class StockMarketSimulation {
         smaSeries.add(timeStep, smaValue);
     }
 
-    //初始化欄位資訊
+    // 初始化欄位資訊
     private void initializeLabels(JPanel panel) {
         stockPriceLabel = createLabel(panel, "股票價格: " + stock.getPrice());
         retailCashLabel = createLabel(panel, "散戶平均現金: " + getAverageRetailCash());
@@ -294,9 +291,10 @@ public class StockMarketSimulation {
         inventoryLabel = createLabel(panel, "市場庫存: " + marketBehavior.getStockInventory());
     }
 
-    //創建欄位
+    // 創建欄位
     private JLabel createLabel(JPanel panel, String text) {
         JLabel label = new JLabel(text);
+        label.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 14)); // 設定字型
         panel.add(label);
         return label;
     }
@@ -310,16 +308,16 @@ public class StockMarketSimulation {
 
     // 更新散戶資訊
     private void updateRetailAIInfo() {
-        retailCashLabel.setText("散戶平均現金: " + getAverageRetailCash());
+        retailCashLabel.setText("散戶平均現金: " + String.format("%.2f", getAverageRetailCash()));
         retailStocksLabel.setText("散戶平均持股: " + getAverageRetailStocks());
     }
 
-    //獲取散戶平均金錢
+    // 獲取散戶平均金錢
     private double getAverageRetailCash() {
         return retailInvestors.stream().mapToDouble(RetailInvestorAI::getCash).average().orElse(0.0);
     }
 
-    //獲取散戶平均股票數量
+    // 獲取散戶平均股票數量
     private int getAverageRetailStocks() {
         int totalStocks = 0;
         for (RetailInvestorAI investor : retailInvestors) {
@@ -330,22 +328,22 @@ public class StockMarketSimulation {
 
     // 更新主力的現金、持股數、目標價和平均成本
     public void updateLabels() {
-        stockPriceLabel.setText("股票價格: " + stock.getPrice());
-        mainForceCashLabel.setText("主力現金: " + mainForce.getCash());
+        stockPriceLabel.setText("股票價格: " + String.format("%.2f", stock.getPrice()));
+        mainForceCashLabel.setText("主力現金: " + String.format("%.2f", mainForce.getCash()));
         mainForceStocksLabel.setText("主力持有籌碼: " + mainForce.getAccumulatedStocks());
         // 更新主力目標價位和平均成本價格
-        targetPriceLabel.setText("主力目標價位: " + mainForce.getTargetPrice());
-        averageCostPriceLabel.setText("主力平均成本: " + mainForce.getAverageCostPrice());
+        targetPriceLabel.setText("主力目標價位: " + String.format("%.2f", mainForce.getTargetPrice()));
+        averageCostPriceLabel.setText("主力平均成本: " + String.format("%.2f", mainForce.getAverageCostPrice()));
         // 更新散戶資訊
         updateRetailAIInfo();
     }
 
-    //更新市場庫存、資金
+    // 更新市場庫存、資金
     public void updateMarketBehaviorDisplay() {
         double funds = marketBehavior.getAvailableFunds();
         int stockInventory = marketBehavior.getStockInventory();
 
-        // 更新 UI 標籤或顯示區域，假設這些標籤存在於您的 UI 中
+        // 更新 UI 標籤或顯示區域
         fundsLabel.setText("可用資金 : " + String.format("%.2f", funds));
         inventoryLabel.setText("庫存 : " + stockInventory);
     }
@@ -359,14 +357,14 @@ public class StockMarketSimulation {
         for (int i = 0; i < 10; i++) {
             if (i < buyOrders.size()) {
                 updatedData[i][0] = buyOrders.get(i).getVolume();
-                updatedData[i][1] = buyOrders.get(i).getPrice();
+                updatedData[i][1] = String.format("%.2f", buyOrders.get(i).getPrice());
             } else {
                 updatedData[i][0] = "";
                 updatedData[i][1] = "";
             }
 
             if (i < sellOrders.size()) {
-                updatedData[i][2] = sellOrders.get(i).getPrice();
+                updatedData[i][2] = String.format("%.2f", sellOrders.get(i).getPrice());
                 updatedData[i][3] = sellOrders.get(i).getVolume();
             } else {
                 updatedData[i][2] = "";
@@ -441,6 +439,7 @@ public class StockMarketSimulation {
                 return colorList.get(column);
             }
         };
+        renderer.setBarPainter(new StandardBarPainter()); // 移除漸變效果
         plot.setRenderer(renderer);
 
         // 設定中文字型
@@ -559,7 +558,7 @@ public class StockMarketSimulation {
         return false; // 否則仍在當前的時間步長內
     }
 
-    //設定字體
+    // 設定字體
     private void setChartFont(JFreeChart chart) {
         Font titleFont = new Font("Microsoft JhengHei", Font.BOLD, 18);
         Font axisFont = new Font("Microsoft JhengHei", Font.PLAIN, 12);
@@ -568,30 +567,30 @@ public class StockMarketSimulation {
         chart.getXYPlot().getRangeAxis().setLabelFont(axisFont);
     }
 
-    //主程式
+    // 主程式
     public static void main(String[] args) {
         SwingUtilities.invokeLater(StockMarketSimulation::new);
     }
 
-    //檢查市場庫存
+    // 檢查市場庫存
     public void validateMarketInventory() {
         int calculatedInventory = calculateMarketInventory();
-        int initialInventory = 100;
+        int initialInventory = marketBehaviorStock; // 更新為初始市場庫存
         if (calculatedInventory != initialInventory) {
             System.err.println("市場庫存異常：預期 " + initialInventory + "，實際 " + calculatedInventory);
         }
     }
 
-    //計算市場庫存
+    // 計算市場庫存
     public int calculateMarketInventory() {
         int totalInventory = 0;
 
         // 1. 計算主力的股票持有量
-        totalInventory += mainForce.getAccount().getStockInventory();
+        totalInventory += mainForce.getAccumulatedStocks();
 
         // 2. 計算散戶的股票持有量
         for (RetailInvestorAI investor : retailInvestors) {
-            totalInventory += investor.getAccount().getStockInventory();
+            totalInventory += investor.getAccumulatedStocks();
         }
 
         // 3. 計算市場訂單中未成交的賣單總量
@@ -599,8 +598,8 @@ public class StockMarketSimulation {
             totalInventory += sellOrder.getVolume();
         }
 
-        // 4. 檢查市場行為中保留的庫存（若有）
-        totalInventory += marketBehavior.getAccount().getStockInventory();
+        // 4. 計算市場行為中保留的庫存（若有）
+        totalInventory += marketBehavior.getStockInventory();
 
         // 5. 返回市場總庫存量
         return totalInventory;

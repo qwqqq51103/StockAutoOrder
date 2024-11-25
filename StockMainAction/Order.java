@@ -7,28 +7,29 @@ import java.util.UUID;
  */
 public class Order {
 
-    private String id; //唯一識別符
+    private String id; // 唯一識別符
     private String type; // "buy" 或 "sell"
     private double price;
     private int volume;
-    private String traderType; // "主力" 或 "散戶"
-    private Object trader; // 交易者引用
+    private Trader trader; // 使用 Trader 接口
     private UserAccount traderAccount; // 交易者帳戶
     private long timestamp; // 用於時間優先
     private boolean isSimulation; // 新增屬性
     private boolean isMarketOrder; // 用於標記是否為市價單
 
     // 構造函數
-    public Order(String type, double price, int volume, String traderType, Object trader, UserAccount traderAccount, boolean isSimulation, boolean isMarketOrder) {
-        if (traderType == null) {
-            traderType = "未知";
+    public Order(String type, double price, int volume, Trader trader, boolean isSimulation, boolean isMarketOrder) {
+        if (type == null || (!type.equalsIgnoreCase("buy") && !type.equalsIgnoreCase("sell"))) {
+            throw new IllegalArgumentException("訂單類型必須是 'buy' 或 'sell'");
         }
-        this.type = type;
+        if (trader == null) {
+            throw new IllegalArgumentException("Trader 不能為 null");
+        }
+        this.type = type.toLowerCase(); // 確保類型為小寫
         this.price = price;
         this.volume = volume;
-        this.traderType = traderType;
-        this.trader = trader; // 將 trader 設置為 MainForceStrategyWithOrderBook
-        this.traderAccount = traderAccount; // traderAccount 設置為 UserAccount
+        this.trader = trader;
+        this.traderAccount = trader.getAccount(); // 從 Trader 接口獲取帳戶
         this.isSimulation = isSimulation;
         this.isMarketOrder = isMarketOrder; // 設定是否為市價單
         this.timestamp = System.currentTimeMillis();
@@ -38,11 +39,13 @@ public class Order {
     @Override
     public String toString() {
         return "Order{"
-                + "type='" + type + '\''
+                + "id='" + id + '\''
+                + ", type='" + type + '\''
                 + ", price=" + price
                 + ", volume=" + volume
-                + ", traderType='" + traderType + '\''
+                + ", traderType='" + trader.getTraderType() + '\''
                 + ", timestamp=" + timestamp
+                + ", isMarketOrder=" + isMarketOrder
                 + '}';
     }
 
@@ -59,16 +62,12 @@ public class Order {
         return volume;
     }
 
-    public String getTraderType() {
-        return traderType;
-    }
-
-    public Object getTrader() {
+    public Trader getTrader() {
         return trader;
     }
 
     public UserAccount getTraderAccount() {
-        return this.traderAccount;
+        return traderAccount;
     }
 
     public long getTimestamp() {
