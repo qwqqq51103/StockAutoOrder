@@ -7,6 +7,7 @@ import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
 import org.jfree.chart.axis.NumberAxis;
 import org.jfree.chart.plot.CategoryPlot;
+import org.jfree.chart.plot.XYPlot;
 import org.jfree.chart.plot.PlotOrientation;
 import org.jfree.chart.renderer.category.BarRenderer;
 import org.jfree.chart.axis.CategoryAxis;
@@ -14,7 +15,6 @@ import org.jfree.chart.axis.ValueAxis;
 import org.jfree.data.category.DefaultCategoryDataset;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
-import org.jfree.chart.plot.XYPlot;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +27,8 @@ import java.awt.Font;
 import java.awt.Color;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jfree.chart.renderer.category.StandardBarPainter;
+import org.jfree.chart.plot.ValueMarker;
+import java.awt.BasicStroke;
 
 /**
  * 股票市場模擬
@@ -53,8 +55,8 @@ public class StockMarketSimulation {
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
-    private double initialRetailCash = 5000, initialMainForceCash = 1000000;  // 初始現金
-    private int initialRetails = 5;  // 初始散戶數量
+    private double initialRetailCash = 50000, initialMainForceCash = 1000000;  // 初始現金
+    private int initialRetails = 15;  // 初始散戶數量
     private int marketBehaviorStock = 5000; //市場數量
     private double marketBehaviorGash = 0; //市場現金
 
@@ -173,10 +175,10 @@ public class StockMarketSimulation {
 
     // 初始化
     public StockMarketSimulation() {
-        initializeSimulation();  // 初始化模擬數據
-        initializeCharts();      // 初始化圖表
-        initializeGUI();         // 初始化 GUI 顯示
-        startAutoPriceFluctuation();  // 啟動自動波動
+        initializeSimulation();      // 初始化模擬數據（初始化 OrderBook）
+        initializeCharts();          // 初始化圖表（包含 volumeDataset）
+        initializeGUI();             // 初始化 GUI 顯示
+        startAutoPriceFluctuation(); // 啟動自動波動
     }
 
     // 初始化多個散戶
@@ -204,8 +206,7 @@ public class StockMarketSimulation {
         mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, this, initialMainForceCash); // 設置初始現金
         initializeRetailInvestors(initialRetails); // 初始化散戶
 
-        priceSeries = new XYSeries("股價");
-        smaSeries = new XYSeries("SMA");
+        // priceSeries 和其他數據系列已在 initializeCharts() 中初始化
 
         String[] columnNames = {"買量", "買價", "賣價", "賣量"};
         Object[][] initialData = new Object[10][4];
@@ -240,7 +241,8 @@ public class StockMarketSimulation {
         wapSeries = new XYSeries("加權平均價格");
         wapSeries.add(timeStep, marketAnalyzer.getWeightedAveragePrice());
 
-        // 其他初始化代碼...
+        // 初始化 colorList
+        colorList = new ArrayList<>();
     }
 
     // 設定 GUI 結構
@@ -249,15 +251,16 @@ public class StockMarketSimulation {
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(1200, 800);
 
-        JPanel chartPanel = new JPanel(new GridLayout(4, 1)); // 調整為3行1列
+        JPanel chartPanel = new JPanel(new GridLayout(4, 1)); // 調整為4行1列
         chartPanel.add(new ChartPanel(createPriceChart()));
         chartPanel.add(new ChartPanel(createVolatilityChart()));
         chartPanel.add(new ChartPanel(createRSIChart()));
-        chartPanel.add(new ChartPanel(createVolumeChart()));
+        chartPanel.add(new ChartPanel(createVolumeChart())); // 新增成交量圖表
 
         // 如果需要，可以新增 WAP 圖表
         // chartPanel.add(new ChartPanel(createWAPChart()));
-        // 更新 GridLayout 的行數為 3 或更多，根據新增的圖表數量
+        // 更新 GridLayout 的行數為 4 或更多，根據新增的圖表數量
+
         JPanel labelPanel = new JPanel(new GridLayout(3, 2)); // 調整為適當的行數
         initializeLabels(labelPanel);
 
@@ -318,6 +321,7 @@ public class StockMarketSimulation {
     // 添加 SMA 值到價格圖表中
     public void updateSMAChart(double smaValue) {
         smaSeries.add(timeStep, smaValue);
+        keepSeriesWithinLimit(smaSeries, 100); // 保留最新 100 筆數據
     }
 
     // 初始化欄位資訊
@@ -505,8 +509,8 @@ public class StockMarketSimulation {
         rangeAxis.setRange(0.0, 100.0); // RSI 的標準範圍
 
         // 添加超買和超賣水平線
-        plot.addRangeMarker(new org.jfree.chart.plot.ValueMarker(70.0, Color.RED, new BasicStroke(1.0f)));
-        plot.addRangeMarker(new org.jfree.chart.plot.ValueMarker(30.0, Color.GREEN, new BasicStroke(1.0f)));
+        plot.addRangeMarker(new ValueMarker(70.0, Color.RED, new BasicStroke(1.0f)));
+        plot.addRangeMarker(new ValueMarker(30.0, Color.GREEN, new BasicStroke(1.0f)));
 
         return chart;
     }
@@ -544,6 +548,10 @@ public class StockMarketSimulation {
                     double previousPrice = (column > 0) ? priceSeries.getY(column - 1).doubleValue() : currentPrice;
                     Color color = currentPrice > previousPrice ? Color.RED : Color.GREEN;
                     colorList.add(color);
+                }
+                // 確保 colorList 的大小不超過 100
+                if (colorList.size() > 100) {
+                    colorList.remove(0);
                 }
                 return colorList.get(column);
             }
@@ -619,7 +627,9 @@ public class StockMarketSimulation {
     // 更新股價走勢圖和 SMA
     private void updatePriceChart() {
         priceSeries.add(timeStep, stock.getPrice());
+        keepSeriesWithinLimit(priceSeries, 100); // 保留最新 100 筆數據
         smaSeries.add(timeStep, marketAnalyzer.getSMA());
+        keepSeriesWithinLimit(smaSeries, 100); // 保留最新 100 筆數據
     }
 
     // 新增方法來更新其他技術指標
@@ -627,21 +637,28 @@ public class StockMarketSimulation {
         // 更新波動性
         double volatility = marketAnalyzer.calculateVolatility();
         volatilitySeries.add(timeStep, volatility);
+        keepSeriesWithinLimit(volatilitySeries, 100); // 保留最新 100 筆數據
 
         // 更新 RSI
         double rsi = marketAnalyzer.getRSI();
         rsiSeries.add(timeStep, rsi);
+        keepSeriesWithinLimit(rsiSeries, 100); // 保留最新 100 筆數據
 
         // 更新加權平均價格
         double wap = marketAnalyzer.getWeightedAveragePrice();
         wapSeries.add(timeStep, wap);
+        keepSeriesWithinLimit(wapSeries, 100); // 保留最新 100 筆數據
     }
 
     // 初始化累積的成交量變量
     private static int accumulatedVolume = 0;
     private int previousTimeStep = -1;
 
-    //
+    /**
+     * 更新成交量圖表，僅保留最新的 100 筆數據。
+     *
+     * @param volume 本次成交的量
+     */
     public void updateVolumeChart(int volume) {
         // 累加每次成交的量到總成交量
         accumulatedVolume += volume;
@@ -650,6 +667,7 @@ public class StockMarketSimulation {
         if (isNewTimeStep()) {
             // 如果累積成交量為 0，也強制添加一個零成交量的條目
             volumeDataset.addValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
+            keepCategoryDatasetWithinLimit(volumeDataset, 100); // 保留最新 100 筆數據
 
             // 取得當前股價，並確保與前一價格進行比較
             double currentPrice = stock.getPrice();
@@ -660,11 +678,17 @@ public class StockMarketSimulation {
             // 若時間步長大於當前 priceSeries 的項數，則新增當前股價
             if (timeStep >= priceSeries.getItemCount()) {
                 priceSeries.add(timeStep, currentPrice);
+                keepSeriesWithinLimit(priceSeries, 100); // 保留最新 100 筆數據
             }
 
             // 設定顏色：累積成交量為 0 時設為藍色；若當前價格高於前一價格設為紅色，否則設為綠色
             Color color = accumulatedVolume == 0 ? Color.BLUE : (currentPrice > previousPrice ? Color.RED : Color.GREEN);
             colorList.add(color);
+
+            // 確保 colorList 的大小不超過 100
+            if (colorList.size() > 100) {
+                colorList.remove(0);
+            }
 
             // 重置累積成交量
             accumulatedVolume = 0;
@@ -681,6 +705,21 @@ public class StockMarketSimulation {
             return true; // 表示進入新的時間步長
         }
         return false; // 否則仍在當前的時間步長內
+    }
+
+    // 限制 XYSeries 中的數據點數量，僅保留最新的 maxPoints 筆數據
+    private void keepSeriesWithinLimit(XYSeries series, int maxPoints) {
+        while (series.getItemCount() > maxPoints) {
+            series.remove(0); // 移除最舊的數據點
+        }
+    }
+
+    // 限制 DefaultCategoryDataset 中的類別數量，僅保留最新的 maxCategories 筆數據
+    private void keepCategoryDatasetWithinLimit(DefaultCategoryDataset dataset, int maxCategories) {
+        while (dataset.getColumnCount() > maxCategories) {
+            String firstCategory = (String) dataset.getColumnKeys().get(0);
+            dataset.removeColumn(firstCategory);
+        }
     }
 
     // 設定字體

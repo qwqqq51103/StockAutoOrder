@@ -4,7 +4,7 @@ import java.util.Random;
 import java.util.ListIterator;
 
 /**
- * 市場波動 - 負責模擬智能的市場波動。 根據市場條件動態生成訂單，並提交給訂單簿。 實現 Trader 接口，作為市場的一個參與者。
+ * 市場波動 - 負責模擬智能的市場波動。根據市場條件動態生成訂單，並提交給訂單簿。實現 Trader 接口，作為市場的一個參與者。
  */
 public class MarketBehavior implements Trader {
 
@@ -14,16 +14,20 @@ public class MarketBehavior implements Trader {
     private int timeStep = 0; // 時間步長，用於模擬時間因素
     private UserAccount account;
 
+    private StockMarketSimulation simulation; // 引用模擬實例
+
     /**
      * 構造函數
      *
      * @param initialPrice 初始價格
      * @param initialFunds 初始資金
      * @param initialStocks 初始股票數量
+     * @param simulation 引用 StockMarketSimulation 實例
      */
-    public MarketBehavior(double initialPrice, double initialFunds, int initialStocks) {
+    public MarketBehavior(double initialPrice, double initialFunds, int initialStocks, StockMarketSimulation simulation) {
         this.longTermMeanPrice = initialPrice;
         this.account = new UserAccount(initialFunds, initialStocks); // 設定初始資金
+        this.simulation = simulation; // 設定模擬實例
 
         // 輸出帳戶創建信息
         if (this.account != null) {
@@ -70,21 +74,12 @@ public class MarketBehavior implements Trader {
         if (type.equals("buy")) {
             // 限價單買入：增加股數
             account.incrementStocks(volume);
-
-            // 更新平均成本價（如果需要）
-            // 此處可以根據需求進行實現
-            System.out.println(String.format("市場行為限價成交買入 %d 股，價格 %.2f，總金額 %.2f", volume, price, transactionAmount));
-
         } else if (type.equals("sell")) {
             // 現價賣出：增加現金
             account.incrementFunds(transactionAmount);
-
-            System.out.println(String.format("市場行為限價成交賣出 %d 股，價格 %.2f，總金額 %.2f", volume, price, transactionAmount));
         }
 
-        // 更新界面上的標籤
-        // 假設 MarketBehavior 有對應的 simulation 實例
-        // 如果沒有，這裡可以省略或通過其他方式更新
+        // 您可以根據需求更新界面或其他狀態
     }
 
     /**
@@ -121,7 +116,7 @@ public class MarketBehavior implements Trader {
         double priceChangeRatio = drift + shock + meanReversion + eventImpact;
         priceChangeRatio *= timeVolatilityFactor;
 
-        // 計算新的訂單價格
+        // 6. 計算新的訂單價格
         double newOrderPrice = currentPrice * (1 + priceChangeRatio);
         double minPrice = currentPrice * 0.9;
         double maxPrice = currentPrice * 1.1;
@@ -130,18 +125,18 @@ public class MarketBehavior implements Trader {
         // 防止價格為負
         newOrderPrice = Math.max(newOrderPrice, 0.1);
 
-        // 6. 增加隨機浮動
+        // 7. 增加隨機浮動
         newOrderPrice += newOrderPrice * (random.nextDouble() - 0.5) * 0.01; // 1% 隨機浮動
 
-        // 7. 根據價格變動決定訂單方向和數量
+        // 8. 根據價格變動決定訂單方向和數量
         int orderVolume = calculateOrderVolume(volatility, recentVolume);
         if (priceChangeRatio > 0) {
-//            // 檢查是否有足夠的資金來執行買單
-//            double totalCost = newOrderPrice * orderVolume;
-//            // 創建並提交買單
-//            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, this, false, false);
-//            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
-//            System.out.println("市場行為生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
+            // 檢查是否有足夠的資金來執行買單
+            double totalCost = newOrderPrice * orderVolume;
+            // 創建並提交買單
+            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, this, false, false);
+            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
+//            System.out.println("MarketBehavior - 生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
         } else {
             // 獲取當前可用的庫存量
             int availableStocks = account.getStockInventory();
@@ -153,9 +148,9 @@ public class MarketBehavior implements Trader {
             if (sellVolume > 0) {
                 Order sellOrder = new Order("sell", newOrderPrice, sellVolume, this, false, false);
                 orderBook.submitSellOrder(sellOrder, newOrderPrice);
-                System.out.println("市場行為生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
+//                System.out.println("MarketBehavior - 生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
             } else {
-                System.out.println("股票不足，無法生成市場賣單");
+//                System.out.println("MarketBehavior - 股票不足，無法生成市場賣單");
             }
         }
 
@@ -165,6 +160,12 @@ public class MarketBehavior implements Trader {
         // 更新市場趨勢（隨機微調）
         marketTrend += (random.nextDouble() - 0.5) * 0.01;
         marketTrend = Math.max(-0.5, Math.min(marketTrend, 0.5));
+
+        // 更新 Stock 的價格
+        stock.setPrice(newOrderPrice);
+
+        // 將價格變動傳遞給 MarketAnalyzer
+        simulation.getMarketAnalyzer().addPrice(newOrderPrice);
     }
 
     /**

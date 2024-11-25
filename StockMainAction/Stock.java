@@ -8,7 +8,7 @@ public class Stock {
     private String name;
     private double price;
     private double previousPrice;  // 用於記錄上一筆成交價格
-    private double volume;
+    private int volume;            // 修改為 int 類型
 
     /**
      * 構造函數
@@ -17,7 +17,7 @@ public class Stock {
      * @param price 初始價格
      * @param volume 初始成交量
      */
-    public Stock(String name, double price, double volume) {
+    public Stock(String name, double price, int volume) { // 修改參數類型
         this.name = name;
         this.price = price;
         this.previousPrice = price; // 初始化為相同價格
@@ -66,7 +66,7 @@ public class Stock {
      *
      * @return 成交量
      */
-    public double getVolume() {
+    public int getVolume() { // 修改返回類型
         return volume;
     }
 
@@ -75,7 +75,7 @@ public class Stock {
      *
      * @param volume 新的成交量
      */
-    public void setVolume(double volume) {
+    public void setVolume(int volume) { // 修改參數類型
         this.volume = volume;
     }
 }

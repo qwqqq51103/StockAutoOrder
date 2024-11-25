@@ -36,11 +36,11 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 構造函數
-     * 
-     * @param orderBook     訂單簿實例
-     * @param stock         股票實例
-     * @param simulation    模擬實例
-     * @param initialCash   初始現金
+     *
+     * @param orderBook 訂單簿實例
+     * @param stock 股票實例
+     * @param simulation 模擬實例
+     * @param initialCash 初始現金
      */
     public MainForceStrategyWithOrderBook(OrderBook orderBook, Stock stock, StockMarketSimulation simulation, double initialCash) {
         this.orderBook = orderBook;
@@ -55,10 +55,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
 
     // Trader 接口實現
-
     /**
      * 獲取交易者的帳戶
-     * 
+     *
      * @return UserAccount 實例
      */
     @Override
@@ -68,7 +67,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 獲取交易者的類型
-     * 
+     *
      * @return 交易者類型的字串表示
      */
     @Override
@@ -78,10 +77,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 更新交易者在交易後的帳戶狀態
-     * 
-     * @param type    交易類型（"buy" 或 "sell"）
-     * @param volume  交易量
-     * @param price   交易價格（每股價格）
+     *
+     * @param type 交易類型（"buy" 或 "sell"）
+     * @param volume 交易量
+     * @param price 交易價格（每股價格）
      */
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {
@@ -160,13 +159,13 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 // 5. 市價買入（追蹤市場流動性）
             } else if (actionProbability < 0.25 && availableFunds > currentPrice) {
                 int buyQuantity = calculateLiftVolume();
-                marketBuy(buyQuantity);
+                orderBook.marketBuy(this, buyQuantity);
                 //System.out.println("市價買入：買入 " + buyQuantity + " 股。");
 
                 // 6. 市價賣出（減少風險）
             } else if (actionProbability < 0.3 && getAccumulatedStocks() > 0) {
                 int sellQuantity = calculateSellVolume();
-                marketSell(sellQuantity);
+                orderBook.marketSell(this, sellQuantity);
                 //System.out.println("市價賣出：賣出 " + sellQuantity + " 股。");
 
                 // 7. 高風險行為：洗盤
@@ -179,206 +178,19 @@ public class MainForceStrategyWithOrderBook implements Trader {
             } else if (actionProbability < 0.4) {
                 if (!orderBook.getBuyOrders().isEmpty()) {
                     Order orderToCancel = orderBook.getBuyOrders().get(0);
-                    cancelOrder(orderToCancel.getId());
+                    orderBook.cancelOrder(orderToCancel.getId());
                     //System.out.println("取消掛單，單號：" + orderToCancel.getId());
                 }
             }
 
         } else {
-            //System.out.println("主力正在收集趨勢數據，無法計算 SMA。\n");
+            System.out.println("主力正在收集趨勢數據，無法計算 SMA。\n");
         }
-    }
-
-    /**
-     * 市價買入
-     * 
-     * @param quantity 購買數量
-     */
-    public void marketBuy(int quantity) {
-        Trader trader = this; // since this implements Trader
-        double remainingFunds = trader.getAccount().getAvailableFunds();
-        int remainingQuantity = quantity;
-        double marketTotalTransactionValue = 0.0;
-        int marketTotalTransactionVolume = 0;
-
-        // 使用 ListIterator 來安全地進行修改
-        ListIterator<Order> iterator = orderBook.getSellOrders().listIterator();
-        while (iterator.hasNext() && remainingQuantity > 0) {
-            Order sellOrder = iterator.next();
-            double transactionPrice = sellOrder.getPrice();
-            int transactionVolume = Math.min(sellOrder.getVolume(), remainingQuantity);
-            double transactionCost = transactionPrice * transactionVolume;
-
-            // 自成交檢查，避免買到自己的限價賣單
-            if (sellOrder.getTrader() == trader) {
-                //System.out.println("主力 跳過與自己的訂單匹配，賣單資訊：" + sellOrder);
-                continue;
-            }
-
-            if (remainingFunds >= transactionCost) {
-                remainingFunds -= transactionCost;
-                remainingQuantity -= transactionVolume;
-
-                // 更新主力的持股量和資金
-                account.incrementStocks(transactionVolume);
-                account.decrementFunds(transactionCost);
-
-                System.out.println("主力 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
-
-                // 更新賣方（限價訂單交易者）的帳戶
-                sellOrder.getTrader().updateAfterTransaction("sell", transactionVolume, transactionPrice);
-
-                // 累加市價單的成交值和成交量
-                marketTotalTransactionValue += transactionPrice * transactionVolume;
-                marketTotalTransactionVolume += transactionVolume;
-
-                // 如果賣單已全部成交，移除該賣單
-                if (sellOrder.getVolume() == transactionVolume) {
-                    iterator.remove(); // 使用 iterator 的 remove 方法來移除
-                } else {
-                    sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
-                }
-            } else {
-                //System.out.println("主力現金不足，無法完成市價買進剩餘數量");
-                break;
-            }
-        }
-
-        if (marketTotalTransactionVolume > 0) {
-            orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
-        }
-
-        simulation.updateLabels();
-        simulation.updateVolumeChart(marketTotalTransactionVolume);
-        simulation.updateOrderBookDisplay();
-    }
-
-    /**
-     * 市價賣出
-     * 
-     * @param quantity 賣出數量
-     */
-    public void marketSell(int quantity) {
-        Trader trader = this; // since this implements Trader
-        double remainingQuantity = quantity;
-        double marketTotalTransactionValue = 0.0;
-        int marketTotalTransactionVolume = 0;
-
-        // 使用 ListIterator 安全地遍歷買單列表
-        ListIterator<Order> iterator = orderBook.getBuyOrders().listIterator();
-
-        while (iterator.hasNext() && remainingQuantity > 0) {
-            Order buyOrder = iterator.next();
-            double transactionPrice = buyOrder.getPrice();
-            int transactionVolume = Math.min(buyOrder.getVolume(), (int) remainingQuantity);
-
-            // 檢查是否與自己交易（避免自我匹配）
-            if (buyOrder.getTrader() == trader) {
-                //System.out.println("主力 跳過與自己的訂單匹配，買單資訊：" + buyOrder);
-                continue;
-            }
-
-            double transactionRevenue = transactionPrice * transactionVolume;
-
-            // 確認持股量足夠進行賣出
-            if (account.getStockInventory() >= transactionVolume) {
-                // 減少持股量和剩餘賣出數量
-                account.decrementStocks(transactionVolume);
-                remainingQuantity -= transactionVolume;
-
-                // 增加資金
-                account.incrementFunds(transactionRevenue);
-
-                System.out.println("主力 市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume + "，匹配的買單資訊：" + buyOrder);
-
-                // 更新買方（限價訂單交易者）的帳戶
-                buyOrder.getTrader().updateAfterTransaction("buy", transactionVolume, transactionPrice);
-
-                // 累加市價單的成交值和成交量
-                marketTotalTransactionValue += transactionPrice * transactionVolume;
-                marketTotalTransactionVolume += transactionVolume;
-
-                // 如果買單已全部成交，移除該買單
-                if (buyOrder.getVolume() == transactionVolume) {
-                    iterator.remove();
-                } else {
-                    buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
-                }
-            } else {
-                //System.out.println("主力 持股不足，無法完成市價賣出剩餘數量");
-                break;
-            }
-        }
-
-        // 更新累計的成交值和成交量
-        if (marketTotalTransactionVolume > 0) {
-            orderBook.addMarketTransactionData(marketTotalTransactionValue, marketTotalTransactionVolume);
-        }
-
-        // 更新用戶界面
-        simulation.updateLabels();
-        simulation.updateVolumeChart(marketTotalTransactionVolume);
-        simulation.updateOrderBookDisplay();
-    }
-
-    /**
-     * 取消掛單
-     * 
-     * @param orderId 訂單ID
-     */
-    public void cancelOrder(String orderId) {
-        // 找到並移除買單
-        Order canceledOrder = orderBook.getBuyOrders().stream()
-                .filter(order -> order.getId().equals(orderId))
-                .findFirst()
-                .orElse(null);
-
-        if (canceledOrder != null) {
-            // 從買單列表中移除
-            orderBook.getBuyOrders().removeIf(order -> order.getId().equals(orderId));
-
-            // 歸還凍結的資金
-            double refundAmount = canceledOrder.getPrice() * canceledOrder.getVolume();
-            canceledOrder.getTraderAccount().incrementFunds(refundAmount);
-
-            // 打印詳細信息
-            //System.out.println("已取消買單：");
-            //System.out.println("訂單ID：" + orderId);
-            //System.out.println("股票數量：" + canceledOrder.getVolume());
-            //System.out.println("單價：" + canceledOrder.getPrice());
-            //System.out.println("已退還資金：" + refundAmount);
-        } else {
-            // 找到並移除賣單
-            canceledOrder = orderBook.getSellOrders().stream()
-                    .filter(order -> order.getId().equals(orderId))
-                    .findFirst()
-                    .orElse(null);
-
-            if (canceledOrder != null) {
-                // 從賣單列表中移除
-                orderBook.getSellOrders().removeIf(order -> order.getId().equals(orderId));
-
-                // 歸還凍結的股票數量
-                canceledOrder.getTraderAccount().incrementStocks(canceledOrder.getVolume());
-
-                // 打印詳細信息
-                //System.out.println("已取消賣單：");
-                //System.out.println("訂單ID：" + orderId);
-                //System.out.println("股票數量：" + canceledOrder.getVolume());
-                //System.out.println("單價：" + canceledOrder.getPrice());
-                //System.out.println("已退還股票數量：" + canceledOrder.getVolume());
-            } else {
-                //System.out.println("訂單ID " + orderId + " 未找到，無法取消。");
-            }
-        }
-
-        // 更新 UI 顯示
-        simulation.updateOrderBookDisplay();
     }
 
     /**
      * 根據波動性調整洗盤量
-     * 
+     *
      * @param volatility 波動性
      * @return 洗盤量
      */
@@ -388,7 +200,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 根據市場狀況計算拉抬量
-     * 
+     *
      * @return 拉抬量
      */
     private int calculateLiftVolume() {
@@ -397,7 +209,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 計算目標價
-     * 
+     *
      * @return 目標價
      */
     public double calculateTargetPrice() {
@@ -408,7 +220,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 主力賣出操作，並考慮調整平均成本價
-     * 
+     *
      * @param volume 賣出量
      */
     public void sellStock(int volume) {
@@ -432,7 +244,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 洗盤操作
-     * 
+     *
      * @param volume 洗盤量
      */
     public void simulateWashTrading(int volume) {
@@ -450,7 +262,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 吸籌操作並更新平均成本價格
-     * 
+     *
      * @param volume 吸籌量
      */
     public void accumulateStock(int volume) {
@@ -473,7 +285,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 拉抬操作
-     * 
+     *
      * @param volume 拉抬量
      */
     public void liftStock(int volume) {
@@ -489,7 +301,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 市價賣出根據市場條件計算賣出量
-     * 
+     *
      * @return 賣出量
      */
     private int calculateSellVolume() {
@@ -505,13 +317,13 @@ public class MainForceStrategyWithOrderBook implements Trader {
         // 確保賣出量至少為1，且不超過當前持股量
         sellVolume = Math.max(1, Math.min(sellVolume, accumulatedStocks));
 
-        System.out.println("計算的市價賣出量為: " + sellVolume);
+        //System.out.println("計算的市價賣出量為: " + sellVolume);
         return sellVolume;
     }
 
     /**
      * 返回交易紀錄
-     * 
+     *
      * @return 交易紀錄字串
      */
     public String getTradeLog() {
@@ -520,7 +332,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 獲取主力股票數量
-     * 
+     *
      * @return 主力持股量
      */
     public int getAccumulatedStocks() {
@@ -529,7 +341,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 獲取主力現金
-     * 
+     *
      * @return 主力現金
      */
     public double getCash() {
@@ -538,7 +350,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 獲取主力目標價格
-     * 
+     *
      * @return 目標價格
      */
     public double getTargetPrice() {
@@ -547,7 +359,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 獲取主力成本價格
-     * 
+     *
      * @return 平均成本價格
      */
     public double getAverageCostPrice() {
@@ -556,7 +368,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 動量交易
-     * 
+     *
      * @param volatility 波動性
      * @return 動量交易量
      */
@@ -566,7 +378,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 均值回歸 - 計算賣出量
-     * 
+     *
      * @param priceDifferenceRatio 價格差異比例
      * @return 均值回歸賣出量
      */
@@ -576,7 +388,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 均值回歸 - 計算買入量
-     * 
+     *
      * @param priceDifferenceRatio 價格差異比例
      * @return 均值回歸買入量
      */
@@ -589,7 +401,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 價值投資 - 計算買入量
-     * 
+     *
      * @return 價值投資買入量
      */
     private int calculateValueBuyVolume() {
@@ -600,7 +412,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 風險管控 - 計算風險係數
-     * 
+     *
      * @return 風險係數
      */
     private double getRiskFactor() {
