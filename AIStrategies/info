@@ -1,0 +1,8 @@
+/**
+ * 此套件包含用於股票市場模擬的 AI 驅動交易策略。
+ *
+ * 類別：
+ * - MainForceStrategyWithOrderBook.java: 使用訂單簿數據實現主力交易策略。
+ * - RetailInvestorAI.java: 模擬散戶投資者行為的 AI 演算法。
+ */
+package AIStrategies;

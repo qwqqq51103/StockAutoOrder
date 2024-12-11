@@ -1,5 +1,9 @@
-package StockMainAction;
+package Core;
 
+import Core.Stock;
+import OrderManagement.OrderBookListener;
+import StockMainAction.StockMarketSimulation;
+import UserManagement.UserAccount;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -18,17 +22,18 @@ public class OrderBook {
 
     final double MAX_PRICE_DIFF_RATIO = 0.5;
 
-    // 移除累積市場交易值和量，改由 MarketAnalyzer 處理
-    // private double accumulatedMarketTransactionValue = 0.0;
-    // private int accumulatedMarketTransactionVolume = 0;
     // 設置最大允許的波動範圍
     final double MAX_ALLOWED_CHANGE = 0.05; // 允許每次成交後的價格波動不超過 5%
+
+    // Listener list
+    private List<OrderBookListener> listeners;
 
     // 構造函數
     public OrderBook(StockMarketSimulation simulation) {
         this.buyOrders = new ArrayList<>();
         this.sellOrders = new ArrayList<>();
         this.simulation = simulation;
+        this.listeners = new ArrayList<>();
     }
 
     /**
@@ -117,7 +122,8 @@ public class OrderBook {
             System.out.println("新增買單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
         }
 
-        simulation.updateOrderBookDisplay();
+        // 通知監聽者
+        notifyListeners();
     }
 
     /**
@@ -175,7 +181,8 @@ public class OrderBook {
             System.out.println("新增賣單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
         }
 
-        simulation.updateOrderBookDisplay();
+        // 通知監聽者
+        notifyListeners();
     }
 
     /**
@@ -191,8 +198,8 @@ public class OrderBook {
             // 僅處理限價單或跳過自我匹配
             if (buyOrder.getTrader() == sellOrder.getTrader()) {
                 System.out.println("跳過自我匹配，買單：" + buyOrder + "，賣單：" + sellOrder);
-                buyOrders.remove(buyOrder); // 或直接更新
-                continue;
+//                buyOrders.remove(buyOrder); // 或直接更新
+//                continue;
             }
 
             if (canExecuteOrder(buyOrder, sellOrder)) {
@@ -209,6 +216,9 @@ public class OrderBook {
 
                 // 更新成交量圖表
                 simulation.updateVolumeChart(transactionVolume);
+
+                // 通知監聽者
+                notifyListeners();
             } else {
                 break;
             }
@@ -297,7 +307,7 @@ public class OrderBook {
      * @return 買單列表
      */
     public List<Order> getBuyOrders() {
-        return buyOrders;
+        return new ArrayList<>(buyOrders); // 返回新列表以保護內部列表
     }
 
     /**
@@ -306,7 +316,7 @@ public class OrderBook {
      * @return 賣單列表
      */
     public List<Order> getSellOrders() {
-        return sellOrders;
+        return new ArrayList<>(sellOrders); // 返回新列表以保護內部列表
     }
 
     /**
@@ -394,6 +404,9 @@ public class OrderBook {
                 trader.getAccount().incrementStocks(transactionVolume);
                 trader.getAccount().decrementFunds(transactionCost);
 
+                // 更新交易狀態
+                trader.updateAverageCostPrice("buy", transactionVolume, transactionPrice);
+
                 System.out.println(trader.getTraderType() + " 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
 
                 // 更新賣方（限價訂單交易者）的帳戶
@@ -438,6 +451,9 @@ public class OrderBook {
             simulation.updateVolumeChart(volumeDifference);
             simulation.updateOrderBookDisplay();
         });
+
+        // 通知監聽者
+        notifyListeners();
     }
 
     /**
@@ -469,6 +485,9 @@ public class OrderBook {
                 trader.getAccount().decrementStocks(transactionVolume);
                 remainingQuantity -= transactionVolume;
                 trader.getAccount().incrementFunds(transactionRevenue);
+
+                // 更新交易狀態
+                trader.updateAverageCostPrice("sell", transactionVolume, transactionPrice);
 
                 System.out.println(trader.getTraderType() + " 市價賣出，價格: " + transactionPrice + "，數量: " + transactionVolume);
 
@@ -514,6 +533,9 @@ public class OrderBook {
             simulation.updateVolumeChart(volumeDifference);
             simulation.updateOrderBookDisplay();
         });
+
+        // 通知監聽者
+        notifyListeners();
     }
 
     /**
@@ -569,6 +591,9 @@ public class OrderBook {
 
         // 更新 UI 顯示
         SwingUtilities.invokeLater(() -> simulation.updateOrderBookDisplay());
+
+        // 通知監聽者
+        notifyListeners();
     }
 
     /**
@@ -581,5 +606,94 @@ public class OrderBook {
         // 這部分已被移動到 MarketAnalyzer，所以可以保留或刪除
         // 這裡僅為示例，實際實現可能涉及更多細節
         System.out.println("市場成交：總額 " + transactionValue + "，總量 " + transactionVolume);
+    }
+
+    /**
+     * 獲取按交易者類型的買單列表
+     *
+     * @param traderType 交易者類型，如 "Retail", "Main Force", "Personal"
+     * @return 符合類型的買單列表
+     */
+    public List<Order> getBuyOrdersByTraderType(String traderType) {
+        if (traderType == null || traderType.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        synchronized (buyOrders) {
+            return buyOrders.stream()
+                    .peek(order -> {
+                        if (order == null) {
+                            System.err.println("Null order found in buyOrders.");
+                        } else if (order.getTrader() == null) {
+                            System.err.println("Order with null trader found: " + order.getId());
+                        } else if (order.getTrader().getTraderType() == null) {
+                            System.err.println("Order with trader having null traderType: " + order.getId());
+                        }
+                    })
+                    .filter(order -> order != null
+                    && order.getTrader() != null
+                    && order.getTrader().getTraderType() != null
+                    && traderType.equalsIgnoreCase(order.getTrader().getTraderType()))
+                    .collect(Collectors.toList());
+        }
+    }
+
+    /**
+     * 獲取按交易者類型的賣單列表
+     *
+     * @param traderType 交易者類型，如 "Retail", "Main Force", "Personal"
+     * @return 符合類型的賣單列表
+     */
+    public List<Order> getSellOrdersByTraderType(String traderType) {
+        if (traderType == null || traderType.isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        synchronized (sellOrders) {
+            return sellOrders.stream()
+                    .peek(order -> {
+                        if (order == null) {
+                            System.err.println("Null order found in sellOrders.");
+                        } else if (order.getTrader() == null) {
+                            System.err.println("Order with null trader found: " + order.getId());
+                        } else if (order.getTrader().getTraderType() == null) {
+                            System.err.println("Order with trader having null traderType: " + order.getId());
+                        }
+                    })
+                    .filter(order -> order != null
+                    && order.getTrader() != null
+                    && order.getTrader().getTraderType() != null
+                    && traderType.equalsIgnoreCase(order.getTrader().getTraderType()))
+                    .collect(Collectors.toList());
+        }
+    }
+
+    /**
+     * 添加 OrderBookListener
+     *
+     * @param listener 監聽器
+     */
+    public void addOrderBookListener(OrderBookListener listener) {
+        if (listener != null && !listeners.contains(listener)) {
+            listeners.add(listener);
+        }
+    }
+
+    /**
+     * 移除 OrderBookListener
+     *
+     * @param listener 監聽器
+     */
+    public void removeOrderBookListener(OrderBookListener listener) {
+        listeners.remove(listener);
+    }
+
+    /**
+     * 通知所有監聽器訂單簿已更新
+     */
+    private void notifyListeners() {
+        for (OrderBookListener listener : listeners) {
+            listener.onOrderBookUpdated();
+        }
     }
 }

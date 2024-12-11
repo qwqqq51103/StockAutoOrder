@@ -1,4 +1,6 @@
-package StockMainAction;
+package Core;
+
+import UserManagement.UserAccount;
 
 /**
  * Trader 接口，定義所有交易者的共同行為
@@ -23,4 +25,12 @@ public interface Trader {
      * @param price 交易價格（每股價格）
      */
     void updateAfterTransaction(String type, int volume, double price);
+
+    /**
+     * 市價買賣更新交易者在交易後的帳戶狀態
+     * @param type 交易類型（"buy" 或 "sell"）
+     * @param transactionVolume 交易量
+     * @param transactionPrice 交易價格（每股價格）
+     */
+    void updateAverageCostPrice(String buy, int transactionVolume, double transactionPrice);
 }

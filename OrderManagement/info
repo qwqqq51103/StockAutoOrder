@@ -1,0 +1,9 @@
+/**
+ * 此套件負責管理訂單並提供檢視與處理工具。
+ *
+ * 類別：
+ * - OrderBookListener.java: 監聽訂單簿的更新並處理相關事件。
+ * - OrderBookTable.java: 以表格方式顯示訂單簿數據。
+ * - OrderViewer.java: 提供檢視訂單詳細資料的介面或邏輯。
+ */
+package OrderManagement;

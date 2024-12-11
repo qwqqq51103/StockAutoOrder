@@ -1,4 +1,4 @@
-package StockMainAction;
+package UserManagement;
 
 /**
  * UserAccount 類別，表示交易者的帳戶

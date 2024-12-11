@@ -1,5 +1,11 @@
-package StockMainAction;
+package Analysis;
 
+import Core.Order;
+import Core.Trader;
+import Core.OrderBook;
+import Core.Stock;
+import StockMainAction.StockMarketSimulation;
+import UserManagement.UserAccount;
 import java.util.Random;
 import java.util.ListIterator;
 
@@ -81,6 +87,16 @@ public class MarketBehavior implements Trader {
 
         // 您可以根據需求更新界面或其他狀態
     }
+    
+    /**
+     * 更新交易者在交易後的帳戶狀態
+     * 因市價單不會經過訂單簿，故使用此函數計算平均價格
+     * @param type 交易類型（"buy" 或 "sell"）
+     * @param volume 交易量
+     * @param price 交易價格（每股價格）
+     */
+    public void updateAverageCostPrice(String type, int volume, double price) {
+    }
 
     /**
      * 模擬市場波動
@@ -134,8 +150,8 @@ public class MarketBehavior implements Trader {
             // 檢查是否有足夠的資金來執行買單
             double totalCost = newOrderPrice * orderVolume;
             // 創建並提交買單
-            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, this, false, false);
-            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
+//            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, this, false, false);
+//            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
 //            System.out.println("MarketBehavior - 生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
         } else {
             // 獲取當前可用的庫存量

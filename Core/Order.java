@@ -1,5 +1,6 @@
-package StockMainAction;
+package Core;
 
+import UserManagement.UserAccount;
 import java.util.UUID;
 
 /**

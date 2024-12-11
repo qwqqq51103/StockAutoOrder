@@ -1,5 +1,11 @@
-package StockMainAction;
+package AIStrategies;
 
+import UserManagement.UserAccount;
+import Core.Order;
+import Core.Trader;
+import Core.OrderBook;
+import Core.Stock;
+import StockMainAction.StockMarketSimulation;
 import java.util.Random;
 import java.util.LinkedList;
 import java.util.ListIterator;
@@ -13,7 +19,7 @@ public class RetailInvestorAI implements Trader {
     private StockMarketSimulation simulation;
     private static final Random random = new Random();
     private double buyThreshold = 0.95; // 調低門檻以增加買入機會
-    private double sellThreshold = 1.05; // 調低門檻以增加賣出機會
+    private double sellThreshold = 1.5; // 調低門檻以增加賣出機會
     private boolean ignoreThreshold = false;
     private Queue<Double> priceHistory; // 儲存最近價格數據，用於分析趨勢
     private String traderID; // 散戶的唯一標識符
@@ -76,7 +82,7 @@ public class RetailInvestorAI implements Trader {
      */
     @Override
     public String getTraderType() {
-        return "RetailInvestor";
+        return "RETAIL_INVESTOR";
     }
 
     /**
@@ -106,6 +112,16 @@ public class RetailInvestorAI implements Trader {
 
         // 更新界面上的標籤
         simulation.updateLabels();
+    }
+
+    /**
+     * 更新交易者在交易後的帳戶狀態 因市價單不會經過訂單簿，故使用此函數計算平均價格
+     *
+     * @param type 交易類型（"buy" 或 "sell"）
+     * @param volume 交易量
+     * @param price 交易價格（每股價格）
+     */
+    public void updateAverageCostPrice(String type, int volume, double price) {
     }
 
     /**
@@ -146,7 +162,6 @@ public class RetailInvestorAI implements Trader {
 
         // 調試輸出 SMA 和 RSI 值
 //        System.out.println("RetailInvestorAI - SMA 值: " + sma + ", RSI 值: " + rsi + ", 波動性: " + volatility);
-
         if (!Double.isNaN(sma)) {
             double priceDifferenceRatio = (currentPrice - sma) / sma;
             priceDifferenceRatio = Math.max(-0.5, Math.min(priceDifferenceRatio, 0.5));

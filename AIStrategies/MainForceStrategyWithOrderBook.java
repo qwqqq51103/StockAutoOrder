@@ -1,5 +1,11 @@
-package StockMainAction;
+package AIStrategies;
 
+import UserManagement.UserAccount;
+import Core.Order;
+import Core.Trader;
+import Core.OrderBook;
+import Core.Stock;
+import StockMainAction.StockMarketSimulation;
 import java.util.Deque;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -72,7 +78,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     @Override
     public String getTraderType() {
-        return "MainForce";
+        return "MAIN_FORCE";
     }
 
     /**
@@ -101,6 +107,35 @@ public class MainForceStrategyWithOrderBook implements Trader {
             // 現價賣出：增加現金
             account.incrementFunds(transactionAmount);
 
+            // 若持股為零，重置平均成本價
+            if (getAccumulatedStocks() == 0) {
+                averageCostPrice = 0.0;
+            }
+        }
+
+        // 更新界面上的標籤
+        simulation.updateLabels();
+    }
+
+    /**
+     * 更新交易者在交易後的帳戶狀態
+     * 因市價單不會經過訂單簿，故使用此函數計算平均價格
+     * @param type 交易類型（"buy" 或 "sell"）
+     * @param volume 交易量
+     * @param price 交易價格（每股價格）
+     */
+    public void updateAverageCostPrice(String type, int volume, double price) {
+        double transactionAmount = price * volume;
+
+        if (type.equals("buy")) {
+            // 更新平均成本價
+            double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
+            averageCostPrice = totalInvestment / getAccumulatedStocks();
+
+            // 更新目標價
+            calculateTargetPrice();
+
+        } else if (type.equals("sell")) {
             // 若持股為零，重置平均成本價
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
