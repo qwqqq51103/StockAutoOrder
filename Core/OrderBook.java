@@ -8,8 +8,15 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.ListIterator;
+import java.util.Random;
 import java.util.stream.Collectors;
 import javax.swing.SwingUtilities;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 
 /**
  * 訂單簿類別，管理買賣訂單的提交和撮合
@@ -116,10 +123,10 @@ public class OrderBook {
         if (index < buyOrders.size() && buyOrders.get(index).getPrice() == order.getPrice()) {
             Order existingOrder = buyOrders.get(index);
             existingOrder.setVolume(existingOrder.getVolume() + order.getVolume());
-            System.out.println("合併現有買單，新的買單數量: " + existingOrder.getVolume());
+//            System.out.println("合併現有買單，新的買單數量: " + existingOrder.getVolume());
         } else {
             buyOrders.add(index, order);
-            System.out.println("新增買單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
+//            System.out.println("新增買單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
         }
 
         // 通知監聽者
@@ -175,10 +182,10 @@ public class OrderBook {
         if (index < sellOrders.size() && sellOrders.get(index).getPrice() == order.getPrice()) {
             Order existingOrder = sellOrders.get(index);
             existingOrder.setVolume(existingOrder.getVolume() + order.getVolume());
-            System.out.println("合併現有賣單，新的賣單數量: " + existingOrder.getVolume());
+//            System.out.println("合併現有賣單，新的賣單數量: " + existingOrder.getVolume());
         } else {
             sellOrders.add(index, order);
-            System.out.println("新增賣單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
+//            System.out.println("新增賣單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
         }
 
         // 通知監聽者
@@ -191,44 +198,177 @@ public class OrderBook {
      * @param stock 股票實例
      */
     public void processOrders(Stock stock) {
-        while (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
-            Order buyOrder = buyOrders.get(0);
-            Order sellOrder = sellOrders.get(0);
+        // 準備異常日誌文件
+        File logFile = new File(System.getProperty("user.home") + "/Desktop/MarketAnomalies.log");
+        try ( BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true))) {
 
-            // 僅處理限價單或跳過自我匹配
-            if (buyOrder.getTrader() == sellOrder.getTrader()) {
-                System.out.println("跳過自我匹配，買單：" + buyOrder + "，賣單：" + sellOrder);
-//                buyOrders.remove(buyOrder); // 或直接更新
-//                continue;
+            // 清理並排序買單和賣單
+            buyOrders = buyOrders.stream()
+                    .filter(order -> order.getVolume() > 0 && order.getPrice() > 0) // 過濾有效買單
+                    .sorted((o1, o2) -> Double.compare(o2.getPrice(), o1.getPrice())) // 按買價降序排序
+                    .collect(Collectors.toList());
+
+            sellOrders = sellOrders.stream()
+                    .filter(order -> order.getVolume() > 0 && order.getPrice() > 0) // 過濾有效賣單
+                    .sorted(Comparator.comparingDouble(Order::getPrice)) // 按賣價升序排序
+                    .collect(Collectors.toList());
+
+            // 撮合訂單
+            while (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
+                Order buyOrder = buyOrders.get(0); // 取最高買單
+                Order sellOrder = sellOrders.get(0); // 取最低賣單
+
+                // 檢測自我匹配異常
+                if (buyOrder.getTrader() == sellOrder.getTrader()) {
+                    String selfMatchLog = String.format(
+                            "[%s] 自我撮合異常：買單（%s），賣單（%s）",
+                            getCurrentTimestamp(), buyOrder, sellOrder
+                    );
+                    writer.write(selfMatchLog);
+                    writer.newLine();
+                    System.err.println(selfMatchLog);
+                    // 跳過自我撮合的訂單，但不退出
+                    buyOrders.remove(buyOrder);
+                    sellOrders.remove(sellOrder);
+                    continue;
+                }
+
+                // 檢查是否能成交
+                if (canExecuteOrder(buyOrder, sellOrder)) {
+                    // 計算成交量
+                    int transactionVolume = executeTransaction(buyOrder, sellOrder, stock);
+
+                    // 設定成交價格為中間價
+                    double transactionPrice = (buyOrder.getPrice() + sellOrder.getPrice()) / 2;
+
+                    // 檢測價格閃崩或異常
+                    if (detectPriceAnomaly(stock.getPrice(), transactionPrice)) {
+                        String priceAnomalyLog = String.format(
+                                "[%s] 價格異常：成交價格 %.2f 超出允許範圍，股價 %.2f",
+                                getCurrentTimestamp(), transactionPrice, stock.getPrice()
+                        );
+                        writer.write(priceAnomalyLog);
+                        writer.newLine();
+                        System.err.println(priceAnomalyLog);
+//                        buyOrders.remove(buyOrder); // 跳過異常訂單
+//                        sellOrders.remove(sellOrder);
+//                        continue;
+                    }
+
+                    // 檢測成交量異常
+                    if (detectVolumeAnomaly(transactionVolume)) {
+                        String volumeAnomalyLog = String.format(
+                                "[%s] 成交量異常：成交量 %d 超出允許範圍",
+                                getCurrentTimestamp(), transactionVolume
+                        );
+                        writer.write(volumeAnomalyLog);
+                        writer.newLine();
+                        System.err.println(volumeAnomalyLog);
+//                        buyOrders.remove(buyOrder); // 跳過異常訂單
+//                        sellOrders.remove(sellOrder);
+//                        continue;
+                    }
+
+                    // 記錄交易到日誌
+                    Transaction transaction = new Transaction(
+                            buyOrder.getTrader().getTraderType(),
+                            sellOrder.getTrader().getTraderType(),
+                            transactionPrice,
+                            transactionVolume
+                    );
+                    writer.write(transaction.toString());
+                    writer.newLine();
+
+                    // 傳遞交易數據到 MarketAnalyzer
+                    simulation.getMarketAnalyzer().addTransaction(transactionPrice, transactionVolume);
+
+                    // 更新交易者的帳戶
+                    updateTraderStatus(buyOrder, sellOrder, transactionVolume, transactionPrice);
+
+                    // 更新成交量圖表
+                    simulation.updateVolumeChart(transactionVolume);
+
+                    // 通知監聽者
+                    notifyListeners();
+                } else {
+                    // 如果買賣雙方價格不匹配，停止撮合
+                    break;
+                }
             }
 
-            if (canExecuteOrder(buyOrder, sellOrder)) {
-                int transactionVolume = executeTransaction(buyOrder, sellOrder, stock);
+            // 更新加權平均價格標籤和其他相關 UI
+            SwingUtilities.invokeLater(() -> {
+                simulation.updateLabels();
+                simulation.updateOrderBookDisplay();
+            });
 
-                // 成交價格設為賣方價格
-                double transactionPrice = sellOrder.getPrice();
-
-                // 將交易數據傳遞給 MarketAnalyzer
-                simulation.getMarketAnalyzer().addTransaction(transactionPrice, transactionVolume);
-
-                // 更新交易者的帳戶
-                updateTraderStatus(buyOrder, sellOrder, transactionVolume, transactionPrice);
-
-                // 更新成交量圖表
-                simulation.updateVolumeChart(transactionVolume);
-
-                // 通知監聽者
-                notifyListeners();
-            } else {
-                break;
-            }
+        } catch (IOException e) {
+            System.err.println("無法寫入異常日誌：" + e.getMessage());
+            e.printStackTrace();
         }
+    }
 
-        // 更新加權平均價格標籤和其他相關 UI
-        SwingUtilities.invokeLater(() -> {
-            simulation.updateLabels();
-            simulation.updateOrderBookDisplay();
-        });
+    /**
+     * 獲取當前時間戳
+     *
+     * @return 當前時間的格式化字串
+     */
+    private String getCurrentTimestamp() {
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        return LocalDateTime.now().format(formatter);
+    }
+
+    /**
+     * 檢測價格閃崩或異常波動
+     *
+     * @param previousPrice 上一次成交價格
+     * @param currentPrice 當前成交價格
+     * @return 如果價格變動超出允許範圍，返回 true；否則返回 false
+     */
+    private boolean detectPriceAnomaly(double previousPrice, double currentPrice) {
+        double priceChange = Math.abs(currentPrice - previousPrice) / previousPrice;
+        double allowedChange = 0.05; // 設定允許的價格變動範圍為 ±5%
+        return priceChange > allowedChange;
+    }
+
+    /**
+     * 檢測成交量異常
+     *
+     * @param transactionVolume 本次成交量
+     * @return 如果成交量過大或過小，返回 true；否則返回 false
+     */
+    private boolean detectVolumeAnomaly(int transactionVolume) {
+        int averageVolume = calculateAverageVolume(); // 計算平均成交量
+        double allowedMultiplier = 3.0; // 允許的最大倍數
+        return transactionVolume > averageVolume * allowedMultiplier || transactionVolume < averageVolume * 0.1;
+    }
+
+    /**
+     * 計算市場的平均成交量
+     *
+     * @return 平均成交量
+     */
+    private int calculateAverageVolume() {
+        return sellOrders.stream().mapToInt(Order::getVolume).sum() / Math.max(1, sellOrders.size());
+    }
+
+    /**
+     * 計算成交價格
+     *
+     * @param buyOrder 買單
+     * @param sellOrder 賣單
+     * @return 成交價格
+     */
+    private double calculateTransactionPrice(Order buyOrder, Order sellOrder) {
+        // 默認邏輯：成交價格為賣方價格
+        double transactionPrice = sellOrder.getPrice();
+
+        // 自定義邏輯：取買賣雙方價格的中間值
+        transactionPrice = (buyOrder.getPrice() + sellOrder.getPrice()) / 2.0;
+        // 隨機成交價格（在買價與賣價之間）
+        Random random = new Random();
+        transactionPrice = sellOrder.getPrice() + random.nextDouble() * (buyOrder.getPrice() - sellOrder.getPrice());
+        return transactionPrice;
     }
 
     /**
@@ -239,9 +379,34 @@ public class OrderBook {
      * @return 是否可以執行
      */
     private boolean canExecuteOrder(Order buyOrder, Order sellOrder) {
-        double priceDifference = buyOrder.getPrice() - sellOrder.getPrice();
-        double allowableDifference = sellOrder.getPrice() * MAX_PRICE_DIFF_RATIO;
-        return buyOrder.getPrice() >= sellOrder.getPrice() && priceDifference <= allowableDifference;
+        if (buyOrder == null || sellOrder == null) {
+            return false; // 防止空指針異常
+        }
+        if (buyOrder.getVolume() <= 0 || sellOrder.getVolume() <= 0) {
+            return false; // 無效的訂單數量
+        }
+
+        // 計算價格差距
+        double priceDifference = sellOrder.getPrice() - buyOrder.getPrice();
+        double allowableDifference = sellOrder.getPrice() * MAX_PRICE_DIFF_RATIO; // 設定價格差距比例
+
+        // 支持價格容忍範圍內的撮合
+        return priceDifference <= allowableDifference;
+    }
+
+    /**
+     * 校驗交易條件
+     */
+    private boolean validateTransaction(Order buyOrder, Order sellOrder, Stock stock) {
+        if (stock == null) {
+            System.out.println("Error: Stock is null. Unable to update stock price.");
+            return false;
+        }
+        if (buyOrder.getTraderAccount() == null || sellOrder.getTraderAccount() == null) {
+            System.out.println("Error: Trader account is null for one of the orders.");
+            return false;
+        }
+        return true;
     }
 
     /**
@@ -253,38 +418,35 @@ public class OrderBook {
      * @return 成交量
      */
     private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) {
-        // 檢查 Stock 是否為 null
-        if (stock == null) {
-            System.out.println("Error: Stock is null. Unable to update stock price.");
-            return 0; // 若 stock 為 null，則停止執行交易
+        if (!validateTransaction(buyOrder, sellOrder, stock)) {
+            return 0; // 若校驗失敗，則不執行交易
         }
 
-        // 檢查交易者帳戶是否為 null
-        if (buyOrder.getTraderAccount() == null || sellOrder.getTraderAccount() == null) {
-            System.out.println("Error: Trader account is null for one of the orders.");
-            return 0;  // 若發現問題，可以返回 0 或進行其他處理
-        }
+        int maxTransactionVolume = Math.max(100, Math.min(buyOrder.getVolume(), sellOrder.getVolume()) / 10); //限制每次成交總量的 10%
+        int transactionVolume = Math.min(Math.min(buyOrder.getVolume(), sellOrder.getVolume()), maxTransactionVolume);
 
-        int transactionVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
-
-        // 更新訂單的剩餘數量
+        // 更新訂單數量
         buyOrder.setVolume(buyOrder.getVolume() - transactionVolume);
         sellOrder.setVolume(sellOrder.getVolume() - transactionVolume);
 
-        // 更新股價
+        // 更新股票價格
         stock.setPrice(sellOrder.getPrice());
 
-        // 移除已完成的訂單
+        // 處理完成的訂單
         if (buyOrder.getVolume() == 0) {
             buyOrders.remove(buyOrder);
-            // System.out.println("買單已完成，從列表中移除。");
+            System.out.println("買單已完成，從列表中移除。");
         }
         if (sellOrder.getVolume() == 0) {
             sellOrders.remove(sellOrder);
-            // System.out.println("賣單已完成，從列表中移除。");
+            System.out.println("賣單已完成，從列表中移除。");
         }
 
+        // 更新 UI
         simulation.updateOrderBookDisplay();
+
+        // 返回成交量
+        System.out.println("交易完成：成交量 " + transactionVolume + "，成交價格 " + sellOrder.getPrice());
         return transactionVolume;
     }
 
@@ -407,8 +569,7 @@ public class OrderBook {
                 // 更新交易狀態
                 trader.updateAverageCostPrice("buy", transactionVolume, transactionPrice);
 
-                System.out.println(trader.getTraderType() + " 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
-
+//                System.out.println(trader.getTraderType() + " 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
                 // 更新賣方（限價訂單交易者）的帳戶
                 sellOrder.getTrader().updateAfterTransaction("sell", transactionVolume, transactionPrice);
 
@@ -441,16 +602,6 @@ public class OrderBook {
                 simulation.updateOrderBookDisplay();
             });
         }
-
-        // 捕獲需要使用的變量到 final 變量
-        final int volumeDifference = quantity - remainingQuantity;
-
-        // 更新用戶界面
-        SwingUtilities.invokeLater(() -> {
-            simulation.updateLabels();
-            simulation.updateVolumeChart(volumeDifference);
-            simulation.updateOrderBookDisplay();
-        });
 
         // 通知監聽者
         notifyListeners();
@@ -523,16 +674,6 @@ public class OrderBook {
                 simulation.updateOrderBookDisplay();
             });
         }
-
-        // 捕獲需要使用的變量到 final 變量
-        final int volumeDifference = quantity - remainingQuantity;
-
-        // 更新用戶界面
-        SwingUtilities.invokeLater(() -> {
-            simulation.updateLabels();
-            simulation.updateVolumeChart(volumeDifference);
-            simulation.updateOrderBookDisplay();
-        });
 
         // 通知監聽者
         notifyListeners();

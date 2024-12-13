@@ -6,6 +6,7 @@ import Core.OrderBook;
 import Core.Stock;
 import StockMainAction.StockMarketSimulation;
 import UserManagement.UserAccount;
+import java.util.List;
 import java.util.Random;
 import java.util.ListIterator;
 
@@ -87,10 +88,10 @@ public class MarketBehavior implements Trader {
 
         // 您可以根據需求更新界面或其他狀態
     }
-    
+
     /**
-     * 更新交易者在交易後的帳戶狀態
-     * 因市價單不會經過訂單簿，故使用此函數計算平均價格
+     * 更新交易者在交易後的帳戶狀態 因市價單不會經過訂單簿，故使用此函數計算平均價格
+     *
      * @param type 交易類型（"buy" 或 "sell"）
      * @param volume 交易量
      * @param price 交易價格（每股價格）
@@ -132,7 +133,23 @@ public class MarketBehavior implements Trader {
         double priceChangeRatio = drift + shock + meanReversion + eventImpact;
         priceChangeRatio *= timeVolatilityFactor;
 
-        // 6. 計算新的訂單價格
+        // 6. 根據訂單簿的買賣不平衡調整價格變動
+        double orderImbalance = calculateOrderImbalance(orderBook); // 新增
+        priceChangeRatio += orderImbalance * 0.005; // 調整係數可以根據需求調整
+
+        // 7. 根據價格層級調整價格變動
+        double priceLevelImpact = calculatePriceLevelImpact(orderBook); // 新增
+        priceChangeRatio += priceLevelImpact * 0.005; // 調整係數可以根據需求調整
+
+        // 8. 處理大單的影響
+        double largeOrderImpact = calculateLargeOrderImpact(orderBook); // 新增
+        priceChangeRatio += largeOrderImpact; // 大單影響直接加到價格變動比例
+
+        // 9. 根據成交量調整波動性
+        double volumeImpact = (recentVolume > 1000) ? 0.002 : (recentVolume < 100) ? -0.002 : 0.0; // 範例：高成交量增加波動，低成交量減少
+        priceChangeRatio += volumeImpact;
+
+        // 10. 計算新的訂單價格
         double newOrderPrice = currentPrice * (1 + priceChangeRatio);
         double minPrice = currentPrice * 0.9;
         double maxPrice = currentPrice * 1.1;
@@ -141,18 +158,18 @@ public class MarketBehavior implements Trader {
         // 防止價格為負
         newOrderPrice = Math.max(newOrderPrice, 0.1);
 
-        // 7. 增加隨機浮動
+        // 11. 增加隨機浮動
         newOrderPrice += newOrderPrice * (random.nextDouble() - 0.5) * 0.01; // 1% 隨機浮動
 
-        // 8. 根據價格變動決定訂單方向和數量
+        // 12. 根據價格變動決定訂單方向和數量(掛單操作)
         int orderVolume = calculateOrderVolume(volatility, recentVolume);
         if (priceChangeRatio > 0) {
             // 檢查是否有足夠的資金來執行買單
             double totalCost = newOrderPrice * orderVolume;
             // 創建並提交買單
-//            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, this, false, false);
-//            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
-//            System.out.println("MarketBehavior - 生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
+            Order buyOrder = new Order("buy", newOrderPrice, orderVolume, this, false, false);
+            orderBook.submitBuyOrder(buyOrder, newOrderPrice);
+            // System.out.println("MarketBehavior - 生成買單：價格 " + newOrderPrice + "，數量 " + orderVolume);
         } else {
             // 獲取當前可用的庫存量
             int availableStocks = account.getStockInventory();
@@ -164,9 +181,9 @@ public class MarketBehavior implements Trader {
             if (sellVolume > 0) {
                 Order sellOrder = new Order("sell", newOrderPrice, sellVolume, this, false, false);
                 orderBook.submitSellOrder(sellOrder, newOrderPrice);
-//                System.out.println("MarketBehavior - 生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
+                // System.out.println("MarketBehavior - 生成賣單：價格 " + newOrderPrice + "，數量 " + sellVolume);
             } else {
-//                System.out.println("MarketBehavior - 股票不足，無法生成市場賣單");
+                // System.out.println("MarketBehavior - 股票不足，無法生成市場賣單");
             }
         }
 
@@ -185,16 +202,112 @@ public class MarketBehavior implements Trader {
     }
 
     /**
-     * 計算訂單數量
+     * 計算基於訂單簿價格層級的價格調整因子
+     *
+     * @param orderBook 訂單簿實例
+     * @return 基於價格層級的調整因子
+     */
+    private double calculatePriceLevelImpact(OrderBook orderBook) {
+        double impact = 0.0;
+
+        // 考慮前5個價格層級
+        int levels = 5;
+
+        List<Order> topBuyOrders = orderBook.getTopBuyOrders(levels);
+        List<Order> topSellOrders = orderBook.getTopSellOrders(levels);
+
+        double buySupport = 0.0;
+        double sellResistance = 0.0;
+
+        for (int i = 0; i < topBuyOrders.size(); i++) {
+            Order buyOrder = topBuyOrders.get(i);
+            buySupport += buyOrder.getVolume() * buyOrder.getPrice() / Math.pow(1.05, i); // 給予更高價格更高權重
+        }
+
+        for (int i = 0; i < topSellOrders.size(); i++) {
+            Order sellOrder = topSellOrders.get(i);
+            sellResistance += sellOrder.getVolume() * sellOrder.getPrice() / Math.pow(1.05, i); // 給予更低價格更高權重
+        }
+
+        if (buySupport + sellResistance == 0) {
+            return 0.0;
+        }
+
+        // 計算支持與阻力的差值比例
+        impact = (buySupport - sellResistance) / (buySupport + sellResistance);
+
+        return impact;
+    }
+
+    /**
+     * 計算買賣力量的不平衡
+     *
+     * @param orderBook 訂單簿實例
+     * @return 買賣力量不平衡值（正值表示買方力量強，負值表示賣方力量強）
+     */
+    private double calculateOrderImbalance(OrderBook orderBook) {
+        double buyVolume = 0.0;
+        double sellVolume = 0.0;
+
+        // 計算買單總量
+        for (Order buyOrder : orderBook.getTopBuyOrders(10)) { // 考慮前10個買單
+            buyVolume += buyOrder.getVolume() * buyOrder.getPrice();
+        }
+
+        // 計算賣單總量
+        for (Order sellOrder : orderBook.getTopSellOrders(10)) { // 考慮前10個賣單
+            sellVolume += sellOrder.getVolume() * sellOrder.getPrice();
+        }
+
+        // 計算不平衡
+        if (buyVolume + sellVolume == 0) {
+            return 0.0;
+        }
+        return (buyVolume - sellVolume) / (buyVolume + sellVolume);
+    }
+
+    /**
+     * 識別並計算大單對價格的影響
+     *
+     * @param orderBook 訂單簿實例
+     * @return 大單影響因子
+     */
+    private double calculateLargeOrderImpact(OrderBook orderBook) {
+        double largeOrderImpact = 0.0;
+        int largeOrderThreshold = 1000; // 定義大單的閾值，根據實際情況調整
+
+        // 檢查前5個買單
+        List<Order> topBuyOrders = orderBook.getTopBuyOrders(5);
+        for (Order buyOrder : topBuyOrders) {
+            if (buyOrder.getVolume() >= largeOrderThreshold) {
+                largeOrderImpact += 0.005; // 每個大單增加0.5%的價格影響
+            }
+        }
+
+        // 檢查前5個賣單
+        List<Order> topSellOrders = orderBook.getTopSellOrders(5);
+        for (Order sellOrder : topSellOrders) {
+            if (sellOrder.getVolume() >= largeOrderThreshold) {
+                largeOrderImpact -= 0.005; // 每個大單減少0.5%的價格影響
+            }
+        }
+
+        return largeOrderImpact;
+    }
+
+    /**
+     * 計算訂單量
      *
      * @param volatility 波動性
      * @param recentVolume 最近成交量
-     * @return 訂單數量
+     * @return 訂單量
      */
     private int calculateOrderVolume(double volatility, int recentVolume) {
-        int baseVolume = (int) (recentVolume * (0.5 + random.nextDouble())); // 基於最近成交量
-        int volatilityAdjustment = (int) (volatility * 1000); // 波動性調整
-        return Math.max(1, baseVolume + volatilityAdjustment);
+        // 基於波動性和最近成交量計算訂單量
+        // 這裡僅作為範例，具體算法可以根據需求調整
+        int baseVolume = 1000;
+        int volume = (int) (baseVolume * (1 + volatility * 0.1) + recentVolume * 0.01);
+        return Math.max(volume, 100); // 最小訂單量為10
     }
 
     /**

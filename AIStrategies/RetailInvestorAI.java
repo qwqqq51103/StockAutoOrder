@@ -320,10 +320,10 @@ public class RetailInvestorAI implements Trader {
         // 停損設定為當前價格的 95%
         stopLossPrice = currentPrice * 0.95;
 
-        // 止盈設定為當前價格的 105%
-        takeProfitPrice = currentPrice * 1.05;
+        // 止盈設定為當前價格的 150%
+        takeProfitPrice = currentPrice * 1.5;
 
-        System.out.println("RetailInvestorAI - 設置停損價格: " + stopLossPrice + ", 設置止盈價格: " + takeProfitPrice);
+//        System.out.println("RetailInvestorAI - 設置停損價格: " + stopLossPrice + ", 設置止盈價格: " + takeProfitPrice);
     }
 
     /**

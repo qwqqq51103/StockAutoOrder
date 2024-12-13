@@ -155,7 +155,7 @@ public class MarketAnalyzer {
             return 0.0;
         }
         double avgVolume = recentVolumes.stream().mapToInt(Integer::intValue).average().orElse(0.0);
-        //System.out.println("MarketAnalyzer - 計算最近平均成交量: " + avgVolume);
+//        System.out.println("MarketAnalyzer - 計算最近平均成交量: " + avgVolume);
         return avgVolume;
     }
 

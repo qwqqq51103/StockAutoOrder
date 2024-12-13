@@ -144,7 +144,7 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         }
 
         // 調試輸出，查看載入了多少訂單
-        System.out.println("載入 " + ordersToDisplay.size() + " 筆訂單到「所有類型」分頁");
+        //System.out.println("載入 " + ordersToDisplay.size() + " 筆訂單到「所有類型」分頁");
 
         // 準備表格數據
         Object[][] tableData = new Object[ordersToDisplay.size()][6];
