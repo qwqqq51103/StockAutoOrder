@@ -220,17 +220,17 @@ public class OrderBook {
 
                 // 檢測自我匹配異常
                 if (buyOrder.getTrader() == sellOrder.getTrader()) {
-                    String selfMatchLog = String.format(
-                            "[%s] 自我撮合異常：買單（%s），賣單（%s）",
-                            getCurrentTimestamp(), buyOrder, sellOrder
-                    );
-                    writer.write(selfMatchLog);
+//                    String selfMatchLog = String.format(
+//                            "[%s] 自我撮合異常：買單（%s），賣單（%s）",
+//                            getCurrentTimestamp(), buyOrder, sellOrder
+//                    );
+//                    writer.write(selfMatchLog);
                     writer.newLine();
-                    System.err.println(selfMatchLog);
+//                    System.err.println(selfMatchLog);
                     // 跳過自我撮合的訂單，但不退出
-                    buyOrders.remove(buyOrder);
-                    sellOrders.remove(sellOrder);
-                    continue;
+//                    buyOrders.remove(buyOrder);
+//                    sellOrders.remove(sellOrder);
+//                    continue;
                 }
 
                 // 檢查是否能成交

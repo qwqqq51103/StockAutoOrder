@@ -36,9 +36,9 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.jfree.chart.renderer.category.StandardBarPainter;
 import org.jfree.chart.plot.ValueMarker;
 import java.awt.BasicStroke;
-import javafx.util.Pair;
 import javax.swing.JOptionPane;
 import org.jfree.chart.plot.Plot;
+import javafx.util.Pair;
 
 public class StockMarketSimulation {
 
@@ -66,8 +66,8 @@ public class StockMarketSimulation {
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
     private double initialRetailCash = 5000, initialMainForceCash = 100000;  // 初始現金
-    private int initialRetails = 0;  // 初始散戶數量
-    private int marketBehaviorStock = 100; //市場數量
+    private int initialRetails = 5;  // 初始散戶數量
+    private int marketBehaviorStock = 10000; //市場數量
     private double marketBehaviorGash = 0; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
@@ -86,7 +86,7 @@ public class StockMarketSimulation {
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
         int initialDelay = 0; // 初始延遲
-        int period = 1000; // 執行間隔（單位：毫秒）
+        int period = 500; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -160,7 +160,7 @@ public class StockMarketSimulation {
                     e.printStackTrace();
                 } finally {
                     marketAnalyzerLock.unlock(); // 解鎖
-                    validateMarketInventory();
+                    validateMarketInventory(); //
                 }
             } catch (Exception e) {
                 System.err.println("主執行流程發生未處理的錯誤：" + e.getMessage());
