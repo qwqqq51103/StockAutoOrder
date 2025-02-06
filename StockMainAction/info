@@ -1,0 +1,7 @@
+/**
+ * 此套件包含模擬股票市場行為的主要邏輯。
+ *
+ * 類別：
+ * - StockMarketSimulation.java: 負責股票市場動態模擬的整體邏輯。
+ */
+package StockMainAction;

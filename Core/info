@@ -1,0 +1,10 @@
+/**
+ * 核心套件包含股票交易模擬的基礎類別。
+ *
+ * 類別：
+ * - Stock.java: 代表個別股票實體。
+ * - Trader.java: 管理交易邏輯與使用者互動。
+ * - Order.java: 負責訂單數據和處理邏輯。
+ * - OrderBook.java: 管理交易操作的訂單簿。
+ */
+package Core;

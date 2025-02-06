@@ -1,0 +1,7 @@
+/**
+ * 此套件負責管理使用者帳戶及相關操作。
+ *
+ * 類別：
+ * - UserAccount.java: 代表使用者帳戶並處理其數據。
+ */
+package UserManagement;
