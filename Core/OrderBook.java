@@ -417,12 +417,13 @@ public class OrderBook {
      * @param stock 股票實例
      * @return 成交量
      */
-    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) {
+    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) 
+    {
         if (!validateTransaction(buyOrder, sellOrder, stock)) {
             return 0; // 若校驗失敗，則不執行交易
         }
 
-        int maxTransactionVolume = Math.max(100, Math.min(buyOrder.getVolume(), sellOrder.getVolume()) / 10); //限制每次成交總量的 10%
+        int maxTransactionVolume = Math.max(10000, Math.min(buyOrder.getVolume(), sellOrder.getVolume()) / 10); //限制每次成交總量的 10%
         int transactionVolume = Math.min(Math.min(buyOrder.getVolume(), sellOrder.getVolume()), maxTransactionVolume);
 
         // 更新訂單數量
@@ -567,7 +568,7 @@ public class OrderBook {
                 trader.getAccount().decrementFunds(transactionCost);
 
                 // 更新交易狀態
-                trader.updateAverageCostPrice("buy", transactionVolume, transactionPrice);
+                //trader.updateAverageCostPrice("buy", transactionVolume, transactionPrice);
 
 //                System.out.println(trader.getTraderType() + " 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
                 // 更新賣方（限價訂單交易者）的帳戶
