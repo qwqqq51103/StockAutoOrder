@@ -65,9 +65,9 @@ public class StockMarketSimulation {
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
-    private double initialRetailCash = 1000, initialMainForceCash = 5000;  // 初始現金
+    private double initialRetailCash = 1000, initialMainForceCash = 50000;  // 初始現金
     private int initialRetails = 1;  // 初始散戶數量
-    private int marketBehaviorStock = 10000; //市場數量
+    private int marketBehaviorStock = 100000; //市場數量
     private double marketBehaviorGash = -0; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
@@ -78,7 +78,7 @@ public class StockMarketSimulation {
     private XYSeries wapSeries;          // 顯示加權平均價格的數據集
 
     // 按鈕
-    private JButton stopButton, limitBuyButton, limitSellButton, marketBuyButton, marketSellButton;
+    private JButton stopButton, limitBuyButton, limitSellButton, marketBuyButton, marketSellButton, cancelOrderButton;
 
     // 用戶投資者（假設第一個散戶為用戶）
     private RetailInvestorAI userInvestor;
@@ -273,7 +273,7 @@ public class StockMarketSimulation {
         controlFrame.setLocationRelativeTo(null); // 居中顯示
 
         JPanel controlPanel = new JPanel();
-        controlPanel.setLayout(new GridLayout(8, 1, 10, 10)); // 增加行數，適應新增按鈕
+        controlPanel.setLayout(new GridLayout(9, 1, 10, 10)); // 增加行數，適應新增按鈕
 
         // 個人資訊標籤
         JPanel userInfoPanel = new JPanel(new GridLayout(2, 1, 5, 5));
@@ -287,6 +287,7 @@ public class StockMarketSimulation {
         limitSellButton = new JButton("限價賣出");
         marketBuyButton = new JButton("市價買入");
         marketSellButton = new JButton("市價賣出");
+        cancelOrderButton = new JButton("取消訂單");
         JButton viewOrdersButton = new JButton("查看訂單"); // 新增按鈕
         stopButton = new JButton("停止");
 
@@ -297,6 +298,7 @@ public class StockMarketSimulation {
         controlPanel.add(limitSellButton);
         controlPanel.add(marketBuyButton);
         controlPanel.add(marketSellButton);
+        controlPanel.add(cancelOrderButton);
         controlPanel.add(viewOrdersButton); // 添加新按鈕
         controlPanel.add(stopButton);
 
@@ -541,6 +543,29 @@ public class StockMarketSimulation {
                     JOptionPane.showMessageDialog(controlFrame, "市價賣出失敗：" + ex.getMessage(), "錯誤", JOptionPane.ERROR_MESSAGE);
                     ex.printStackTrace();
                 }
+            }
+        });
+
+        cancelOrderButton.addActionListener(e -> {
+            int confirm = JOptionPane.showConfirmDialog(controlFrame,
+                    "確定要取消所有掛單嗎？",
+                    "確認取消訂單",
+                    JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                // 取消所有買單
+                for (Order order : new ArrayList<>(orderBook.getBuyOrders())) {
+                    orderBook.cancelOrder(order.getId());
+                }
+
+                // 取消所有賣單
+                for (Order order : new ArrayList<>(orderBook.getSellOrders())) {
+                    orderBook.cancelOrder(order.getId());
+                }
+
+                // 更新 UI
+                updateInfoTextArea("所有訂單已取消。");
+                updateOrderBookDisplay();
             }
         });
 
