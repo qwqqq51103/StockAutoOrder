@@ -2,6 +2,7 @@ package StockMainAction;
 
 import AIStrategies.RetailInvestorAI;
 import AIStrategies.MainForceStrategyWithOrderBook;
+import AIStrategies.PersonalAI;
 import OrderManagement.OrderBookTable;
 import OrderManagement.OrderViewer;
 import Analysis.MarketBehavior;
@@ -46,7 +47,7 @@ public class StockMarketSimulation {
     private JFrame controlFrame; // 控制視窗框架
     private JLabel stockPriceLabel, retailCashLabel, retailStocksLabel, mainForceCashLabel, mainForceStocksLabel,
             targetPriceLabel, averageCostPriceLabel, fundsLabel, inventoryLabel, weightedAveragePriceLabel;
-    private JLabel userStockLabel, userCashLabel, userAvgPriceLabel; // 個人資訊標籤
+    private JLabel userStockLabel, userCashLabel, userAvgPriceLabel, userTargetPrice; // 個人資訊標籤
     private JTextArea infoTextArea; // 信息顯示區
     private JFreeChart retailProfitChart, mainForceProfitChart, volumeChart;  // 散戶和主力損益表的圖表
     private ChartPanel retailProfitChartPanel, mainForceProfitChartPanel;  // 散戶和主力損益表的圖表面板
@@ -80,8 +81,8 @@ public class StockMarketSimulation {
     // 按鈕
     private JButton stopButton, limitBuyButton, limitSellButton, marketBuyButton, marketSellButton, cancelOrderButton;
 
-    // 用戶投資者（假設第一個散戶為用戶）
-    private RetailInvestorAI userInvestor;
+    // 用戶投資者 - 這裡改成 PersonalAI
+    private PersonalAI userInvestor;
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -226,20 +227,12 @@ public class StockMarketSimulation {
         initializeRetailInvestors(initialRetails); // 初始化散戶
 
         // 單獨初始化用戶投資者
-        userInvestor = new RetailInvestorAI(1000000, "Personal", this); // 修改為 "Personal" 類型
+        userInvestor = new PersonalAI(1000000, "Personal", this);
 
         // priceSeries 和其他數據系列已在 initializeCharts() 中初始化
         String[] columnNames = {"買量", "買價", "賣價", "賣量"};
         Object[][] initialData = new Object[10][4];
         orderBookTable = new OrderBookTable(initialData, columnNames);
-
-        // 放置一些初始買單和賣單（可選）
-        for (int i = 0; i < 10; i++) {
-            // Order initialBuyOrder = new Order("buy", 10.0 + i * 0.1, 200, mainForce, false, false);
-            // orderBook.submitBuyOrder(initialBuyOrder, initialBuyOrder.getPrice());
-            // Order initialSellOrder = new Order("sell", 10.0 - i * 0.1, 250, marketBehavior, false, false);
-            // orderBook.submitSellOrder(initialSellOrder, initialSellOrder.getPrice());
-        }
     }
 
     // 初始化圖表
@@ -279,8 +272,12 @@ public class StockMarketSimulation {
         JPanel userInfoPanel = new JPanel(new GridLayout(2, 1, 5, 5));
         userStockLabel = new JLabel("個人股票數量: " + userInvestor.getAccount().getStockInventory());
         userCashLabel = new JLabel("個人金錢餘額: " + String.format("%.2f", userInvestor.getAccount().getAvailableFunds()));
+        userAvgPriceLabel = new JLabel("個人平均價: " + String.format("%.2f", userInvestor.getAverageCostPrice()));
+        userTargetPrice = new JLabel("個人目標價: " + String.format("%.2f", userInvestor.getTakeProfitPrice()));
         userInfoPanel.add(userStockLabel);
         userInfoPanel.add(userCashLabel);
+        userInfoPanel.add(userAvgPriceLabel);
+        userInfoPanel.add(userTargetPrice);
 
         // 按鈕
         limitBuyButton = new JButton("限價買入");
@@ -968,17 +965,17 @@ public class StockMarketSimulation {
         // 更新波動性
         double volatility = marketAnalyzer.calculateVolatility();
         volatilitySeries.add(timeStep, volatility);
-        keepSeriesWithinLimit(volatilitySeries, 100000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(volatilitySeries, 1000); // 保留最新 100 筆數據
 
         // 更新 RSI
         double rsi = marketAnalyzer.getRSI();
         rsiSeries.add(timeStep, rsi);
-        keepSeriesWithinLimit(rsiSeries, 100000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(rsiSeries, 1000); // 保留最新 100 筆數據
 
         // 更新加權平均價格
         double wap = marketAnalyzer.getWeightedAveragePrice();
         wapSeries.add(timeStep, wap);
-        keepSeriesWithinLimit(wapSeries, 100000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(wapSeries, 1000); // 保留最新 100 筆數據
     }
 
     // 初始化累積的成交量變量
@@ -1127,12 +1124,17 @@ public class StockMarketSimulation {
         return totalInventory;
     }
 
-    // 更新用戶資訊顯示
+    // 更新用戶資訊(個人戶AI)
     private void updateUserInfo() {
         SwingUtilities.invokeLater(() -> {
             userStockLabel.setText("個人股票數量: " + userInvestor.getAccount().getStockInventory());
             userCashLabel.setText("個人金錢餘額: " + String.format("%.2f", userInvestor.getAccount().getAvailableFunds()));
-            // userAvgPriceLabel.setText("個人股票均價: " + String.format("%.2f", userInvestor.getAccount().getAverageCostPrice()));
+            // 假設 PersonalAI 也有跟 RetailInvestorAI 一樣的 updateAverageCostPrice() 機制:
+            userAvgPriceLabel.setText("個人股票均價: "
+                    + String.format("%.2f", userInvestor.getAverageCostPrice()));
+            // 若 PersonalAI 有自訂「目標價」概念，也可在此更新:
+            userTargetPrice.setText("個人目標價: " + String.format("%.2f", userInvestor.getTakeProfitPrice()));
+            // ↑ 需確定 PersonalAI 有 getTakeProfitPrice() 之類方法才可顯示
         });
     }
 }
