@@ -17,6 +17,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ConcurrentModificationException;
 
 /**
  * 訂單簿類別，管理買賣訂單的提交和撮合
@@ -114,19 +115,20 @@ public class OrderBook {
         // 更新訂單的價格為調整後的價格
         order.setPrice(adjustedPrice);
 
-        // 將訂單放入買單列表，並按價格排序
-        int index = 0;
-        while (index < buyOrders.size() && buyOrders.get(index).getPrice() > order.getPrice()) {
-            index++;
-        }
+        // **確保所有對 `buyOrders` 的操作都在同步區塊內**
+        synchronized (buyOrders) {
+            // 按價格排序插入訂單
+            int index = 0;
+            while (index < buyOrders.size() && buyOrders.get(index).getPrice() > order.getPrice()) {
+                index++;
+            }
 
-        if (index < buyOrders.size() && buyOrders.get(index).getPrice() == order.getPrice()) {
-            Order existingOrder = buyOrders.get(index);
-            existingOrder.setVolume(existingOrder.getVolume() + order.getVolume());
-//            System.out.println("合併現有買單，新的買單數量: " + existingOrder.getVolume());
-        } else {
-            buyOrders.add(index, order);
-//            System.out.println("新增買單，價格: " + adjustedPrice + "，數量: " + order.getVolume());
+            if (index < buyOrders.size() && buyOrders.get(index).getPrice() == order.getPrice()) {
+                Order existingOrder = buyOrders.get(index);
+                existingOrder.setVolume(existingOrder.getVolume() + order.getVolume());
+            } else {
+                buyOrders.add(index, order);
+            }
         }
 
         // 通知監聽者
@@ -220,13 +222,13 @@ public class OrderBook {
 
                 // 檢測自我匹配異常
                 if (buyOrder.getTrader() == sellOrder.getTrader()) {
-//                    String selfMatchLog = String.format(
-//                            "[%s] 自我撮合異常：買單（%s），賣單（%s）",
-//                            getCurrentTimestamp(), buyOrder, sellOrder
-//                    );
-//                    writer.write(selfMatchLog);
+                    String selfMatchLog = String.format(
+                            "[%s] 自我撮合異常：買單（%s），賣單（%s）",
+                            getCurrentTimestamp(), buyOrder, sellOrder
+                    );
+                    writer.write(selfMatchLog);
                     writer.newLine();
-//                    System.err.println(selfMatchLog);
+                    System.err.println(selfMatchLog);
                     // 跳過自我撮合的訂單，但不退出
 //                    buyOrders.remove(buyOrder);
 //                    sellOrders.remove(sellOrder);
@@ -417,13 +419,12 @@ public class OrderBook {
      * @param stock 股票實例
      * @return 成交量
      */
-    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) 
-    {
+    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock) {
         if (!validateTransaction(buyOrder, sellOrder, stock)) {
             return 0; // 若校驗失敗，則不執行交易
         }
 
-        int maxTransactionVolume = Math.max(10000, Math.min(buyOrder.getVolume(), sellOrder.getVolume()) / 10); //限制每次成交總量的 10%
+        int maxTransactionVolume = Math.max(50000, Math.min(buyOrder.getVolume(), sellOrder.getVolume()) / 30); //限制每次成交總量的 10%
         int transactionVolume = Math.min(Math.min(buyOrder.getVolume(), sellOrder.getVolume()), maxTransactionVolume);
 
         // 更新訂單數量
@@ -569,7 +570,6 @@ public class OrderBook {
 
                 // 更新交易狀態
                 //trader.updateAverageCostPrice("buy", transactionVolume, transactionPrice);
-
 //                System.out.println(trader.getTraderType() + " 市價買進，價格: " + transactionPrice + "，數量: " + transactionVolume);
                 // 更新賣方（限價訂單交易者）的帳戶
                 sellOrder.getTrader().updateAfterTransaction("sell", transactionVolume, transactionPrice);
@@ -761,23 +761,26 @@ public class OrderBook {
             return new ArrayList<>();
         }
 
+        List<Order> snapshot;
         synchronized (buyOrders) {
-            return buyOrders.stream()
-                    .peek(order -> {
-                        if (order == null) {
-                            System.err.println("Null order found in buyOrders.");
-                        } else if (order.getTrader() == null) {
-                            System.err.println("Order with null trader found: " + order.getId());
-                        } else if (order.getTrader().getTraderType() == null) {
-                            System.err.println("Order with trader having null traderType: " + order.getId());
-                        }
-                    })
-                    .filter(order -> order != null
-                    && order.getTrader() != null
-                    && order.getTrader().getTraderType() != null
-                    && traderType.equalsIgnoreCase(order.getTrader().getTraderType()))
-                    .collect(Collectors.toList());
+            snapshot = new ArrayList<>(buyOrders); // 先複製一份，確保 `stream()` 在安全的快照上執行
         }
+
+        return snapshot.stream()
+                .peek(order -> {
+                    if (order == null) {
+                        System.err.println("Null order found in buyOrders.");
+                    } else if (order.getTrader() == null) {
+                        System.err.println("Order with null trader found: " + order.getId());
+                    } else if (order.getTrader().getTraderType() == null) {
+                        System.err.println("Order with trader having null traderType: " + order.getId());
+                    }
+                })
+                .filter(order -> order != null
+                && order.getTrader() != null
+                && order.getTrader().getTraderType() != null
+                && traderType.equalsIgnoreCase(order.getTrader().getTraderType()))
+                .collect(Collectors.toList());
     }
 
     /**

@@ -191,8 +191,8 @@ public class MarketBehavior implements Trader {
         double funds = account.getAvailableFunds();
 
         if (funds < cost) {
-            System.out.println(String.format("【市場行為-買單】失敗：可用資金不足，嘗試買 %d 股(價格 %.2f)，需要 %.2f，剩餘資金 %.2f",
-                    orderVolume, orderPrice, cost, funds));
+            //System.out.println(String.format("【市場行為-買單】失敗：可用資金不足，嘗試買 %d 股(價格 %.2f)，需要 %.2f，剩餘資金 %.2f",
+//                    orderVolume, orderPrice, cost, funds));
             return 0;
         }
 
@@ -215,8 +215,8 @@ public class MarketBehavior implements Trader {
     private int 市場賣單操作(OrderBook orderBook, double orderPrice, int orderVolume) {
         int hold = account.getStockInventory();
         if (hold < orderVolume) {
-            System.out.println(String.format("【市場行為-賣單】失敗：持股不足，想賣 %d 股，實際僅有 %d 股",
-                    orderVolume, hold));
+//            System.out.println(String.format("【市場行為-賣單】失敗：持股不足，想賣 %d 股，實際僅有 %d 股",
+//                    orderVolume, hold));
             return 0;
         }
 

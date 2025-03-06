@@ -19,7 +19,7 @@ public class RetailInvestorAI implements Trader {
     private StockMarketSimulation simulation;
     private static final Random random = new Random();
     private double buyThreshold = 0.95; // 調低門檻以增加買入機會
-    private double sellThreshold = 1.5; // 調低門檻以增加賣出機會
+    private double sellThreshold = 3.5; // 調低門檻以增加賣出機會
     private boolean ignoreThreshold = false;
     private Queue<Double> priceHistory; // 儲存最近價格數據，用於分析趨勢
     private String traderID; // 散戶的唯一標識符
@@ -162,7 +162,7 @@ public class RetailInvestorAI implements Trader {
                             decisionReason.append("【成功】市價買入 " + actualBuy + " 股。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-                            decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
+                            //decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
                         }
                     } else {
                         int actualBuy = 限價買入操作(buyAmount, currentPrice);
@@ -170,7 +170,7 @@ public class RetailInvestorAI implements Trader {
                             decisionReason.append("【成功】限價買入 " + actualBuy + " 股。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-                            decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
+//                            decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
                         }
                     }
                 } else if (getAccumulatedStocks() > 0 && priceDifferenceRatio > 0 && actionProbability > 0.3) {
@@ -182,14 +182,14 @@ public class RetailInvestorAI implements Trader {
                         if (actualSell > 0) {
                             decisionReason.append("【成功】市價賣出 ").append(actualSell).append(" 股。\n");
                         } else {
-                            decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
+//                            decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
                         }
                     } else {
                         int actualSell = 限價賣出操作(sellAmount, currentPrice);
                         if (actualSell > 0) {
                             decisionReason.append("【成功】限價賣出 ").append(actualSell).append(" 股。\n");
                         } else {
-                            decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
+//                            decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
                         }
                     }
 
@@ -209,7 +209,7 @@ public class RetailInvestorAI implements Trader {
                             decisionReason.append("【成功】市價買入 " + actualBuy + " 股。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-                            decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
+//                            decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
                         }
                     } else {
                         int actualBuy = 限價買入操作(buyAmount, currentPrice);
@@ -217,7 +217,7 @@ public class RetailInvestorAI implements Trader {
                             decisionReason.append("【成功】限價買入 " + actualBuy + " 股。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-                            decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
+//                            decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
                         }
                     }
                 } else if (priceDifferenceRatio > dynamicSellThreshold && getAccumulatedStocks() > 0 && actionProbability > 0.2) {
@@ -230,14 +230,14 @@ public class RetailInvestorAI implements Trader {
                         if (actualSell > 0) {
                             decisionReason.append("【成功】市價賣出 " + actualSell + " 股。\n");
                         } else {
-                            decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
+//                            decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
                         }
                     } else {
                         int actualSell = 限價賣出操作(sellAmount, currentPrice);
                         if (actualSell > 0) {
                             decisionReason.append("【成功】限價賣出 " + actualSell + " 股。\n");
                         } else {
-                            decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
+//                            decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
                         }
                     }
 
@@ -257,7 +257,7 @@ public class RetailInvestorAI implements Trader {
                     decisionReason.append("【成功】市價買入 " + actualBuy + " 股。\n");
                     setStopLossAndTakeProfit(currentPrice, volatility);
                 } else {
-                    decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
+//                    decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
                 }
             } else if (rsi > 70 && getAccumulatedStocks() > 0) {
                 int sellAmount = calculateSellVolume(priceDifferenceRatio, volatility);
@@ -266,7 +266,7 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【成功】市價賣出 ").append(actualSell).append(" 股。\n");
                 } else {
-                    decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
+//                    decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
                 }
                 stopLossPrice = null;
                 takeProfitPrice = null;
@@ -288,7 +288,7 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【停損觸發】市價賣出全部 ").append(actualSell).append(" 股。\n");
                 } else {
-                    decisionReason.append("【停損觸發】失敗，持股或買單量不足。\n");
+//                    decisionReason.append("【停損觸發】失敗，持股或買單量不足。\n");
                 }
             }
             stopLossPrice = null;
@@ -302,7 +302,7 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【止盈觸發】市價賣出全部 ").append(actualSell).append(" 股。\n");
                 } else {
-                    decisionReason.append("【止盈觸發】失敗，持股或買單量不足。\n");
+//                    decisionReason.append("【止盈觸發】失敗，持股或買單量不足。\n");
                 }
             }
             stopLossPrice = null;
@@ -320,7 +320,7 @@ public class RetailInvestorAI implements Trader {
                     decisionReason.append("【隨機操作】市價買入 ").append(actualBuy).append(" 股。\n");
                     setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
                 } else {
-                    decisionReason.append("【隨機操作】市價買入失敗，資金或掛單不足。\n");
+//                    decisionReason.append("【隨機操作】市價買入失敗，資金或掛單不足。\n");
                 }
             } else {
                 int actualBuy = 限價買入操作(buyAmount, currentPrice);
@@ -328,7 +328,7 @@ public class RetailInvestorAI implements Trader {
                     decisionReason.append("【隨機操作】限價買入 ").append(actualBuy).append(" 股。\n");
                     setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
                 } else {
-                    decisionReason.append("【隨機操作】限價買入失敗，資金或賣單不足。\n");
+//                    decisionReason.append("【隨機操作】限價買入失敗，資金或賣單不足。\n");
                 }
             }
         } else if (getAccumulatedStocks() > 0) {
@@ -338,14 +338,14 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【隨機操作】市價賣出 ").append(actualSell).append(" 股。\n");
                 } else {
-                    decisionReason.append("【隨機操作】市價賣出失敗，持股或買單不足。\n");
+//                    decisionReason.append("【隨機操作】市價賣出失敗，持股或買單不足。\n");
                 }
             } else {
                 int actualSell = 限價賣出操作(sellAmount, currentPrice);
                 if (actualSell > 0) {
                     decisionReason.append("【隨機操作】限價賣出 ").append(actualSell).append(" 股。\n");
                 } else {
-                    decisionReason.append("【隨機操作】限價賣出失敗，持股或買單不足。\n");
+//                    decisionReason.append("【隨機操作】限價賣出失敗，持股或買單不足。\n");
                 }
             }
 
@@ -367,12 +367,12 @@ public class RetailInvestorAI implements Trader {
         double funds = account.getAvailableFunds();
 
         if (stock == null) {
-            System.out.println("【錯誤】市價買入失敗: stock 為 null");
+//            System.out.println("【錯誤】市價買入失敗: stock 為 null");
             return 0;
         }
 
         if (orderBook == null) {
-            System.out.print("【錯誤】市價買入失敗: orderBook 為 null");
+//            System.out.print("【錯誤】市價買入失敗: orderBook 為 null");
             return 0;
         }
 

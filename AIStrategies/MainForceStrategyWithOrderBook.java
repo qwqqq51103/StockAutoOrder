@@ -35,8 +35,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private double volatility;
     private Deque<Double> recentPrices;
 
-    private double buyThreshold = 0.01;  // 設定新的買入門檻，例如低於 SMA 的 1%
-    private double sellThreshold = 0.02; // 設定新的賣出門檻，例如高於 SMA 的 2%
+    private double buyThreshold = 0.95;  // 設定新的買入門檻，例如低於 SMA 的 1%
+    private double sellThreshold = 3.5; // 設定新的賣出門檻，例如高於 SMA 的 2%
 
     /**
      * 構造函數
@@ -238,12 +238,12 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double price = stock.getPrice();
         int availableVolume = orderBook.getAvailableSellVolume(price);
         if (availableVolume < volume) {
-            System.out.println(String.format("【吸籌操作】失敗：市場賣單不足，想買 %d 股，僅能成交 %d 股", volume, availableVolume));
+//            System.out.println(String.format("【吸籌操作】失敗：市場賣單不足，想買 %d 股，僅能成交 %d 股", volume, availableVolume));
             return 0;
         }
         if (account.getAvailableFunds() < price * volume) {
-            System.out.println(String.format("【吸籌操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
-                    volume, price * volume, account.getAvailableFunds()));
+//            System.out.println(String.format("【吸籌操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
+//                    volume, price * volume, account.getAvailableFunds()));
             return 0;
         }
 
@@ -266,12 +266,12 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double price = stock.getPrice();
         int availableVolume = orderBook.getAvailableBuyVolume(price);
         if (availableVolume < volume) {
-            System.out.println(String.format("【賣出操作】失敗：市場買單不足，想賣 %d 股，僅能成交 %d 股", volume, availableVolume));
+//            System.out.println(String.format("【賣出操作】失敗：市場買單不足，想賣 %d 股，僅能成交 %d 股", volume, availableVolume));
             return 0;
         }
         if (getAccumulatedStocks() < volume) {
-            System.out.println(String.format("【賣出操作】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
-                    volume, getAccumulatedStocks()));
+//            System.out.println(String.format("【賣出操作】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
+//                    volume, getAccumulatedStocks()));
             return 0;
         }
 
@@ -293,8 +293,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
     public int 洗盤操作(int volume) {
         double price = stock.getPrice();
         if (getAccumulatedStocks() < volume) {
-            System.out.println(String.format("【洗盤操作】失敗：主力持股不足，欲洗 %d 股，但僅有 %d 股",
-                    volume, getAccumulatedStocks()));
+//            System.out.println(String.format("【洗盤操作】失敗：主力持股不足，欲洗 %d 股，但僅有 %d 股",
+//                    volume, getAccumulatedStocks()));
             return 0;
         }
 
@@ -315,8 +315,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
     public int 拉抬操作(int volume) {
         double price = stock.getPrice();
         if (account.getAvailableFunds() < price * volume) {
-            System.out.println(String.format("【拉抬操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
-                    volume, price * volume, account.getAvailableFunds()));
+//            System.out.println(String.format("【拉抬操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
+//                    volume, price * volume, account.getAvailableFunds()));
             return 0;
         }
 
@@ -336,8 +336,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     public int 市價賣出操作(int volume) {
         if (getAccumulatedStocks() < volume) {
-            System.out.println(String.format("【市價賣出】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
-                    volume, getAccumulatedStocks()));
+//            System.out.println(String.format("【市價賣出】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
+//                    volume, getAccumulatedStocks()));
             return 0;
         }
 

@@ -81,7 +81,7 @@ public class NewOrderBookTable {
                     volume = 0; // 如果轉型失敗，將預設量設為 0
                 }
 
-                JProgressBar progressBar = new JProgressBar(0, 5000); // 假設最大量是10000，根據實際需求調整
+                JProgressBar progressBar = new JProgressBar(0, 10000); // 假設最大量是10000，根據實際需求調整
                 progressBar.setValue(volume);
                 progressBar.setString(String.valueOf(volume)); // 顯示實際數量
                 progressBar.setStringPainted(true); // 顯示數字

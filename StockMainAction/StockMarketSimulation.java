@@ -67,7 +67,7 @@ public class StockMarketSimulation {
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
     private double initialRetailCash = 1000, initialMainForceCash = 50000;  // 初始現金
-    private int initialRetails = 1;  // 初始散戶數量
+    private int initialRetails = 10;  // 初始散戶數量
     private int marketBehaviorStock = 100000; //市場數量
     private double marketBehaviorGash = -0; //市場現金
 
@@ -151,7 +151,7 @@ public class StockMarketSimulation {
                             updateProfitTab();
                             updateOrderBookDisplay();
                             updateUserInfo(); // 更新用戶資訊顯示
-                            //updateVolumeChart(1);
+//                            updateVolumeChart(1);
                         } catch (Exception e) {
                             System.err.println("界面更新發生錯誤：" + e.getMessage());
                             e.printStackTrace();
@@ -791,7 +791,7 @@ public class StockMarketSimulation {
         return createChart("股價走勢", dataset);
     }
 
-    // 創建市場波動性
+    // 創建市場波動性 分頁
     private JFreeChart createVolatilityChart() {
         XYSeriesCollection dataset = new XYSeriesCollection();
         dataset.addSeries(volatilitySeries);
@@ -809,7 +809,7 @@ public class StockMarketSimulation {
         return chart;
     }
 
-    // 創建相對強弱指數
+    // 創建相對強弱指數 分頁
     private JFreeChart createRSIChart() {
         XYSeriesCollection dataset = new XYSeriesCollection();
         dataset.addSeries(rsiSeries);
@@ -831,7 +831,7 @@ public class StockMarketSimulation {
         return chart;
     }
 
-    // 加權平均價格
+    // 加權平均價格 分頁
     private JFreeChart createWAPChart() {
         XYSeriesCollection dataset = new XYSeriesCollection();
         dataset.addSeries(wapSeries);
@@ -880,7 +880,7 @@ public class StockMarketSimulation {
                 }
 
                 // 確保 colorList 大小不超過 100 筆
-                if (colorList.size() > 100000) {
+                if (colorList.size() > 30) {
                     colorList.remove(0);
                 }
 
@@ -955,9 +955,9 @@ public class StockMarketSimulation {
     // 更新股價走勢圖和 SMA
     private void updatePriceChart() {
         priceSeries.add(timeStep, stock.getPrice());
-        keepSeriesWithinLimit(priceSeries, 100); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(priceSeries, 9000); // 保留最新 100 筆數據
         smaSeries.add(timeStep, marketAnalyzer.getSMA());
-        keepSeriesWithinLimit(smaSeries, 100); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(smaSeries, 9000); // 保留最新 100 筆數據
     }
 
     // 新增方法來更新其他技術指標
@@ -965,17 +965,17 @@ public class StockMarketSimulation {
         // 更新波動性
         double volatility = marketAnalyzer.calculateVolatility();
         volatilitySeries.add(timeStep, volatility);
-        keepSeriesWithinLimit(volatilitySeries, 1000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(volatilitySeries, 100); // 保留最新 100 筆數據
 
         // 更新 RSI
         double rsi = marketAnalyzer.getRSI();
         rsiSeries.add(timeStep, rsi);
-        keepSeriesWithinLimit(rsiSeries, 1000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(rsiSeries, 100); // 保留最新 100 筆數據
 
         // 更新加權平均價格
         double wap = marketAnalyzer.getWeightedAveragePrice();
         wapSeries.add(timeStep, wap);
-        keepSeriesWithinLimit(wapSeries, 1000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(wapSeries, 100); // 保留最新 100 筆數據
     }
 
     // 初始化累積的成交量變量
@@ -994,19 +994,30 @@ public class StockMarketSimulation {
         if (isNewTimeStep()) {
             while (previousTimeStep < timeStep - 1) {
                 previousTimeStep++;
-                volumeDataset.addValue(0, "Volume", String.valueOf(previousTimeStep));
-                keepCategoryDatasetWithinLimit(volumeDataset, 100000);
-                colorList.add(Color.BLUE);
-                if (colorList.size() > 100000) {
-                    colorList.remove(0);
+
+                // 確保時間步長不超過 volumeDataset 的範圍
+                if (volumeDataset.getColumnCount() >= 30) {
+                    String firstColumnKey = (String) volumeDataset.getColumnKeys().get(0);
+                    volumeDataset.removeColumn(firstColumnKey);
                 }
+
+                if (!volumeDataset.getColumnKeys().contains(String.valueOf(previousTimeStep))) {
+                    volumeDataset.addValue(0, "Volume", String.valueOf(previousTimeStep));
+                }
+
+                keepCategoryDatasetWithinLimit(volumeDataset, 30);
             }
 
             // 添加當前時間步長的成交量
-            volumeDataset.addValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
-            keepCategoryDatasetWithinLimit(volumeDataset, 50);
+            if (!volumeDataset.getColumnKeys().contains(String.valueOf(timeStep))) {
+                volumeDataset.addValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
+            } else {
+                volumeDataset.setValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
+            }
 
-            // 取得當前和前一時間的價格
+            keepCategoryDatasetWithinLimit(volumeDataset, 30);
+
+            // 取得當前和前一時間步長的價格
             double currentPrice = stock.getPrice();
             double previousPrice = (timeStep > 0 && timeStep - 1 < priceSeries.getItemCount())
                     ? priceSeries.getY(timeStep - 1).doubleValue()
@@ -1014,21 +1025,22 @@ public class StockMarketSimulation {
 
             if (timeStep >= priceSeries.getItemCount()) {
                 priceSeries.add(timeStep, currentPrice);
-                keepSeriesWithinLimit(priceSeries, 100000);
+                SwingUtilities.invokeLater(() -> keepSeriesWithinLimit(priceSeries, 9000));
             }
 
-            // 根據價格變動和成交量設定顏色
-            Color color;
-            if (accumulatedVolume == 0) {
-                color = (currentPrice > previousPrice) ? Color.GREEN : (currentPrice < previousPrice ? Color.RED : Color.BLUE);
-            } else {
-                color = (currentPrice > previousPrice) ? Color.GREEN : (currentPrice < previousPrice ? Color.RED : Color.BLUE);
+            // 根據價格變動確定顏色
+            Color color = Color.BLUE; // 預設為藍色
+            if (currentPrice > previousPrice) {
+                color = Color.GREEN; // 價格上漲 → 綠色
+            } else if (currentPrice < previousPrice) {
+                color = Color.RED; // 價格下跌 → 紅色
             }
-            colorList.add(color);
 
-            if (colorList.size() > 100000) {
+            // 確保 colorList 只保留最新 10 筆
+            if (colorList.size() >= 30) {
                 colorList.remove(0);
             }
+            colorList.add(color);
 
             // 重置成交量並更新步長
             accumulatedVolume = 0;
