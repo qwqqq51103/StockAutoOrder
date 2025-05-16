@@ -1,5 +1,6 @@
 package AIStrategies;
 
+import Core.Order;
 import Core.OrderBook;
 import Core.Stock;
 import StockMainAction.StockMarketSimulation;
@@ -15,12 +16,16 @@ public class PersonalAI extends RetailInvestorAI {
 
     // 同理，自行加一個個人戶的 takeProfitPrice
     private Double personalTakeProfitPrice = null;
-    
-    private UserAccount account;
-    private StockMarketSimulation simulation;
 
-    public PersonalAI(double initialCash, String traderID, StockMarketSimulation simulation) {
+    private StockMarketSimulation simulation;
+    private OrderBook orderBook; // 亦可在 makeDecision 時指定
+    private Stock stock;  // 股票實例
+
+    public PersonalAI(double initialCash, String traderID, StockMarketSimulation simulation, OrderBook orderBook,Stock stock) {
         super(initialCash, traderID, simulation);
+        this.simulation = simulation;
+        this.orderBook = orderBook;
+        this.stock = stock;
     }
 
     /**
@@ -59,24 +64,114 @@ public class PersonalAI extends RetailInvestorAI {
         this.personalTakeProfitPrice = price;
     }
 
+    // ========== 實際掛單操作 (成功/失敗印出) ==========
     /**
-     * 假設您想要讓個人戶AI的決策中， 可以自行調整風險或門檻，可覆寫父類別makeDecision
+     * 市價買入操作：先檢查資金，再呼叫 orderBook.marketBuy
+     *
+     * @param buyAmount 欲買股數
+     * @return 實際買入數 (0=失敗)
      */
-    @Override
-    public void makeDecision(Stock stock, OrderBook orderBook, StockMarketSimulation simulation) {
-        super.makeDecision(stock, orderBook, simulation);
+    public int 市價買入操作(int buyAmount) {
+        double price = stock.getPrice();
+        double totalCost = price * buyAmount;
+        double funds = getAccount().getAvailableFunds();
 
-        double currentPrice = stock.getPrice();
-
-        // 如果價格達到止盈價，賣出
-        if (personalTakeProfitPrice != null && currentPrice >= personalTakeProfitPrice) {
-            int sellVolume = account.getStockInventory();
-            if (sellVolume > 0) {
-                orderBook.marketSell(this, sellVolume);
-                System.out.println("[個人AI] 已達止盈價，市價賣出 " + sellVolume + " 股。");
-            }
+        if (stock == null) {
+//            System.out.println("【錯誤】市價買入失敗: stock 為 null");
+            return 0;
         }
+
+        if (orderBook == null) {
+//            System.out.print("【錯誤】市價買入失敗: orderBook 為 null");
+            return 0;
+        }
+
+        if (funds < totalCost) {
+            // 資金不足
+            return 0;
+        }
+
+        orderBook.marketBuy(this, buyAmount);
+        // 若有部分成交亦可視情況而定，這裡直接回傳 buyAmount
+        return buyAmount;
     }
+
+    /**
+     * 市價賣出操作：先檢查持股，再呼叫 orderBook.marketSell
+     *
+     * @param sellAmount 欲賣股數
+     * @return 實際賣出數 (0=失敗)
+     */
+    public int 市價賣出操作(int sellAmount) {
+        int hold = getAccumulatedStocks();
+        if (hold < sellAmount) {
+            // 持股不足
+            return 0;
+        }
+
+        orderBook.marketSell(this, sellAmount);
+        return sellAmount;
+    }
+
+    /**
+     * 限價買入操作：檢查資金 & 市場可賣數量，再掛 buyOrder
+     *
+     * @param amount 欲買股數
+     * @param currentPrice 目前股價
+     * @return 實際買入股數 (0=失敗)
+     */
+    public int 限價買入操作(int amount, double currentPrice) {
+        double totalCost = currentPrice * amount;
+        double funds = getAccount().getAvailableFunds();
+
+        // 檢查資金
+        if (funds < totalCost) {
+            return 0;
+        }
+
+        // 檢查市場中是否有足夠賣單 (若要模擬失敗的話)
+//        int availableSell = orderBook.getAvailableSellVolume(currentPrice);
+//        if (availableSell < amount) {
+//            return 0;
+//        }
+
+        // 成功掛限價買單
+        Order buyOrder = new Order("buy", currentPrice, amount, this, false, false);
+        orderBook.submitBuyOrder(buyOrder, currentPrice);
+        return amount;
+    }
+
+    /**
+     * 限價賣出操作：檢查持股 & 市場可買數量，再掛 sellOrder
+     *
+     * @param amount 欲賣股數
+     * @param currentPrice 目前股價
+     * @return 實際賣出股數 (0=失敗)
+     */
+    public int 限價賣出操作(int amount, double currentPrice) {
+        int hold = getAccumulatedStocks();
+        if (hold < amount) {
+            return 0;
+        }
+//        int availableBuy = orderBook.getAvailableBuyVolume(currentPrice);
+//        if (availableBuy < amount) {
+//            return 0;
+//        }
+
+        // 成功掛限價賣單
+        Order sellOrder = new Order("sell", currentPrice, amount, this, false, false);
+        orderBook.submitSellOrder(sellOrder, currentPrice);
+        return amount;
+    }
+    
+    public void onOrderCancelled(Order order) {
+    System.out.println("[個人AI] 訂單已取消，ID：" + order.getId()
+        + "，價格：" + order.getPrice()
+        + "，數量：" + order.getVolume()
+        + "，類型：" + order.getType());
+
+    // 你可以在這裡加入更多動作（如重設目標價、通知 UI、統計等）
+}
 
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {
@@ -84,10 +179,10 @@ public class PersonalAI extends RetailInvestorAI {
 
         if (type.equals("buy")) {
             // 更新持有股數
-            account.incrementStocks(volume);
+            getAccount().incrementStocks(volume);
 
             // 更新個人平均成本
-            int totalStocks = account.getStockInventory();
+            int totalStocks = getAccount().getStockInventory();
             if (totalStocks > 0) {
                 personalAverageCost = ((personalAverageCost * (totalStocks - volume)) + transactionAmount) / totalStocks;
             }
@@ -100,20 +195,19 @@ public class PersonalAI extends RetailInvestorAI {
 
         } else if (type.equals("sell")) {
             // 增加可用資金
-            account.incrementFunds(transactionAmount);
+            getAccount().incrementFunds(transactionAmount);
 
             // 如果全部賣掉，重置均價
-            if (account.getStockInventory() == 0) {
+            if (getAccount().getStockInventory() == 0) {
                 personalAverageCost = 0.0;
                 personalTakeProfitPrice = null;
             }
 
             System.out.println(String.format("[個人AI] 賣出 %d 股，成交價 %.2f，剩餘持股 %d 股，更新後均價 %.2f",
-                    volume, price, account.getStockInventory(), personalAverageCost));
+                    volume, price, getAccount().getStockInventory(), personalAverageCost));
         }
 
         // 更新 UI 標籤
         simulation.updateLabels();
     }
-
 }

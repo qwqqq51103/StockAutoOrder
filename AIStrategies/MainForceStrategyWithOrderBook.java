@@ -38,11 +38,17 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private double buyThreshold = 0.95;  // 設定新的買入門檻，例如低於 SMA 的 1%
     private double sellThreshold = 3.5; // 設定新的賣出門檻，例如高於 SMA 的 2%
 
+    /* ====== 動態掛單價權重（主力版，可自行調整） ====== */
+    private double smaWeight = 0.40;   // 與均線偏離
+    private double rsiWeight = 0.25;   // RSI 超買/超賣
+    private double volatilityWeight = 0.35;   // 波動度
+    private double maxOffsetRatio = 0.10;   // 最多 ±10 %
+
     /**
      * 構造函數
      *
-     * @param orderBook  訂單簿實例
-     * @param stock      股票實例
+     * @param orderBook 訂單簿實例
+     * @param stock 股票實例
      * @param simulation 模擬實例
      * @param initialCash 初始現金
      */
@@ -82,9 +88,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
     /**
      * 更新交易者在交易後的帳戶狀態 (限價單)
      *
-     * @param type   交易類型（"buy" 或 "sell"）
+     * @param type 交易類型（"buy" 或 "sell"）
      * @param volume 交易量
-     * @param price  交易價格（每股價格）
+     * @param price 交易價格（每股價格）
      */
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {
@@ -123,9 +129,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 更新交易者在交易後的帳戶狀態 (市價單)
-     * @param type   交易類型（"buy" 或 "sell"）
+     *
+     * @param type 交易類型（"buy" 或 "sell"）
      * @param volume 交易量
-     * @param price  交易價格（每股價格）
+     * @param price 交易價格（每股價格）
      */
     public void updateAverageCostPrice(String type, int volume, double price) {
         double transactionAmount = price * volume;
@@ -162,6 +169,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double currentPrice = stock.getPrice();
         double availableFunds = account.getAvailableFunds();
         double sma = simulation.getMarketAnalyzer().calculateSMA();
+        double rsi = simulation.getMarketAnalyzer().getRSI();
         double volatility = simulation.getMarketAnalyzer().calculateVolatility();
         double riskFactor = getRiskFactor(); // 計算主力的風險係數
 
@@ -219,7 +227,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             } else if (actionProbability < 0.4) {
                 if (!orderBook.getBuyOrders().isEmpty()) {
                     Order orderToCancel = orderBook.getBuyOrders().get(0);
-                    orderBook.cancelOrder(orderToCancel.getId());
+                    //orderBook.cancelOrder(orderToCancel.getId());
                     System.out.println(String.format("【隨機取消掛單】取消買單 ID: %s，數量: %d 股",
                             orderToCancel.getId(), orderToCancel.getVolume()));
                 }
@@ -231,62 +239,61 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 吸籌操作：實際嘗試掛買單
+     *
      * @param volume 想要買入的股數
      * @return 實際成功買入的股數 (0 表示失敗)
      */
     public int 吸籌操作(int volume) {
-        double price = stock.getPrice();
-        int availableVolume = orderBook.getAvailableSellVolume(price);
+        double limitPrice = computeBuyLimitPrice(stock.getPrice(),
+                simulation.getMarketAnalyzer().getSMA(),
+                simulation.getMarketAnalyzer().getRSI(),
+                simulation.getMarketAnalyzer().getVolatility());
+
+        int availableVolume = orderBook.getAvailableSellVolume(limitPrice);
         if (availableVolume < volume) {
-//            System.out.println(String.format("【吸籌操作】失敗：市場賣單不足，想買 %d 股，僅能成交 %d 股", volume, availableVolume));
             return 0;
         }
-        if (account.getAvailableFunds() < price * volume) {
-//            System.out.println(String.format("【吸籌操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
-//                    volume, price * volume, account.getAvailableFunds()));
+        if (account.getAvailableFunds() < limitPrice * volume) {
             return 0;
         }
 
-        // 成功掛單
-        Order buyOrder = new Order("buy", price, volume, this, false, false);
-        orderBook.submitBuyOrder(buyOrder, price);
+        Order buyOrder = new Order("buy", limitPrice, volume, this, false, false);
+        orderBook.submitBuyOrder(buyOrder, limitPrice);
 
-        System.out.println(String.format("【吸籌操作】成功：下買單 %d 股，價格 %.2f，預計成本 %.2f",
-                volume, price, price * volume));
-
+        System.out.printf("【吸籌】掛買單 %d 股 @ %.2f%n", volume, limitPrice);
         return volume;
     }
 
     /**
      * 賣出操作：實際嘗試掛賣單
+     *
      * @param volume 想要賣出的股數
      * @return 實際成功賣出的股數 (0 表示失敗)
      */
     public int 賣出操作(int volume) {
-        double price = stock.getPrice();
-        int availableVolume = orderBook.getAvailableBuyVolume(price);
-        if (availableVolume < volume) {
-//            System.out.println(String.format("【賣出操作】失敗：市場買單不足，想賣 %d 股，僅能成交 %d 股", volume, availableVolume));
+        double limitPrice = computeSellLimitPrice(stock.getPrice(),
+                simulation.getMarketAnalyzer().getSMA(),
+                simulation.getMarketAnalyzer().getRSI(),
+                simulation.getMarketAnalyzer().getVolatility());
+
+        int availableBuy = orderBook.getAvailableBuyVolume(limitPrice);
+        if (availableBuy < volume) {
             return 0;
         }
         if (getAccumulatedStocks() < volume) {
-//            System.out.println(String.format("【賣出操作】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
-//                    volume, getAccumulatedStocks()));
             return 0;
         }
 
-        // 成功掛單
-        Order sellOrder = new Order("sell", price, volume, this, false, false);
-        orderBook.submitSellOrder(sellOrder, price);
+        Order sellOrder = new Order("sell", limitPrice, volume, this, false, false);
+        orderBook.submitSellOrder(sellOrder, limitPrice);
 
-        System.out.println(String.format("【賣出操作】成功：下賣單 %d 股，價格 %.2f，持股剩餘 %d 股",
-                volume, price, getAccumulatedStocks() - volume));
-
+        System.out.printf("【賣出】掛賣單 %d 股 @ %.2f%n", volume, limitPrice);
         return volume;
     }
 
     /**
      * 洗盤操作：實際嘗試大量賣出
+     *
      * @param volume 想要用於洗盤的賣出量
      * @return 實際成功洗盤的股數 (0 表示失敗)
      */
@@ -309,6 +316,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 拉抬操作：主力市價買入（盡力推高股價）
+     *
      * @param volume 想要拉抬的股數
      * @return 實際成功拉抬的股數 (0 表示失敗)
      */
@@ -331,6 +339,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 市價賣出操作
+     *
      * @param volume 想要賣出的股數
      * @return 實際成功賣出的股數
      */
@@ -350,9 +359,45 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
 
     // ==== 各種輔助計算函數 ====
+    /**
+     * 主力買單理想掛價（低接）
+     */
+    private double computeBuyLimitPrice(double currentPrice, double sma,
+            double rsi, double volatility) {
+
+        double smaOffset = (sma == 0) ? 0 : -(currentPrice - sma) / sma; // 低於均線 → 正值
+        double rsiOffset = Double.isNaN(rsi) ? 0 : (50.0 - rsi) / 100.0; // RSI 30 → +0.20
+        double volOffset = -volatility * 0.6;                            // 波動大 → 掛更低
+
+        double totalOffset = smaOffset * smaWeight
+                + rsiOffset * rsiWeight
+                + volOffset * volatilityWeight;
+
+        totalOffset = Math.max(-maxOffsetRatio, Math.min(totalOffset, maxOffsetRatio));
+        return orderBook.adjustPriceToUnit(currentPrice * (1.0 + totalOffset));
+    }
+
+    /**
+     * 主力賣單理想掛價（逢高）
+     */
+    private double computeSellLimitPrice(double currentPrice, double sma,
+            double rsi, double volatility) {
+
+        double smaOffset = (sma == 0) ? 0 : (currentPrice - sma) / sma; // 高於均線 → 正值
+        double rsiOffset = Double.isNaN(rsi) ? 0 : (rsi - 50.0) / 100.0; // RSI 70 → +0.20
+        double volOffset = volatility * 0.6;                            // 波動大 → 掛更高
+
+        double totalOffset = smaOffset * smaWeight
+                + rsiOffset * rsiWeight
+                + volOffset * volatilityWeight;
+
+        totalOffset = Math.max(-maxOffsetRatio, Math.min(totalOffset, maxOffsetRatio));
+        return orderBook.adjustPriceToUnit(currentPrice * (1.0 + totalOffset));
+    }
 
     /**
      * 計算目標價 (平均成本 + 預期利潤 + 波動性因子)
+     *
      * @return 目標價
      */
     public double calculateTargetPrice() {
@@ -362,6 +407,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 動量交易 - 計算欲買入量
+     *
      * @param volatility 波動性
      * @return 動量交易量
      */
@@ -373,6 +419,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 均值回歸 - 計算賣出量 (priceDifferenceRatio > 0)
+     *
      * @param priceDifferenceRatio 價格差異比例
      * @return 建議賣出量
      */
@@ -385,6 +432,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 均值回歸 - 計算買入量 (priceDifferenceRatio < 0)
+     *
      * @param priceDifferenceRatio 價格差異比例
      * @return 建議買入量
      */
@@ -399,8 +447,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
 
     /**
-     * 價值投資 - 計算買入量 (股價 < 0.9 * SMA)
-     * @return 買入量
+     * 價值投資 - 計算買入量 (股價 < 0.9 * SMA) @ret
+     *
+     *
+     * urn 買入量
      */
     public int calculateValueBuyVolume() {
         double funds = account.getAvailableFunds();
@@ -413,6 +463,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 根據波動性計算洗盤量
+     *
      * @param volatility 波動性
      * @return 洗盤量
      */
@@ -422,6 +473,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 根據市場狀況計算拉抬量
+     *
      * @return 拉抬量
      */
     public int calculateLiftVolume() {
@@ -430,6 +482,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 市價賣出計算賣出量 (10%~30% 持股)
+     *
      * @return 賣出量
      */
     public int calculateSellVolume() {
@@ -446,6 +499,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 取得當前持股數量
+     *
      * @return 主力持股量
      */
     public int getAccumulatedStocks() {
@@ -454,6 +508,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     /**
      * 取得主力現金餘額
+     *
      * @return 可用資金
      */
     public double getCash() {

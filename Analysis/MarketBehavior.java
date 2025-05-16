@@ -21,6 +21,18 @@ public class MarketBehavior implements Trader {
     private UserAccount account;
     private StockMarketSimulation simulation; // 引用模擬實例
 
+    // 依現價掛單的百分比偏移量（負值＝低於現價掛買、正值＝高於現價掛賣）
+    private double buyPriceOffsetRatio = -0.05; // 例：買單掛在現價 -5%
+    private double sellPriceOffsetRatio = 0.05; // 例：賣單掛在現價 +5%
+    // 建議放在 MarketBehavior 類別屬性區
+    private double smaWeight = 0.4;
+    private double imbalanceWeight = 0.3;
+    private double momentumWeight = 0.2;
+    private double volumeWeight = 0.1;
+
+    private double bullishThreshold = 0.15;  // 多頭分數 ≥ 0.15
+    private double bearishThreshold = -0.15; // 空頭分數 ≤ -0.15
+
     /**
      * 構造函數
      *
@@ -96,7 +108,7 @@ public class MarketBehavior implements Trader {
         double currentPrice = stock.getPrice();
 
         // 1. 計算市場趨勢和波動性
-        double drift = marketTrend * 0.0001;
+        double drift = marketTrend * 0.01;
         double shock = volatility * random.nextGaussian();
 
         // 2. 均值回歸
@@ -120,6 +132,29 @@ public class MarketBehavior implements Trader {
         double orderImbalance = calculateOrderImbalance(orderBook);
         priceChangeRatio += orderImbalance * 0.005;
 
+        // === A. 技術面 ===
+        double sma = simulation.getMarketAnalyzer().calculateSMA();
+        double smaScore = Double.isNaN(sma) ? 0
+                : (currentPrice - sma) / sma; // 正值 → 價格高於均線
+
+        // === B. 訂單簿面 ===
+        double imbalanceScore = orderImbalance; // 已是 -1 ~ +1 之間
+
+        // === C. 動能面 ===
+        double momentumScore = priceChangeRatio; // -0.x ~ +0.x
+
+        // === D. 量能面 ===
+        double avgVol = simulation.getMarketAnalyzer().getRecentAverageVolume();
+        double volumeScore = (avgVol == 0) ? 0
+                : (recentVolume - avgVol) / avgVol; // 放大 >0、縮量 <0
+
+        // === E. 加權總分 ===
+        double sentimentScore
+                = smaScore * smaWeight
+                + imbalanceScore * imbalanceWeight
+                + momentumScore * momentumWeight
+                + volumeScore * volumeWeight;
+
         // 7. 價格層級影響
         double priceLevelImpact = calculatePriceLevelImpact(orderBook);
         priceChangeRatio += priceLevelImpact * 0.005;
@@ -142,25 +177,29 @@ public class MarketBehavior implements Trader {
         // 11. 隨機浮動
         newOrderPrice += newOrderPrice * (random.nextDouble() - 0.5) * 0.01;
 
-        // 12. 計算訂單量，並決定要下買單或賣單
+        // 12. 決定訂單量，並決定要下買單或賣單
         int orderVolume = calculateOrderVolume(volatility, recentVolume);
 
-        if (priceChangeRatio > 0) {
-            // 嘗試以「功能函數」方式下買單
-            int actualBuy = 市場買單操作(orderBook, newOrderPrice, orderVolume);
-            if (actualBuy > 0) {
-                // 可在此顯示成功資訊（若需要再額外印出）
-            }
-        } else {
-            // 下賣單前檢查實際可用持股
+        if (sentimentScore >= bullishThreshold) {
+            // -------- 看多：掛買單 --------
+            double customBuyPrice = currentPrice * (1 + buyPriceOffsetRatio);
+            customBuyPrice = orderBook.adjustPriceToUnit(customBuyPrice);
+
+//            int actualBuy = 市場買單操作(orderBook, customBuyPrice, orderVolume);
+            // log...
+        } else if (sentimentScore <= bearishThreshold) {
+            // -------- 看空：掛賣單 --------
+            double customSellPrice = currentPrice * (1 + sellPriceOffsetRatio);
+            customSellPrice = orderBook.adjustPriceToUnit(customSellPrice);
+
             int availableStocks = account.getStockInventory();
             int sellVolume = Math.min(orderVolume, availableStocks);
             if (sellVolume > 0) {
-                int actualSell = 市場賣單操作(orderBook, newOrderPrice, sellVolume);
-                if (actualSell > 0) {
-                    // 可在此顯示成功資訊（若需要再額外印出）
-                }
+                int actualSell = 市場賣單操作(orderBook, customSellPrice, sellVolume);
+                // log...
             }
+        } else {
+            // -------- 中性：不掛單或掛小量探盤 --------
         }
 
         // 更新長期平均價格
@@ -172,7 +211,6 @@ public class MarketBehavior implements Trader {
 
         // 最後更新 Stock 的價格
         stock.setPrice(newOrderPrice);
-
         // 傳遞到 MarketAnalyzer
         simulation.getMarketAnalyzer().addPrice(newOrderPrice);
     }
@@ -199,8 +237,8 @@ public class MarketBehavior implements Trader {
         Order buyOrder = new Order("buy", orderPrice, orderVolume, this, false, false);
         orderBook.submitBuyOrder(buyOrder, orderPrice);
 
-        System.out.println(String.format("【市場行為-買單】成功：掛買單 %d 股，價格 %.2f，預計成本 %.2f",
-                orderVolume, orderPrice, cost));
+//        System.out.println(String.format("【市場行為-買單】成功：掛買單 %d 股，價格 %.2f，預計成本 %.2f",
+//                orderVolume, orderPrice, cost));
         return orderVolume;
     }
 
@@ -223,8 +261,8 @@ public class MarketBehavior implements Trader {
         Order sellOrder = new Order("sell", orderPrice, orderVolume, this, false, false);
         orderBook.submitSellOrder(sellOrder, orderPrice);
 
-        System.out.println(String.format("【市場行為-賣單】成功：掛賣單 %d 股，價格 %.2f",
-                orderVolume, orderPrice));
+//        System.out.println(String.format("【市場行為-賣單】成功：掛賣單 %d 股，價格 %.2f",
+//                orderVolume, orderPrice));
         return orderVolume;
     }
 
@@ -336,5 +374,14 @@ public class MarketBehavior implements Trader {
 
     public int getStockInventory() {
         return account.getStockInventory();
+    }
+
+    // Setter，讓外部隨時可調
+    public void setBuyPriceOffsetRatio(double ratio) {
+        this.buyPriceOffsetRatio = ratio;
+    }
+
+    public void setSellPriceOffsetRatio(double ratio) {
+        this.sellPriceOffsetRatio = ratio;
     }
 }

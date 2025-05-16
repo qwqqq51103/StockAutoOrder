@@ -8,11 +8,13 @@ import Core.Stock;
 import StockMainAction.StockMarketSimulation;
 import java.util.Random;
 import java.util.LinkedList;
-import java.util.ListIterator;
 import java.util.Queue;
+import javax.swing.JOptionPane;
+import java.text.DecimalFormat;
+import jdk.nashorn.internal.runtime.regexp.joni.Config;
 
 /**
- * AI散戶行為，實現 Trader 接口
+ * AI散戶行為，實現 Trader 接口，自動輸入下單金額
  */
 public class RetailInvestorAI implements Trader {
 
@@ -26,6 +28,8 @@ public class RetailInvestorAI implements Trader {
     private UserAccount account;
     private OrderBook orderBook; // 亦可在 makeDecision 時指定
     private Stock stock;  // 股票實例
+    private boolean autoInputOrderAmount = true; // 是否自動輸入訂單金額
+    private DecimalFormat decimalFormat = new DecimalFormat("#,##0.00"); // 格式化價格顯示
 
     // 停損和止盈價格
     private Double stopLossPrice = null;
@@ -37,6 +41,14 @@ public class RetailInvestorAI implements Trader {
     // 短期和長期 SMA (如有用到可自行擴充)
     private int shortSmaPeriod = 5;
     private int longSmaPeriod = 20;
+
+    /* ==== 依技術面計算掛單價的權重（可視需要調整） ==== */
+    private double smaWeight = 0.50;   // 價格偏離 SMA 的影響
+    private double rsiWeight = 0.30;   // RSI 超買超賣的影響
+    private double volatilityWeight = 0.20;   // 波動度的影響
+
+    /* 偏移上限（%）；避免掛到離現價過遠的位置 */
+    private double maxOffsetRatio = 0.08;   // 最多 ±8%
 
     /**
      * 構造函數
@@ -165,12 +177,13 @@ public class RetailInvestorAI implements Trader {
                             //decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
                         }
                     } else {
-                        int actualBuy = 限價買入操作(buyAmount, currentPrice);
+                        double buyLimitPrice = computeBuyLimitPrice(currentPrice, sma, rsi, volatility);
+                        int actualBuy = 限價買入操作(buyAmount, buyLimitPrice);
                         if (actualBuy > 0) {
-                            decisionReason.append("【成功】限價買入 " + actualBuy + " 股。\n");
+                            decisionReason.append("【成功】限價買入 " + actualBuy + " 股，價格 " + decimalFormat.format(buyLimitPrice) + "。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-//                            decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
+                            //decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
                         }
                     }
                 } else if (getAccumulatedStocks() > 0 && priceDifferenceRatio > 0 && actionProbability > 0.3) {
@@ -182,14 +195,15 @@ public class RetailInvestorAI implements Trader {
                         if (actualSell > 0) {
                             decisionReason.append("【成功】市價賣出 ").append(actualSell).append(" 股。\n");
                         } else {
-//                            decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
+                            //decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
                         }
                     } else {
-                        int actualSell = 限價賣出操作(sellAmount, currentPrice);
+                        double sellLimitPrice = computeSellLimitPrice(currentPrice, sma, rsi, volatility);
+                        int actualSell = 限價賣出操作(sellAmount, sellLimitPrice);
                         if (actualSell > 0) {
-                            decisionReason.append("【成功】限價賣出 ").append(actualSell).append(" 股。\n");
+                            decisionReason.append("【成功】限價賣出 ").append(actualSell).append(" 股，價格 " + decimalFormat.format(sellLimitPrice) + "。\n");
                         } else {
-//                            decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
+                            //decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
                         }
                     }
 
@@ -209,15 +223,16 @@ public class RetailInvestorAI implements Trader {
                             decisionReason.append("【成功】市價買入 " + actualBuy + " 股。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-//                            decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
+                            //decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
                         }
                     } else {
-                        int actualBuy = 限價買入操作(buyAmount, currentPrice);
+                        double buyLimitPrice = computeBuyLimitPrice(currentPrice, sma, rsi, volatility);
+                        int actualBuy = 限價買入操作(buyAmount, buyLimitPrice);
                         if (actualBuy > 0) {
-                            decisionReason.append("【成功】限價買入 " + actualBuy + " 股。\n");
+                            decisionReason.append("【成功】限價買入 " + actualBuy + " 股，價格 " + decimalFormat.format(buyLimitPrice) + "。\n");
                             setStopLossAndTakeProfit(currentPrice, volatility);
                         } else {
-//                            decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
+                            //decisionReason.append("【失敗】限價買入。資金或賣單量不足。\n");
                         }
                     }
                 } else if (priceDifferenceRatio > dynamicSellThreshold && getAccumulatedStocks() > 0 && actionProbability > 0.2) {
@@ -230,14 +245,15 @@ public class RetailInvestorAI implements Trader {
                         if (actualSell > 0) {
                             decisionReason.append("【成功】市價賣出 " + actualSell + " 股。\n");
                         } else {
-//                            decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
+                            //decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
                         }
                     } else {
-                        int actualSell = 限價賣出操作(sellAmount, currentPrice);
+                        double sellLimitPrice = computeSellLimitPrice(currentPrice, sma, rsi, volatility);
+                        int actualSell = 限價賣出操作(sellAmount, sellLimitPrice);
                         if (actualSell > 0) {
-                            decisionReason.append("【成功】限價賣出 " + actualSell + " 股。\n");
+                            decisionReason.append("【成功】限價賣出 " + actualSell + " 股，價格 " + decimalFormat.format(sellLimitPrice) + "。\n");
                         } else {
-//                            decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
+                            //decisionReason.append("【失敗】限價賣出。持股或買單量不足。\n");
                         }
                     }
 
@@ -257,7 +273,7 @@ public class RetailInvestorAI implements Trader {
                     decisionReason.append("【成功】市價買入 " + actualBuy + " 股。\n");
                     setStopLossAndTakeProfit(currentPrice, volatility);
                 } else {
-//                    decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
+                    //decisionReason.append("【失敗】市價買入。資金或掛單量不足。\n");
                 }
             } else if (rsi > 70 && getAccumulatedStocks() > 0) {
                 int sellAmount = calculateSellVolume(priceDifferenceRatio, volatility);
@@ -266,7 +282,7 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【成功】市價賣出 ").append(actualSell).append(" 股。\n");
                 } else {
-//                    decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
+                    //decisionReason.append("【失敗】市價賣出。持股或買單量不足。\n");
                 }
                 stopLossPrice = null;
                 takeProfitPrice = null;
@@ -288,7 +304,7 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【停損觸發】市價賣出全部 ").append(actualSell).append(" 股。\n");
                 } else {
-//                    decisionReason.append("【停損觸發】失敗，持股或買單量不足。\n");
+                    //decisionReason.append("【停損觸發】失敗，持股或買單量不足。\n");
                 }
             }
             stopLossPrice = null;
@@ -302,7 +318,7 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【止盈觸發】市價賣出全部 ").append(actualSell).append(" 股。\n");
                 } else {
-//                    decisionReason.append("【止盈觸發】失敗，持股或買單量不足。\n");
+                    //decisionReason.append("【止盈觸發】失敗，持股或買單量不足。\n");
                 }
             }
             stopLossPrice = null;
@@ -312,6 +328,9 @@ public class RetailInvestorAI implements Trader {
 
     // ========== 隨機操作 ==========
     private void executeRandomTransaction(double availableFunds, double currentPrice, StringBuilder decisionReason, Stock stock) {
+        double sma = simulation.getMarketAnalyzer().calculateSMA();
+        double rsi = simulation.getMarketAnalyzer().getRSI();
+        double volatility = simulation.getMarketAnalyzer().getVolatility();
         if (random.nextBoolean() && availableFunds >= currentPrice) {
             int buyAmount = random.nextInt(50) + 1; // 1~50 股
             if (random.nextBoolean()) {
@@ -320,15 +339,16 @@ public class RetailInvestorAI implements Trader {
                     decisionReason.append("【隨機操作】市價買入 ").append(actualBuy).append(" 股。\n");
                     setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
                 } else {
-//                    decisionReason.append("【隨機操作】市價買入失敗，資金或掛單不足。\n");
+                    //decisionReason.append("【隨機操作】市價買入失敗，資金或掛單不足。\n");
                 }
             } else {
-                int actualBuy = 限價買入操作(buyAmount, currentPrice);
+                double buyLimitPrice = computeBuyLimitPrice(currentPrice, sma, rsi, volatility);
+                int actualBuy = 限價買入操作(buyAmount, buyLimitPrice);
                 if (actualBuy > 0) {
-                    decisionReason.append("【隨機操作】限價買入 ").append(actualBuy).append(" 股。\n");
+                    decisionReason.append("【隨機操作】限價買入 ").append(actualBuy).append(" 股，價格 " + decimalFormat.format(buyLimitPrice) + "。\n");
                     setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
                 } else {
-//                    decisionReason.append("【隨機操作】限價買入失敗，資金或賣單不足。\n");
+                    //decisionReason.append("【隨機操作】限價買入失敗，資金或賣單不足。\n");
                 }
             }
         } else if (getAccumulatedStocks() > 0) {
@@ -338,14 +358,15 @@ public class RetailInvestorAI implements Trader {
                 if (actualSell > 0) {
                     decisionReason.append("【隨機操作】市價賣出 ").append(actualSell).append(" 股。\n");
                 } else {
-//                    decisionReason.append("【隨機操作】市價賣出失敗，持股或買單不足。\n");
+                    //decisionReason.append("【隨機操作】市價賣出失敗，持股或買單不足。\n");
                 }
             } else {
-                int actualSell = 限價賣出操作(sellAmount, currentPrice);
+                double sellLimitPrice = computeSellLimitPrice(currentPrice, sma, rsi, volatility);
+                int actualSell = 限價賣出操作(sellAmount, sellLimitPrice);
                 if (actualSell > 0) {
-                    decisionReason.append("【隨機操作】限價賣出 ").append(actualSell).append(" 股。\n");
+                    decisionReason.append("【隨機操作】限價賣出 ").append(actualSell).append(" 股，價格 " + decimalFormat.format(sellLimitPrice) + "。\n");
                 } else {
-//                    decisionReason.append("【隨機操作】限價賣出失敗，持股或買單不足。\n");
+                    //decisionReason.append("【隨機操作】限價賣出失敗，持股或買單不足。\n");
                 }
             }
 
@@ -354,9 +375,66 @@ public class RetailInvestorAI implements Trader {
         }
     }
 
+    /**
+     * 根據技術指標回傳「買單」理想掛價
+     */
+    private double computeBuyLimitPrice(double currentPrice, double sma,
+            double rsi, double volatility) {
+
+        // 1. 價格偏離：低於 SMA → 想買，取負值
+        double smaOffset = (sma == 0) ? 0
+                : (currentPrice - sma) / sma;          // 正：高於均線，負：低於均線
+        smaOffset = -smaOffset;                      // 低於均線 => 負偏移 → 買單掛更高？反向
+
+        // 2. RSI：RSI < 50 偏向買方；用 (50 - RSI) / 100 作為偏移
+        double rsiOffset = (Double.isNaN(rsi)) ? 0
+                : (50.0 - rsi) / 100.0;                // RSI 30 → +0.20；RSI 70 → -0.20
+
+        // 3. 波動度：波動越大 → 掛單價離現價遠一點（保守）
+        double volOffset = -volatility * 0.5;        // volatility ≈ 0.02 → -0.01
+
+        // 4. 加權
+        double totalOffset = smaOffset * smaWeight
+                + rsiOffset * rsiWeight
+                + volOffset * volatilityWeight;
+
+        // 5. 限制在 ±maxOffsetRatio
+        totalOffset = Math.max(-maxOffsetRatio,
+                Math.min(totalOffset, maxOffsetRatio));
+
+        // 6. 計算掛單價並回傳（向下取價差）
+        double limitPrice = currentPrice * (1.0 + totalOffset);
+        return orderBook.adjustPriceToUnit(limitPrice);
+    }
+
+    /**
+     * 根據技術指標回傳「賣單」理想掛價
+     */
+    private double computeSellLimitPrice(double currentPrice, double sma,
+            double rsi, double volatility) {
+
+        double smaOffset = (sma == 0) ? 0
+                : (currentPrice - sma) / sma;          // 高於均線 → 正值（想賣）
+
+        double rsiOffset = (Double.isNaN(rsi)) ? 0
+                : (rsi - 50.0) / 100.0;                // RSI 70 → +0.20；RSI 30 → -0.20
+
+        double volOffset = volatility * 0.5;         // 波動大 → 再遠離一點
+
+        double totalOffset = smaOffset * smaWeight
+                + rsiOffset * rsiWeight
+                + volOffset * volatilityWeight;
+
+        totalOffset = Math.max(-maxOffsetRatio,
+                Math.min(totalOffset, maxOffsetRatio));
+
+        double limitPrice = currentPrice * (1.0 + totalOffset);
+        return orderBook.adjustPriceToUnit(limitPrice);
+    }
+
     // ========== 實際掛單操作 (成功/失敗印出) ==========
     /**
-     * 市價買入操作：先檢查資金，再呼叫 orderBook.marketBuy
+     * 市價買入操作：先檢查資金，再呼叫 orderBook.marketBuy 市價買入不需要輸入價格
      *
      * @param buyAmount 欲買股數
      * @return 實際買入數 (0=失敗)
@@ -367,12 +445,10 @@ public class RetailInvestorAI implements Trader {
         double funds = account.getAvailableFunds();
 
         if (stock == null) {
-//            System.out.println("【錯誤】市價買入失敗: stock 為 null");
             return 0;
         }
 
         if (orderBook == null) {
-//            System.out.print("【錯誤】市價買入失敗: orderBook 為 null");
             return 0;
         }
 
@@ -382,12 +458,12 @@ public class RetailInvestorAI implements Trader {
         }
 
         orderBook.marketBuy(this, buyAmount);
-        // 若有部分成交亦可視情況而定，這裡直接回傳 buyAmount
-        return buyAmount;
+//        // 若有部分成交亦可視情況而定，這裡直接回傳 buyAmount
+        return 0;
     }
 
     /**
-     * 市價賣出操作：先檢查持股，再呼叫 orderBook.marketSell
+     * 市價賣出操作：先檢查持股，再呼叫 orderBook.marketSell 市價賣出不需要輸入價格
      *
      * @param sellAmount 欲賣股數
      * @return 實際賣出數 (0=失敗)
@@ -400,58 +476,376 @@ public class RetailInvestorAI implements Trader {
         }
 
         orderBook.marketSell(this, sellAmount);
-        return sellAmount;
+        return 0;
+    }
+
+    private int 限價買入操作(int amount, double suggestedPrice) {
+        double funds = account.getAvailableFunds();
+        double currentPrice = stock.getPrice();
+        double finalPrice = 處理買入價格輸入(amount, suggestedPrice, currentPrice, funds);
+//        System.out.println("AI限價買入操作：" + suggestedPrice + "目前市價 : " + currentPrice);
+        if (finalPrice <= 0) {
+            return 0;
+        }
+
+        double totalCost = finalPrice * amount;
+
+        // 資金檢查
+        if (funds < totalCost) {
+            if (!autoInputOrderAmount) {
+                showError("資金不足，交易取消");
+            }
+            return 0;
+        }
+
+        // 檢查市場賣單量
+        int availableSell = orderBook.getAvailableSellVolume(finalPrice);
+        if (availableSell < amount) {
+            if (!autoInputOrderAmount) {
+                showError("市場中沒有足夠的賣單量，交易取消");
+            }
+            return 0;
+        }
+        // 掛單成功
+        Order buyOrder = new Order("buy", finalPrice, amount, this, false, false);
+        orderBook.submitBuyOrder(buyOrder, finalPrice);
+        return amount;
     }
 
     /**
-     * 限價買入操作：檢查資金 & 市場可賣數量，再掛 buyOrder
+     * 處理買入價格輸入 - 增強版，讓AI散戶可以根據市場情況自由決定價格
      *
-     * @param amount 欲買股數
-     * @param currentPrice 目前股價
-     * @return 實際買入股數 (0=失敗)
+     * @param amount 買入數量
+     * @param suggestedPrice 建議價格
+     * @param currentPrice 當前市價
+     * @param funds 可用資金
+     * @return 最終決定的價格
      */
-    private int 限價買入操作(int amount, double currentPrice) {
-        double totalCost = currentPrice * amount;
-        double funds = account.getAvailableFunds();
+    private double 處理買入價格輸入(int amount, double suggestedPrice, double currentPrice, double funds) {
+        if (!autoInputOrderAmount) {
+            // 手動模式邏輯保持不變
+            String message = String.format(
+                    "散戶 %s 限價買入\n欲買入數量: %d 股\n建議價格: %s\n目前市價: %s\n可用資金: %s\n請輸入買入價格 (或直接確認使用建議價格):",
+                    traderID, amount,
+                    decimalFormat.format(suggestedPrice),
+                    decimalFormat.format(currentPrice),
+                    decimalFormat.format(funds)
+            );
 
-        // 檢查資金
-        if (funds < totalCost) {
-            return 0;
+            String inputPrice = JOptionPane.showInputDialog(null, message, decimalFormat.format(suggestedPrice));
+
+            if (inputPrice == null) {
+                return -1; // 取消
+            }
+
+            try {
+                if (!inputPrice.trim().isEmpty()) {
+                    inputPrice = inputPrice.replace(",", "");
+                    double parsed = Double.parseDouble(inputPrice);
+                    return orderBook.adjustPriceToUnit(parsed);
+                }
+            } catch (NumberFormatException e) {
+                showError("價格格式錯誤，交易取消");
+                return -1;
+            }
+
+            return orderBook.adjustPriceToUnit(suggestedPrice);
+        } else {
+            // 自動模式 - 增強AI決策能力
+            return 智能決定買入價格(suggestedPrice, currentPrice);
+        }
+    }
+
+    /**
+     * 智能決定買入價格 考慮多種因素來確定一個合理的買入價格
+     *
+     * @param suggestedPrice 系統建議價格
+     * @param currentPrice 當前市價
+     * @return 智能決定的買入價格
+     */
+    private double 智能決定買入價格(double suggestedPrice, double currentPrice) {
+        // 獲取市場分析數據
+        double sma = simulation.getMarketAnalyzer().calculateSMA();
+        double rsi = simulation.getMarketAnalyzer().getRSI();
+        double volatility = simulation.getMarketAnalyzer().getVolatility();
+
+        // 1. 基於市場狀況的決策因子
+        double marketConditionFactor = 0.0;
+
+        // 1.1 RSI因子 (RSI低時更願意買入，但價格可能會更低)
+        double rsiFactor = 0.0;
+        if (!Double.isNaN(rsi)) {
+            // RSI < 30 (超賣) - 願意更接近市價買入
+            // RSI > 70 (超買) - 應該出價更低以等待回調
+            if (rsi < 30) {
+                rsiFactor = 0.02; // 願意付出接近市價
+            } else if (rsi > 70) {
+                rsiFactor = -0.05; // 降低買入價以等待回調
+            } else {
+                // 30-70 之間線性映射
+                rsiFactor = 0.02 - ((rsi - 30) / 40.0) * 0.07;
+            }
         }
 
-        // 檢查市場中是否有足夠賣單 (若要模擬失敗的話)
-        int availableSell = orderBook.getAvailableSellVolume(currentPrice);
-        if (availableSell < amount) {
-            return 0;
+        // 1.2 波動率因子 (高波動應該更謹慎)
+        double volatilityFactor = Math.min(-0.01 * volatility * 100, -0.001);
+
+        // 1.3 價格與SMA的關係 (低於SMA時更願意買入)
+        double smaDiffFactor = 0.0;
+        if (!Double.isNaN(sma) && sma > 0) {
+            double priceDiffPercent = (currentPrice - sma) / sma;
+            if (priceDiffPercent < -0.05) {
+                // 已經低於SMA 5%，可能是好買點
+                smaDiffFactor = 0.01;
+            } else if (priceDiffPercent > 0.05) {
+                // 高於SMA 5%，應該等待下跌
+                smaDiffFactor = -0.02;
+            } else {
+                // 接近SMA，適度調整
+                smaDiffFactor = -priceDiffPercent * 0.2;
+            }
         }
 
-        // 成功掛限價買單
-        Order buyOrder = new Order("buy", currentPrice, amount, this, false, false);
-        orderBook.submitBuyOrder(buyOrder, currentPrice);
-        return amount;
+        // 2. 個性化因子 (每個散戶有不同特性)
+        double personalityFactor = 0.0;
+
+        // 2.1 隨機性 (模擬散戶常有的不理性)
+        double randomFactor = (random.nextDouble() - 0.5) * 0.04;
+
+        // 2.2 風險偏好 (可以根據traderID固定或其他特徵來決定)
+        double riskAppetite = (traderID.hashCode() % 10) / 100.0; // -0.05 ~ 0.04
+
+        // 2.3 急迫感 (想要快速成交還是願意等待更好價格)
+        double urgencyFactor = 0.0;
+        if (ignoreThreshold) {
+            // 忽略閾值的交易者通常更急迫
+            urgencyFactor = 0.02;
+        } else {
+            // 遵守閾值的通常更有耐心
+            urgencyFactor = -0.01;
+        }
+
+        // 3. 市場技術分析建議價與當前價的差異
+        double suggestedDiff = (suggestedPrice - currentPrice) / currentPrice;
+        double technicalFactor = suggestedDiff * 0.5; // 採納50%的技術建議
+
+        // 4. 綜合所有因子
+        marketConditionFactor = rsiFactor + volatilityFactor + smaDiffFactor;
+        personalityFactor = randomFactor + riskAppetite + urgencyFactor;
+
+        // 計算最終價格調整因子 (各因子權重可調)
+        double priceFactor = marketConditionFactor * 0.5 + personalityFactor * 0.3 + technicalFactor * 0.2;
+
+        // 限制調整範圍在 -8% ~ +3% 之間 (買入價通常不會高太多)
+        priceFactor = Math.max(-0.08, Math.min(priceFactor, 0.03));
+
+        // 計算最終價格
+        double finalPrice = currentPrice * (1 + priceFactor);
+
+        // 調整為市場最小單位並返回
+        double adjustedPrice = orderBook.adjustPriceToUnit(finalPrice);
+
+        // 輸出決策過程供調試
+        System.out.println(String.format(
+                "AI買入決策過程: 市價=%.2f, 建議價=%.2f, RSI=%.2f, VOL=%.4f, "
+                + "市場因子=%.4f, 個性因子=%.4f, 技術因子=%.4f, 最終調整=%.2f%%, 決定價=%.2f",
+                currentPrice, suggestedPrice, rsi, volatility,
+                marketConditionFactor, personalityFactor, technicalFactor,
+                priceFactor * 100, adjustedPrice
+        ));
+
+        return adjustedPrice;
     }
 
     /**
      * 限價賣出操作：檢查持股 & 市場可買數量，再掛 sellOrder
      *
      * @param amount 欲賣股數
-     * @param currentPrice 目前股價
+     * @param suggestedPrice 系統計算的建議價格
      * @return 實際賣出股數 (0=失敗)
      */
-    private int 限價賣出操作(int amount, double currentPrice) {
+    private int 限價賣出操作(int amount, double suggestedPrice) {
         int hold = getAccumulatedStocks();
+        double currentPrice = stock.getPrice();
+        double finalPrice = suggestedPrice;
+
+        // 檢查持股是否足夠
         if (hold < amount) {
-            return 0;
-        }
-        int availableBuy = orderBook.getAvailableBuyVolume(currentPrice);
-        if (availableBuy < amount) {
+            if (!autoInputOrderAmount) {
+                showError("持股不足，交易取消");
+            }
             return 0;
         }
 
+        // 處理價格輸入
+        finalPrice = 處理賣出價格輸入(amount, suggestedPrice, currentPrice, hold);
+        if (finalPrice <= 0) {
+            return 0; // 使用者取消或輸入錯誤
+        }
+
+        // 檢查市場買單量
+        int availableBuy = orderBook.getAvailableBuyVolume(finalPrice);
+        if (availableBuy < amount) {
+            if (!autoInputOrderAmount) {
+                showError("市場中沒有足夠的買單量，交易取消");
+            }
+            return 0;
+        }
         // 成功掛限價賣單
-        Order sellOrder = new Order("sell", currentPrice, amount, this, false, false);
-        orderBook.submitSellOrder(sellOrder, currentPrice);
+        Order sellOrder = new Order("sell", finalPrice, amount, this, false, false);
+        orderBook.submitSellOrder(sellOrder, finalPrice);
         return amount;
+    }
+
+    /**
+     * 處理賣出價格輸入 - 增強版，讓AI散戶可以根據市場情況自由決定價格
+     *
+     * @param amount 賣出數量
+     * @param suggestedPrice 建議價格
+     * @param currentPrice 當前市價
+     * @param hold 持有股數
+     * @return 最終決定的價格
+     */
+    private double 處理賣出價格輸入(int amount, double suggestedPrice, double currentPrice, int hold) {
+        if (!autoInputOrderAmount) {
+            // 手動模式邏輯保持不變
+            String message = String.format(
+                    "散戶 %s 限價賣出\n欲賣出數量: %d 股\n建議價格: %s\n目前市價: %s\n持有股數: %d\n請輸入賣出價格 (或直接確認使用建議價格):",
+                    traderID, amount,
+                    decimalFormat.format(suggestedPrice),
+                    decimalFormat.format(currentPrice),
+                    hold
+            );
+
+            System.out.println("AI限價賣出操作：" + message);
+
+            String inputPrice = JOptionPane.showInputDialog(null, message, decimalFormat.format(suggestedPrice));
+
+            if (inputPrice == null) {
+                return -1; // 表示使用者取消
+            }
+
+            try {
+                if (!inputPrice.trim().isEmpty()) {
+                    inputPrice = inputPrice.replace(",", "");
+                    double parsed = Double.parseDouble(inputPrice);
+                    return orderBook.adjustPriceToUnit(parsed);
+                }
+            } catch (NumberFormatException e) {
+                showError("價格格式錯誤，交易取消");
+                return -1;
+            }
+
+            return orderBook.adjustPriceToUnit(suggestedPrice);
+        } else {
+            // 自動模式 - 增強AI決策能力
+            return 智能決定賣出價格(suggestedPrice, currentPrice);
+        }
+    }
+
+    /**
+     * 智能決定賣出價格 考慮多種因素來確定一個合理的賣出價格
+     *
+     * @param suggestedPrice 系統建議價格
+     * @param currentPrice 當前市價
+     * @return 智能決定的賣出價格
+     */
+    private double 智能決定賣出價格(double suggestedPrice, double currentPrice) {
+        // 獲取市場分析數據
+        double sma = simulation.getMarketAnalyzer().calculateSMA();
+        double rsi = simulation.getMarketAnalyzer().getRSI();
+        double volatility = simulation.getMarketAnalyzer().getVolatility();
+
+        // 1. 基於市場狀況的決策因子
+        double marketConditionFactor = 0.0;
+
+        // 1.1 RSI因子 (RSI高時更願意賣出，但希望價格更高)
+        double rsiFactor = 0.0;
+        if (!Double.isNaN(rsi)) {
+            // RSI > 70 (超買) - 市場可能會繼續上漲，要求更高價格
+            // RSI < 30 (超賣) - 市場可能還會下跌，應盡快賣出
+            if (rsi > 70) {
+                rsiFactor = 0.03; // 要求更高價格
+            } else if (rsi < 30) {
+                rsiFactor = -0.02; // 接受更低價格以確保成交
+            } else {
+                // 30-70 之間線性映射
+                rsiFactor = -0.02 + ((rsi - 30) / 40.0) * 0.05;
+            }
+        }
+
+        // 1.2 波動率因子 (高波動時要求風險溢價)
+        double volatilityFactor = Math.min(0.02 * volatility * 100, 0.05);
+
+        // 1.3 價格與SMA的關係 (高於SMA時更願意賣出)
+        double smaDiffFactor = 0.0;
+        if (!Double.isNaN(sma) && sma > 0) {
+            double priceDiffPercent = (currentPrice - sma) / sma;
+            if (priceDiffPercent > 0.05) {
+                // 已經高於SMA 5%，可能是好賣點
+                smaDiffFactor = 0.02;
+            } else if (priceDiffPercent < -0.05) {
+                // 低於SMA 5%，應該等待反彈
+                smaDiffFactor = 0.04;
+            } else {
+                // 接近SMA，適度調整
+                smaDiffFactor = priceDiffPercent * 0.3;
+            }
+        }
+
+        // 2. 個性化因子 (每個散戶有不同特性)
+        double personalityFactor = 0.0;
+
+        // 2.1 隨機性 (模擬散戶常有的不理性)
+        double randomFactor = (random.nextDouble() - 0.3) * 0.05; // 偏向略高的隨機值
+
+        // 2.2 風險偏好 (可以根據traderID固定或其他特徵來決定)
+        double riskAppetite = (traderID.hashCode() % 10) / 100.0; // -0.05 ~ 0.04
+
+        // 2.3 急迫感 (想要快速成交還是願意等待更好價格)
+        double urgencyFactor = 0.0;
+        if (ignoreThreshold) {
+            // 忽略閾值的交易者通常更急迫
+            urgencyFactor = -0.01;
+        } else {
+            // 遵守閾值的通常更有耐心
+            urgencyFactor = 0.02;
+        }
+
+        // 3. 市場技術分析建議價與當前價的差異
+        double suggestedDiff = (suggestedPrice - currentPrice) / currentPrice;
+        double technicalFactor = suggestedDiff * 0.6; // 採納60%的技術建議
+
+        // 4. 綜合所有因子
+        marketConditionFactor = rsiFactor + volatilityFactor + smaDiffFactor;
+        personalityFactor = randomFactor + riskAppetite + urgencyFactor;
+
+        // 計算最終價格調整因子 (各因子權重可調)
+        double priceFactor = marketConditionFactor * 0.45 + personalityFactor * 0.3 + technicalFactor * 0.25;
+
+        // 限制調整範圍在 -3% ~ +8% 之間 (賣出價通常不會低太多)
+        priceFactor = Math.max(-0.03, Math.min(priceFactor, 0.08));
+
+        // 計算最終價格
+        double finalPrice = currentPrice * (1 + priceFactor);
+
+        // 調整為市場最小單位並返回
+        double adjustedPrice = orderBook.adjustPriceToUnit(finalPrice);
+
+        // 輸出決策過程供調試
+        System.out.println(String.format(
+                "AI賣出決策過程: 市價=%.2f, 建議價=%.2f, RSI=%.2f, VOL=%.4f, "
+                + "市場因子=%.4f, 個性因子=%.4f, 技術因子=%.4f, 最終調整=%.2f%%, 決定價=%.2f",
+                currentPrice, suggestedPrice, rsi, volatility,
+                marketConditionFactor, personalityFactor, technicalFactor,
+                priceFactor * 100, adjustedPrice
+        ));
+
+        return adjustedPrice;
+    }
+
+    private void showError(String message) {
+        JOptionPane.showMessageDialog(null, message, "錯誤", JOptionPane.ERROR_MESSAGE);
     }
 
     // ========== 工具/輔助函數 ==========

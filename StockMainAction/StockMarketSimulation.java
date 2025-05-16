@@ -66,10 +66,10 @@ public class StockMarketSimulation {
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
 
-    private double initialRetailCash = 1000, initialMainForceCash = 50000;  // 初始現金
+    private double initialRetailCash = 10000, initialMainForceCash = 25000;  // 初始現金
     private int initialRetails = 10;  // 初始散戶數量
-    private int marketBehaviorStock = 100000; //市場數量
-    private double marketBehaviorGash = -0; //市場現金
+    private int marketBehaviorStock = 12000; //市場數量
+    private double marketBehaviorGash = -999990; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
     private final ReentrantLock marketAnalyzerLock = new ReentrantLock();
@@ -87,7 +87,7 @@ public class StockMarketSimulation {
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
         int initialDelay = 0; // 初始延遲
-        int period = 1000; // 執行間隔（單位：毫秒）
+        int period = 100; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -227,7 +227,7 @@ public class StockMarketSimulation {
         initializeRetailInvestors(initialRetails); // 初始化散戶
 
         // 單獨初始化用戶投資者
-        userInvestor = new PersonalAI(1000000, "Personal", this);
+        userInvestor = new PersonalAI(50000, "Personal", this, orderBook, stock);
 
         // priceSeries 和其他數據系列已在 initializeCharts() 中初始化
         String[] columnNames = {"買量", "買價", "賣價", "賣量"};
@@ -399,59 +399,106 @@ public class StockMarketSimulation {
             }
         });
 
-        // 限價買入按鈕
+        // ＝＝＝＝＝＝＝＝＝＝＝ 限價買入按鈕 ＝＝＝＝＝＝＝＝＝＝＝
         limitBuyButton.addActionListener(e -> {
-            String input = JOptionPane.showInputDialog(controlFrame, "輸入購買股數:", "限價買入", JOptionPane.PLAIN_MESSAGE);
-            if (input != null) {
-                try {
-                    int quantity = Integer.parseInt(input);
-                    if (quantity <= 0) {
-                        JOptionPane.showMessageDialog(controlFrame, "股數必須大於0。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                        return;
-                    }
-                    double currentPrice = stock.getPrice();
-                    double totalCost = currentPrice * quantity;
-                    if (userInvestor.getAccount().getAvailableFunds() >= totalCost) {
-                        // 提交限價買單到訂單簿
-                        Order buyOrder = new Order("buy", currentPrice, quantity, userInvestor, false, false); // 限價單
-                        orderBook.submitBuyOrder(buyOrder, buyOrder.getPrice());
-                        updateInfoTextArea("限價買入 " + quantity + " 股，總成本：" + String.format("%.2f", totalCost));
-                        updateOrderBookDisplay(); // 更新訂單簿表格
-                        updateUserInfo(); // 更新用戶資訊
-                    } else {
-                        JOptionPane.showMessageDialog(controlFrame, "資金不足以購買 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                    }
-                } catch (NumberFormatException ex) {
-                    JOptionPane.showMessageDialog(controlFrame, "請輸入有效的股數。", "錯誤", JOptionPane.ERROR_MESSAGE);
+            // 先輸入股數
+            String qtyStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入購買股數:", "限價買入", JOptionPane.PLAIN_MESSAGE);
+            if (qtyStr == null) {
+                return;   // 取消
+            }
+            // 再輸入價格
+            String priceStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入掛單價格:", "限價買入", JOptionPane.PLAIN_MESSAGE);
+            if (priceStr == null) {
+                return; // 取消
+            }
+            try {
+                int quantity = Integer.parseInt(qtyStr.trim());
+                double limitPrice = Double.parseDouble(priceStr.trim());
+
+                if (quantity <= 0 || limitPrice <= 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "股數與價格都必須大於 0。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
                 }
+
+                double totalCost = limitPrice * quantity;
+                if (userInvestor.getAccount().getAvailableFunds() < totalCost) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "資金不足以購買 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                // 送出限價買單
+                int result = userInvestor.限價買入操作(quantity, limitPrice);
+                if (result == 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "限價買入失敗：可能資金不足、市場無對應賣單，或價格超出允許範圍。",
+                            "失敗", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                updateInfoTextArea(String.format(
+                        "限價買入 %d 股 @ %.2f，總成本 %.2f", quantity, limitPrice, totalCost));
+                updateOrderBookDisplay();
+                updateUserInfo();
+
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(controlFrame,
+                        "請輸入有效的數字。", "錯誤", JOptionPane.ERROR_MESSAGE);
             }
         });
 
-        // 限價賣出按鈕
+// ＝＝＝＝＝＝＝＝＝＝＝ 限價賣出按鈕 ＝＝＝＝＝＝＝＝＝＝＝
         limitSellButton.addActionListener(e -> {
-            String input = JOptionPane.showInputDialog(controlFrame, "輸入賣出股數:", "限價賣出", JOptionPane.PLAIN_MESSAGE);
-            if (input != null) {
-                try {
-                    int quantity = Integer.parseInt(input);
-                    if (quantity <= 0) {
-                        JOptionPane.showMessageDialog(controlFrame, "股數必須大於0。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                        return;
-                    }
-                    if (userInvestor.getAccount().getStockInventory() >= quantity) {
-                        double currentPrice = stock.getPrice();
-                        double totalRevenue = currentPrice * quantity;
-                        // 提交限價賣單到訂單簿
-                        Order sellOrder = new Order("sell", currentPrice, quantity, userInvestor, false, false); // 限價單
-                        orderBook.submitSellOrder(sellOrder, sellOrder.getPrice());
-                        updateInfoTextArea("限價賣出 " + quantity + " 股，總收入：" + String.format("%.2f", totalRevenue));
-                        updateOrderBookDisplay(); // 更新訂單簿表格
-                        updateUserInfo(); // 更新用戶資訊
-                    } else {
-                        JOptionPane.showMessageDialog(controlFrame, "持股不足以賣出 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                    }
-                } catch (NumberFormatException ex) {
-                    JOptionPane.showMessageDialog(controlFrame, "請輸入有效的股數。", "錯誤", JOptionPane.ERROR_MESSAGE);
+            // 先輸入股數
+            String qtyStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入賣出股數:", "限價賣出", JOptionPane.PLAIN_MESSAGE);
+            if (qtyStr == null) {
+                return;   // 取消
+            }
+            // 再輸入價格
+            String priceStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入掛單價格:", "限價賣出", JOptionPane.PLAIN_MESSAGE);
+            if (priceStr == null) {
+                return; // 取消
+            }
+            try {
+                int quantity = Integer.parseInt(qtyStr.trim());
+                double limitPrice = Double.parseDouble(priceStr.trim());
+
+                if (quantity <= 0 || limitPrice <= 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "股數與價格都必須大於 0。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
                 }
+
+                if (userInvestor.getAccount().getStockInventory() < quantity) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "持股不足以賣出 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                double totalRevenue = limitPrice * quantity;
+
+                // 送出限價賣單
+                int result = userInvestor.限價賣出操作(quantity, limitPrice);
+                if (result == 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "限價賣出失敗：可能持股不足、市場無對應買單，或價格超出允許範圍。",
+                            "失敗", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                updateInfoTextArea(String.format(
+                        "限價賣出 %d 股 @ %.2f，總收入 %.2f", quantity, limitPrice, totalRevenue));
+                updateOrderBookDisplay();
+                updateUserInfo();
+
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(controlFrame,
+                        "請輸入有效的數字。", "錯誤", JOptionPane.ERROR_MESSAGE);
             }
         });
 
@@ -473,7 +520,7 @@ public class StockMarketSimulation {
 
                     // 執行市價單
                     if (actualQuantity > 0) {
-                        orderBook.marketBuy(userInvestor, actualQuantity);
+                        userInvestor.市價買入操作(actualQuantity);
                         updateInfoTextArea("市價買入 " + actualQuantity + " 股，實際成本：" + String.format("%.2f", actualCost));
 
                         // 更新訂單簿和用戶資訊
@@ -515,7 +562,7 @@ public class StockMarketSimulation {
 
                         // 執行市價賣出
                         if (actualQuantity > 0) {
-                            orderBook.marketSell(userInvestor, actualQuantity);
+                            userInvestor.市價賣出操作(actualQuantity);
                             updateInfoTextArea("市價賣出 " + actualQuantity + " 股，實際收入：" + String.format("%.2f", actualRevenue));
 
                             // 更新訂單簿和用戶資訊
@@ -955,9 +1002,9 @@ public class StockMarketSimulation {
     // 更新股價走勢圖和 SMA
     private void updatePriceChart() {
         priceSeries.add(timeStep, stock.getPrice());
-        keepSeriesWithinLimit(priceSeries, 9000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(priceSeries, 9000000); // 保留最新 100 筆數據
         smaSeries.add(timeStep, marketAnalyzer.getSMA());
-        keepSeriesWithinLimit(smaSeries, 9000); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(smaSeries, 9000000); // 保留最新 100 筆數據
     }
 
     // 新增方法來更新其他技術指標
@@ -1025,7 +1072,7 @@ public class StockMarketSimulation {
 
             if (timeStep >= priceSeries.getItemCount()) {
                 priceSeries.add(timeStep, currentPrice);
-                SwingUtilities.invokeLater(() -> keepSeriesWithinLimit(priceSeries, 9000));
+                SwingUtilities.invokeLater(() -> keepSeriesWithinLimit(priceSeries, 9000000));
             }
 
             // 根據價格變動確定顏色
