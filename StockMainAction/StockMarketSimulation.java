@@ -10,6 +10,7 @@ import Analysis.MarketAnalyzer;
 import Core.Order;
 import Core.OrderBook;
 import Core.Stock;
+import Logging.LogViewerWindow;
 import javax.swing.*;
 import java.awt.*;
 import org.jfree.chart.ChartFactory;
@@ -40,6 +41,7 @@ import java.awt.BasicStroke;
 import javax.swing.JOptionPane;
 import org.jfree.chart.plot.Plot;
 import javafx.util.Pair;
+import Logging.MarketLogger;
 
 public class StockMarketSimulation {
 
@@ -67,10 +69,10 @@ public class StockMarketSimulation {
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
     private MatchingEnginePanel matchingEnginePanel;
 
-    private double initialRetailCash = 10000, initialMainForceCash = 25000;  // 初始現金
-    private int initialRetails = 50;  // 初始散戶數量
-    private int marketBehaviorStock = 100000; //市場數量
-    private double marketBehaviorGash = -999990; //市場現金
+    private double initialRetailCash = 100000, initialMainForceCash = 200000;  // 初始現金
+    private int initialRetails = 1;  // 初始散戶數量
+    private int marketBehaviorStock = 5000; //市場數量
+    private double marketBehaviorGash = 10000; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
     private final ReentrantLock marketAnalyzerLock = new ReentrantLock();
@@ -84,6 +86,8 @@ public class StockMarketSimulation {
 
     // 用戶投資者 - 這裡改成 PersonalAI
     private PersonalAI userInvestor;
+
+    private static final MarketLogger logger = MarketLogger.getInstance();
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -102,8 +106,9 @@ public class StockMarketSimulation {
                             orderBook,
                             marketAnalyzer.calculateVolatility(),
                             (int) marketAnalyzer.getRecentAverageVolume());
+                    logger.info(String.format("市場行為模擬：時間步長 %d", timeStep), "MARKET_BEHAVIOR");
                 } catch (Exception e) {
-                    System.err.println("市場行為模擬發生錯誤：" + e.getMessage());
+                    logger.error("市場行為模擬發生錯誤：" + e.getMessage(), "MARKET_BEHAVIOR");
                     e.printStackTrace();
                 }
 
@@ -166,7 +171,7 @@ public class StockMarketSimulation {
                     validateMarketInventory(); //
                 }
             } catch (Exception e) {
-                System.err.println("主執行流程發生未處理的錯誤：" + e.getMessage());
+                logger.error("主模擬流程發生未處理的錯誤：" + e.getMessage(), "MARKET_SIMULATION");
                 e.printStackTrace();
             }
         }, initialDelay, period, TimeUnit.MILLISECONDS);
@@ -186,19 +191,37 @@ public class StockMarketSimulation {
 
     // 停止自動價格波動
     public void stopAutoPriceFluctuation() {
+        logger.info("停止市場價格波動模擬", "MARKET_SIMULATION");
         if (executorService != null && !executorService.isShutdown()) {
             executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(800, TimeUnit.MILLISECONDS)) {
+                    executorService.shutdownNow();
+                    logger.warn("強制關閉模擬執行緒池", "MARKET_SIMULATION");
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                logger.error(e, "MARKET_SIMULATION");
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
-    // 初始化
+    // 初始化 構造函數中添加日誌記錄
     public StockMarketSimulation() {
-        initializeSimulation();      // 初始化模擬數據（初始化 OrderBook）
-        initializeCharts();          // 初始化圖表（包含 volumeDataset）
-        initializeGUI();             // 初始化 GUI 顯示
-        initializeControlFrame();    // 初始化控制視窗
-        addButtonActions();          // 為控制視窗的按鈕添加事件處理器
-        startAutoPriceFluctuation(); // 啟動自動波動
+        logger.info("初始化股票市場模擬", "SYSTEM_INIT");
+        try {
+            initializeSimulation();
+            initializeCharts();
+            initializeGUI();
+            initializeControlFrame();
+            addButtonActions();
+            startAutoPriceFluctuation();
+            logger.info("股票市場模擬初始化完成", "SYSTEM_INIT");
+        } catch (Exception e) {
+            logger.error(e, "SYSTEM_INIT");
+            throw new RuntimeException("股票市場模擬初始化失敗", e);
+        }
     }
 
     // 初始化多個自動化散戶
@@ -407,6 +430,8 @@ public class StockMarketSimulation {
         });
 
         frame.setVisible(true);
+        // 打開日誌視窗
+        openLogViewer();
     }
 
     // 添加按鈕事件處理器
@@ -1225,9 +1250,33 @@ public class StockMarketSimulation {
         }
     }
 
-    // 主程式
+    // 在 main 方法中添加日誌
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(StockMarketSimulation::new);
+        MarketLogger logger = MarketLogger.getInstance();
+        logger.info("股票市場模擬程式啟動", "APPLICATION_START");
+
+        SwingUtilities.invokeLater(() -> {
+            try {
+                new StockMarketSimulation();
+                logger.info("股票市場模擬程式初始化完成", "APPLICATION_START");
+            } catch (Exception e) {
+                logger.error("股票市場模擬程式啟動失敗", "APPLICATION_START");
+                logger.error(e, "APPLICATION_START");
+                JOptionPane.showMessageDialog(null,
+                        "股票市場模擬程式啟動失敗：" + e.getMessage(),
+                        "錯誤",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
+
+    /**
+     * 啟動日誌查看視窗
+     */
+    public void openLogViewer() {
+        SwingUtilities.invokeLater(() -> {
+            new LogViewerWindow();
+        });
     }
 
     // 檢查市場庫存
@@ -1281,4 +1330,5 @@ public class StockMarketSimulation {
             // ↑ 需確定 PersonalAI 有 getTakeProfitPrice() 之類方法才可顯示
         });
     }
+
 }
