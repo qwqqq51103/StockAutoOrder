@@ -2,6 +2,7 @@ package StockMainAction;
 
 import AIStrategies.RetailInvestorAI;
 import AIStrategies.MainForceStrategyWithOrderBook;
+import AIStrategies.PersonalAI;
 import OrderManagement.OrderBookTable;
 import OrderManagement.OrderViewer;
 import Analysis.MarketBehavior;
@@ -9,6 +10,7 @@ import Analysis.MarketAnalyzer;
 import Core.Order;
 import Core.OrderBook;
 import Core.Stock;
+import Logging.LogViewerWindow;
 import javax.swing.*;
 import java.awt.*;
 import org.jfree.chart.ChartFactory;
@@ -39,6 +41,7 @@ import java.awt.BasicStroke;
 import javax.swing.JOptionPane;
 import org.jfree.chart.plot.Plot;
 import javafx.util.Pair;
+import Logging.MarketLogger;
 
 public class StockMarketSimulation {
 
@@ -46,7 +49,7 @@ public class StockMarketSimulation {
     private JFrame controlFrame; // 控制視窗框架
     private JLabel stockPriceLabel, retailCashLabel, retailStocksLabel, mainForceCashLabel, mainForceStocksLabel,
             targetPriceLabel, averageCostPriceLabel, fundsLabel, inventoryLabel, weightedAveragePriceLabel;
-    private JLabel userStockLabel, userCashLabel, userAvgPriceLabel; // 個人資訊標籤
+    private JLabel userStockLabel, userCashLabel, userAvgPriceLabel, userTargetPrice; // 個人資訊標籤
     private JTextArea infoTextArea; // 信息顯示區
     private JFreeChart retailProfitChart, mainForceProfitChart, volumeChart;  // 散戶和主力損益表的圖表
     private ChartPanel retailProfitChartPanel, mainForceProfitChartPanel;  // 散戶和主力損益表的圖表面板
@@ -64,11 +67,12 @@ public class StockMarketSimulation {
     private MarketAnalyzer marketAnalyzer;  // 市場分析器
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
+    private MatchingEnginePanel matchingEnginePanel;
 
-    private double initialRetailCash = 5000, initialMainForceCash = 100000;  // 初始現金
-    private int initialRetails = 5;  // 初始散戶數量
-    private int marketBehaviorStock = 10000; //市場數量
-    private double marketBehaviorGash = 0; //市場現金
+    private double initialRetailCash = 100000, initialMainForceCash = 200000;  // 初始現金
+    private int initialRetails = 1;  // 初始散戶數量
+    private int marketBehaviorStock = 5000; //市場數量
+    private double marketBehaviorGash = 10000; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
     private final ReentrantLock marketAnalyzerLock = new ReentrantLock();
@@ -78,10 +82,12 @@ public class StockMarketSimulation {
     private XYSeries wapSeries;          // 顯示加權平均價格的數據集
 
     // 按鈕
-    private JButton stopButton, limitBuyButton, limitSellButton, marketBuyButton, marketSellButton;
+    private JButton stopButton, limitBuyButton, limitSellButton, marketBuyButton, marketSellButton, cancelOrderButton;
 
-    // 用戶投資者（假設第一個散戶為用戶）
-    private RetailInvestorAI userInvestor;
+    // 用戶投資者 - 這裡改成 PersonalAI
+    private PersonalAI userInvestor;
+
+    private static final MarketLogger logger = MarketLogger.getInstance();
 
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
@@ -100,8 +106,9 @@ public class StockMarketSimulation {
                             orderBook,
                             marketAnalyzer.calculateVolatility(),
                             (int) marketAnalyzer.getRecentAverageVolume());
+                    logger.info(String.format("市場行為模擬：時間步長 %d", timeStep), "MARKET_BEHAVIOR");
                 } catch (Exception e) {
-                    System.err.println("市場行為模擬發生錯誤：" + e.getMessage());
+                    logger.error("市場行為模擬發生錯誤：" + e.getMessage(), "MARKET_BEHAVIOR");
                     e.printStackTrace();
                 }
 
@@ -150,6 +157,7 @@ public class StockMarketSimulation {
                             updateProfitTab();
                             updateOrderBookDisplay();
                             updateUserInfo(); // 更新用戶資訊顯示
+//                            updateVolumeChart(1);
                         } catch (Exception e) {
                             System.err.println("界面更新發生錯誤：" + e.getMessage());
                             e.printStackTrace();
@@ -163,7 +171,7 @@ public class StockMarketSimulation {
                     validateMarketInventory(); //
                 }
             } catch (Exception e) {
-                System.err.println("主執行流程發生未處理的錯誤：" + e.getMessage());
+                logger.error("主模擬流程發生未處理的錯誤：" + e.getMessage(), "MARKET_SIMULATION");
                 e.printStackTrace();
             }
         }, initialDelay, period, TimeUnit.MILLISECONDS);
@@ -183,19 +191,37 @@ public class StockMarketSimulation {
 
     // 停止自動價格波動
     public void stopAutoPriceFluctuation() {
+        logger.info("停止市場價格波動模擬", "MARKET_SIMULATION");
         if (executorService != null && !executorService.isShutdown()) {
             executorService.shutdown();
+            try {
+                if (!executorService.awaitTermination(800, TimeUnit.MILLISECONDS)) {
+                    executorService.shutdownNow();
+                    logger.warn("強制關閉模擬執行緒池", "MARKET_SIMULATION");
+                }
+            } catch (InterruptedException e) {
+                executorService.shutdownNow();
+                logger.error(e, "MARKET_SIMULATION");
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
-    // 初始化
+    // 初始化 構造函數中添加日誌記錄
     public StockMarketSimulation() {
-        initializeSimulation();      // 初始化模擬數據（初始化 OrderBook）
-        initializeCharts();          // 初始化圖表（包含 volumeDataset）
-        initializeGUI();             // 初始化 GUI 顯示
-        initializeControlFrame();    // 初始化控制視窗
-        addButtonActions();          // 為控制視窗的按鈕添加事件處理器
-        startAutoPriceFluctuation(); // 啟動自動波動
+        logger.info("初始化股票市場模擬", "SYSTEM_INIT");
+        try {
+            initializeSimulation();
+            initializeCharts();
+            initializeGUI();
+            initializeControlFrame();
+            addButtonActions();
+            startAutoPriceFluctuation();
+            logger.info("股票市場模擬初始化完成", "SYSTEM_INIT");
+        } catch (Exception e) {
+            logger.error(e, "SYSTEM_INIT");
+            throw new RuntimeException("股票市場模擬初始化失敗", e);
+        }
     }
 
     // 初始化多個自動化散戶
@@ -225,20 +251,12 @@ public class StockMarketSimulation {
         initializeRetailInvestors(initialRetails); // 初始化散戶
 
         // 單獨初始化用戶投資者
-        userInvestor = new RetailInvestorAI(1000000, "Personal", this); // 修改為 "Personal" 類型
+        userInvestor = new PersonalAI(5000000, "Personal", this, orderBook, stock);
 
         // priceSeries 和其他數據系列已在 initializeCharts() 中初始化
         String[] columnNames = {"買量", "買價", "賣價", "賣量"};
         Object[][] initialData = new Object[10][4];
-        orderBookTable = new OrderBookTable(initialData, columnNames);
-
-        // 放置一些初始買單和賣單（可選）
-        for (int i = 0; i < 10; i++) {
-            // Order initialBuyOrder = new Order("buy", 10.0 + i * 0.1, 200, mainForce, false, false);
-            // orderBook.submitBuyOrder(initialBuyOrder, initialBuyOrder.getPrice());
-            // Order initialSellOrder = new Order("sell", 10.0 - i * 0.1, 250, marketBehavior, false, false);
-            // orderBook.submitSellOrder(initialSellOrder, initialSellOrder.getPrice());
-        }
+        orderBookTable = new OrderBookTable();
     }
 
     // 初始化圖表
@@ -272,20 +290,25 @@ public class StockMarketSimulation {
         controlFrame.setLocationRelativeTo(null); // 居中顯示
 
         JPanel controlPanel = new JPanel();
-        controlPanel.setLayout(new GridLayout(8, 1, 10, 10)); // 增加行數，適應新增按鈕
+        controlPanel.setLayout(new GridLayout(9, 1, 10, 10)); // 增加行數，適應新增按鈕
 
         // 個人資訊標籤
         JPanel userInfoPanel = new JPanel(new GridLayout(2, 1, 5, 5));
         userStockLabel = new JLabel("個人股票數量: " + userInvestor.getAccount().getStockInventory());
         userCashLabel = new JLabel("個人金錢餘額: " + String.format("%.2f", userInvestor.getAccount().getAvailableFunds()));
+        userAvgPriceLabel = new JLabel("個人平均價: " + String.format("%.2f", userInvestor.getAverageCostPrice()));
+        userTargetPrice = new JLabel("個人目標價: " + String.format("%.2f", userInvestor.getTakeProfitPrice()));
         userInfoPanel.add(userStockLabel);
         userInfoPanel.add(userCashLabel);
+        userInfoPanel.add(userAvgPriceLabel);
+        userInfoPanel.add(userTargetPrice);
 
         // 按鈕
         limitBuyButton = new JButton("限價買入");
         limitSellButton = new JButton("限價賣出");
         marketBuyButton = new JButton("市價買入");
         marketSellButton = new JButton("市價賣出");
+        cancelOrderButton = new JButton("取消訂單");
         JButton viewOrdersButton = new JButton("查看訂單"); // 新增按鈕
         stopButton = new JButton("停止");
 
@@ -296,6 +319,7 @@ public class StockMarketSimulation {
         controlPanel.add(limitSellButton);
         controlPanel.add(marketBuyButton);
         controlPanel.add(marketSellButton);
+        controlPanel.add(cancelOrderButton);
         controlPanel.add(viewOrdersButton); // 添加新按鈕
         controlPanel.add(stopButton);
 
@@ -310,33 +334,41 @@ public class StockMarketSimulation {
         controlFrame.setVisible(true);
     }
 
-    // 設定 GUI 結構
+    /**
+     * 修改 initializeGUI 方法，整合 MatchingEnginePanel
+     */
     private void initializeGUI() {
         frame = new JFrame("股票市場模擬");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(1600, 900); // 增加窗口大小以容納新增的元件
         frame.setLocationRelativeTo(null); // 居中顯示
 
+        // 創建撮合引擎控制面板
+        MatchingEnginePanel matchingEnginePanel = new MatchingEnginePanel(orderBook);
+
         JPanel chartPanel = new JPanel(new GridLayout(4, 1)); // 調整為4行1列
         chartPanel.add(new ChartPanel(createPriceChart()));
         chartPanel.add(new ChartPanel(createVolatilityChart()));
         chartPanel.add(new ChartPanel(createRSIChart()));
         chartPanel.add(new ChartPanel(createVolumeChart())); // 新增成交量圖表
-
         // 如果需要，可以新增 WAP 圖表
         // chartPanel.add(new ChartPanel(createWAPChart()));
-        // 更新 GridLayout 的行數為 4 或更多，根據新增的圖表數量
+
         JPanel labelPanel = new JPanel(new GridLayout(5, 2, 10, 10)); // 調整為5行2列，增加間距
         initializeLabels(labelPanel);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chartPanel, labelPanel);
+        // 將撮合引擎面板添加到標籤面板下方
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.add(labelPanel, BorderLayout.CENTER);
+        southPanel.add(matchingEnginePanel, BorderLayout.SOUTH);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chartPanel, southPanel);
         splitPane.setResizeWeight(0.7);
 
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoTextArea = new JTextArea(8, 30);
         infoTextArea.setEditable(false);
         JScrollPane infoScrollPane = new JScrollPane(infoTextArea);
-
         JSplitPane infoSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, orderBookTable.getScrollPane(), infoScrollPane);
         infoSplitPane.setResizeWeight(0.3);
 
@@ -354,10 +386,8 @@ public class StockMarketSimulation {
         JPanel profitPanel = new JPanel(new GridLayout(2, 1));
         retailProfitChart = createProfitChart("散戶損益", "散戶", retailInvestors.size());
         mainForceProfitChart = createProfitChart("主力損益", "主力", 1);
-
         ChartPanel retailProfitChartPanel = new ChartPanel(retailProfitChart);
         ChartPanel mainForceProfitChartPanel = new ChartPanel(mainForceProfitChart);
-
         profitPanel.add(retailProfitChartPanel);
         profitPanel.add(mainForceProfitChartPanel);
         tabbedPane.addTab("損益表", profitPanel);
@@ -368,6 +398,24 @@ public class StockMarketSimulation {
         indicatorsPanel.add(new ChartPanel(createRSIChart()));
         indicatorsPanel.add(new ChartPanel(createWAPChart())); // 如有需要，新增 WAP 圖表
         tabbedPane.addTab("技術指標", indicatorsPanel);
+
+        // 創建交易設置分頁，包含撮合引擎控制面板
+        JPanel settingsPanel = new JPanel(new BorderLayout());
+
+        // 第二種方式：將撮合引擎控制面板放在新的"交易設置"分頁中
+        // 可以在此頁面添加其他交易設置控件
+        JPanel tradingSettingsPanel = new JPanel();
+        tradingSettingsPanel.setLayout(new BoxLayout(tradingSettingsPanel, BoxLayout.Y_AXIS));
+        tradingSettingsPanel.add(matchingEnginePanel);
+
+        // 可以添加更多設置控件
+        // ...
+        settingsPanel.add(tradingSettingsPanel, BorderLayout.NORTH);
+        JPanel emptyPanel = new JPanel();
+        emptyPanel.setPreferredSize(new Dimension(600, 400));
+        settingsPanel.add(emptyPanel, BorderLayout.CENTER);
+
+        tabbedPane.addTab("交易設置", settingsPanel);
 
         // 將主分頁面板添加至主視窗
         frame.add(tabbedPane, BorderLayout.CENTER);
@@ -382,6 +430,8 @@ public class StockMarketSimulation {
         });
 
         frame.setVisible(true);
+        // 打開日誌視窗
+        openLogViewer();
     }
 
     // 添加按鈕事件處理器
@@ -399,59 +449,106 @@ public class StockMarketSimulation {
             }
         });
 
-        // 限價買入按鈕
+        // ＝＝＝＝＝＝＝＝＝＝＝ 限價買入按鈕 ＝＝＝＝＝＝＝＝＝＝＝
         limitBuyButton.addActionListener(e -> {
-            String input = JOptionPane.showInputDialog(controlFrame, "輸入購買股數:", "限價買入", JOptionPane.PLAIN_MESSAGE);
-            if (input != null) {
-                try {
-                    int quantity = Integer.parseInt(input);
-                    if (quantity <= 0) {
-                        JOptionPane.showMessageDialog(controlFrame, "股數必須大於0。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                        return;
-                    }
-                    double currentPrice = stock.getPrice();
-                    double totalCost = currentPrice * quantity;
-                    if (userInvestor.getAccount().getAvailableFunds() >= totalCost) {
-                        // 提交限價買單到訂單簿
-                        Order buyOrder = new Order("buy", currentPrice, quantity, userInvestor, false, false); // 限價單
-                        orderBook.submitBuyOrder(buyOrder, buyOrder.getPrice());
-                        updateInfoTextArea("限價買入 " + quantity + " 股，總成本：" + String.format("%.2f", totalCost));
-                        updateOrderBookDisplay(); // 更新訂單簿表格
-                        updateUserInfo(); // 更新用戶資訊
-                    } else {
-                        JOptionPane.showMessageDialog(controlFrame, "資金不足以購買 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                    }
-                } catch (NumberFormatException ex) {
-                    JOptionPane.showMessageDialog(controlFrame, "請輸入有效的股數。", "錯誤", JOptionPane.ERROR_MESSAGE);
+            // 先輸入股數
+            String qtyStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入購買股數:", "限價買入", JOptionPane.PLAIN_MESSAGE);
+            if (qtyStr == null) {
+                return;   // 取消
+            }
+            // 再輸入價格
+            String priceStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入掛單價格:", "限價買入", JOptionPane.PLAIN_MESSAGE);
+            if (priceStr == null) {
+                return; // 取消
+            }
+            try {
+                int quantity = Integer.parseInt(qtyStr.trim());
+                double limitPrice = Double.parseDouble(priceStr.trim());
+
+                if (quantity <= 0 || limitPrice <= 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "股數與價格都必須大於 0。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
                 }
+
+                double totalCost = limitPrice * quantity;
+                if (userInvestor.getAccount().getAvailableFunds() < totalCost) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "資金不足以購買 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                // 送出限價買單
+                int result = userInvestor.限價買入操作(quantity, limitPrice);
+                if (result == 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "限價買入失敗：可能資金不足、市場無對應賣單，或價格超出允許範圍。",
+                            "失敗", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                updateInfoTextArea(String.format(
+                        "限價買入 %d 股 @ %.2f，總成本 %.2f", quantity, limitPrice, totalCost));
+                updateOrderBookDisplay();
+                updateUserInfo();
+
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(controlFrame,
+                        "請輸入有效的數字。", "錯誤", JOptionPane.ERROR_MESSAGE);
             }
         });
 
-        // 限價賣出按鈕
+// ＝＝＝＝＝＝＝＝＝＝＝ 限價賣出按鈕 ＝＝＝＝＝＝＝＝＝＝＝
         limitSellButton.addActionListener(e -> {
-            String input = JOptionPane.showInputDialog(controlFrame, "輸入賣出股數:", "限價賣出", JOptionPane.PLAIN_MESSAGE);
-            if (input != null) {
-                try {
-                    int quantity = Integer.parseInt(input);
-                    if (quantity <= 0) {
-                        JOptionPane.showMessageDialog(controlFrame, "股數必須大於0。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                        return;
-                    }
-                    if (userInvestor.getAccount().getStockInventory() >= quantity) {
-                        double currentPrice = stock.getPrice();
-                        double totalRevenue = currentPrice * quantity;
-                        // 提交限價賣單到訂單簿
-                        Order sellOrder = new Order("sell", currentPrice, quantity, userInvestor, false, false); // 限價單
-                        orderBook.submitSellOrder(sellOrder, sellOrder.getPrice());
-                        updateInfoTextArea("限價賣出 " + quantity + " 股，總收入：" + String.format("%.2f", totalRevenue));
-                        updateOrderBookDisplay(); // 更新訂單簿表格
-                        updateUserInfo(); // 更新用戶資訊
-                    } else {
-                        JOptionPane.showMessageDialog(controlFrame, "持股不足以賣出 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
-                    }
-                } catch (NumberFormatException ex) {
-                    JOptionPane.showMessageDialog(controlFrame, "請輸入有效的股數。", "錯誤", JOptionPane.ERROR_MESSAGE);
+            // 先輸入股數
+            String qtyStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入賣出股數:", "限價賣出", JOptionPane.PLAIN_MESSAGE);
+            if (qtyStr == null) {
+                return;   // 取消
+            }
+            // 再輸入價格
+            String priceStr = JOptionPane.showInputDialog(
+                    controlFrame, "輸入掛單價格:", "限價賣出", JOptionPane.PLAIN_MESSAGE);
+            if (priceStr == null) {
+                return; // 取消
+            }
+            try {
+                int quantity = Integer.parseInt(qtyStr.trim());
+                double limitPrice = Double.parseDouble(priceStr.trim());
+
+                if (quantity <= 0 || limitPrice <= 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "股數與價格都必須大於 0。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
                 }
+
+                if (userInvestor.getAccount().getStockInventory() < quantity) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "持股不足以賣出 " + quantity + " 股。", "錯誤", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                double totalRevenue = limitPrice * quantity;
+
+                // 送出限價賣單
+                int result = userInvestor.限價賣出操作(quantity, limitPrice);
+                if (result == 0) {
+                    JOptionPane.showMessageDialog(controlFrame,
+                            "限價賣出失敗：可能持股不足、市場無對應買單，或價格超出允許範圍。",
+                            "失敗", JOptionPane.ERROR_MESSAGE);
+                    return;
+                }
+
+                updateInfoTextArea(String.format(
+                        "限價賣出 %d 股 @ %.2f，總收入 %.2f", quantity, limitPrice, totalRevenue));
+                updateOrderBookDisplay();
+                updateUserInfo();
+
+            } catch (NumberFormatException ex) {
+                JOptionPane.showMessageDialog(controlFrame,
+                        "請輸入有效的數字。", "錯誤", JOptionPane.ERROR_MESSAGE);
             }
         });
 
@@ -473,7 +570,7 @@ public class StockMarketSimulation {
 
                     // 執行市價單
                     if (actualQuantity > 0) {
-                        orderBook.marketBuy(userInvestor, actualQuantity);
+                        userInvestor.市價買入操作(actualQuantity);
                         updateInfoTextArea("市價買入 " + actualQuantity + " 股，實際成本：" + String.format("%.2f", actualCost));
 
                         // 更新訂單簿和用戶資訊
@@ -515,7 +612,7 @@ public class StockMarketSimulation {
 
                         // 執行市價賣出
                         if (actualQuantity > 0) {
-                            orderBook.marketSell(userInvestor, actualQuantity);
+                            userInvestor.市價賣出操作(actualQuantity);
                             updateInfoTextArea("市價賣出 " + actualQuantity + " 股，實際收入：" + String.format("%.2f", actualRevenue));
 
                             // 更新訂單簿和用戶資訊
@@ -540,6 +637,29 @@ public class StockMarketSimulation {
                     JOptionPane.showMessageDialog(controlFrame, "市價賣出失敗：" + ex.getMessage(), "錯誤", JOptionPane.ERROR_MESSAGE);
                     ex.printStackTrace();
                 }
+            }
+        });
+
+        cancelOrderButton.addActionListener(e -> {
+            int confirm = JOptionPane.showConfirmDialog(controlFrame,
+                    "確定要取消所有掛單嗎？",
+                    "確認取消訂單",
+                    JOptionPane.YES_NO_OPTION);
+
+            if (confirm == JOptionPane.YES_OPTION) {
+                // 取消所有買單
+                for (Order order : new ArrayList<>(orderBook.getBuyOrders())) {
+                    orderBook.cancelOrder(order.getId());
+                }
+
+                // 取消所有賣單
+                for (Order order : new ArrayList<>(orderBook.getSellOrders())) {
+                    orderBook.cancelOrder(order.getId());
+                }
+
+                // 更新 UI
+                updateInfoTextArea("所有訂單已取消。");
+                updateOrderBookDisplay();
             }
         });
 
@@ -680,44 +800,104 @@ public class StockMarketSimulation {
         });
     }
 
-    // 更新訂單簿顯示
+    /**
+     * 更新訂單簿顯示 - 增強版，顯示訂單類型和撮合模式
+     */
     public void updateOrderBookDisplay() {
         SwingUtilities.invokeLater(() -> {
-            Object[][] updatedData = new Object[10][4];
+            // 創建一個更大的數據表以容納更多信息
+            // 買單部分: [數量, 價格, 類型]
+            // 賣單部分: [價格, 數量, 類型]
+            Object[][] updatedData = new Object[12][6]; // 增加兩行用於顯示標題和撮合模式
+
+            // 第一行顯示當前撮合模式
+            updatedData[0][0] = "當前撮合模式:";
+            updatedData[0][1] = orderBook.getMatchingMode().toString();
+            updatedData[0][2] = "";
+            updatedData[0][3] = "";
+            updatedData[0][4] = "";
+            updatedData[0][5] = "";
+
+            // 第二行顯示列標題
+            updatedData[1][0] = "買單數量";
+            updatedData[1][1] = "買單價格";
+            updatedData[1][2] = "買單類型";
+            updatedData[1][3] = "賣單價格";
+            updatedData[1][4] = "賣單數量";
+            updatedData[1][5] = "賣單類型";
+
             List<Order> buyOrders = orderBook.getTopBuyOrders(10);
             List<Order> sellOrders = orderBook.getTopSellOrders(10);
 
             for (int i = 0; i < 10; i++) {
+                int rowIndex = i + 2; // 前兩行已用於標題
+
                 // 填充買單
                 if (i < buyOrders.size()) {
                     Order buyOrder = buyOrders.get(i);
                     if (buyOrder != null && buyOrder.getTrader() != null) {
-                        updatedData[i][0] = buyOrder.getVolume();
-                        updatedData[i][1] = String.format("%.2f", buyOrder.getPrice());
+                        updatedData[rowIndex][0] = buyOrder.getVolume();
+
+                        // 處理市價單的價格顯示
+                        if (buyOrder.isMarketOrder()) {
+                            updatedData[rowIndex][1] = "市價";
+                        } else {
+                            updatedData[rowIndex][1] = String.format("%.2f", buyOrder.getPrice());
+                        }
+
+                        // 顯示訂單類型
+                        if (buyOrder.isMarketOrder()) {
+                            updatedData[rowIndex][2] = "市價單";
+                        } else if (buyOrder.isFillOrKill()) {
+                            updatedData[rowIndex][2] = "FOK單";
+                        } else {
+                            updatedData[rowIndex][2] = "限價單";
+                        }
                     } else {
-                        updatedData[i][0] = "";
-                        updatedData[i][1] = "";
+                        updatedData[rowIndex][0] = "";
+                        updatedData[rowIndex][1] = "";
+                        updatedData[rowIndex][2] = "";
                     }
                 } else {
-                    updatedData[i][0] = "";
-                    updatedData[i][1] = "";
+                    updatedData[rowIndex][0] = "";
+                    updatedData[rowIndex][1] = "";
+                    updatedData[rowIndex][2] = "";
                 }
 
                 // 填充賣單
                 if (i < sellOrders.size()) {
                     Order sellOrder = sellOrders.get(i);
                     if (sellOrder != null && sellOrder.getTrader() != null) {
-                        updatedData[i][2] = String.format("%.2f", sellOrder.getPrice());
-                        updatedData[i][3] = sellOrder.getVolume();
+                        // 處理市價單的價格顯示
+                        if (sellOrder.isMarketOrder()) {
+                            updatedData[rowIndex][3] = "市價";
+                        } else {
+                            updatedData[rowIndex][3] = String.format("%.2f", sellOrder.getPrice());
+                        }
+
+                        updatedData[rowIndex][4] = sellOrder.getVolume();
+
+                        // 顯示訂單類型
+                        if (sellOrder.isMarketOrder()) {
+                            updatedData[rowIndex][5] = "市價單";
+                        } else if (sellOrder.isFillOrKill()) {
+                            updatedData[rowIndex][5] = "FOK單";
+                        } else {
+                            updatedData[rowIndex][5] = "限價單";
+                        }
                     } else {
-                        updatedData[i][2] = "";
-                        updatedData[i][3] = "";
+                        updatedData[rowIndex][3] = "";
+                        updatedData[rowIndex][4] = "";
+                        updatedData[rowIndex][5] = "";
                     }
                 } else {
-                    updatedData[i][2] = "";
-                    updatedData[i][3] = "";
+                    updatedData[rowIndex][3] = "";
+                    updatedData[rowIndex][4] = "";
+                    updatedData[rowIndex][5] = "";
                 }
             }
+
+            // 使用修改後的數據更新訂單簿表格
             orderBookTable.updateData(updatedData);
         });
     }
@@ -768,7 +948,7 @@ public class StockMarketSimulation {
         return createChart("股價走勢", dataset);
     }
 
-    // 創建市場波動性
+    // 創建市場波動性 分頁
     private JFreeChart createVolatilityChart() {
         XYSeriesCollection dataset = new XYSeriesCollection();
         dataset.addSeries(volatilitySeries);
@@ -786,7 +966,7 @@ public class StockMarketSimulation {
         return chart;
     }
 
-    // 創建相對強弱指數
+    // 創建相對強弱指數 分頁
     private JFreeChart createRSIChart() {
         XYSeriesCollection dataset = new XYSeriesCollection();
         dataset.addSeries(rsiSeries);
@@ -808,7 +988,7 @@ public class StockMarketSimulation {
         return chart;
     }
 
-    // 加權平均價格
+    // 加權平均價格 分頁
     private JFreeChart createWAPChart() {
         XYSeriesCollection dataset = new XYSeriesCollection();
         dataset.addSeries(wapSeries);
@@ -836,29 +1016,41 @@ public class StockMarketSimulation {
         BarRenderer renderer = new BarRenderer() {
             @Override
             public Paint getItemPaint(int row, int column) {
-                if (colorList.size() <= column) {
-                    double currentPrice = stock.getPrice();
-                    double previousPrice = (column > 0) ? priceSeries.getY(column - 1).doubleValue() : currentPrice;
-                    Color color = currentPrice > previousPrice ? Color.RED : Color.GREEN;
+                // 確保 colorList 長度足夠
+                while (colorList.size() <= column) {
+                    double currentPrice = (column < priceSeries.getItemCount())
+                            ? priceSeries.getY(column).doubleValue()
+                            : stock.getPrice();  // 當價格序列不足時，使用當前股價
+                    double previousPrice = (column > 0 && column - 1 < priceSeries.getItemCount())
+                            ? priceSeries.getY(column - 1).doubleValue()
+                            : currentPrice;
+
+                    Color color;
+                    if (currentPrice > previousPrice) {
+                        color = Color.GREEN;  // 上漲顯示綠色
+                    } else if (currentPrice < previousPrice) {
+                        color = Color.RED;  // 下跌顯示紅色
+                    } else {
+                        color = Color.BLUE;  // 無變化顯示藍色
+                    }
                     colorList.add(color);
                 }
-                // 確保 colorList 的大小不超過 100
-                if (colorList.size() > 100) {
+
+                // 確保 colorList 大小不超過 100 筆
+                if (colorList.size() > 30) {
                     colorList.remove(0);
                 }
+
                 return colorList.get(column);
             }
         };
+
         renderer.setBarPainter(new StandardBarPainter()); // 移除漸變效果
         plot.setRenderer(renderer);
 
         // 設定中文字型
         Font font = new Font("Microsoft JhengHei", Font.PLAIN, 12);
-
-        // 設定圖表標題字型
         volumeChart.getTitle().setFont(font);
-
-        // 設定 X 軸和 Y 軸的字型
         plot.getDomainAxis().setLabelFont(font); // X 軸標籤
         plot.getDomainAxis().setTickLabelFont(font); // X 軸刻度
         plot.getRangeAxis().setLabelFont(font); // Y 軸標籤
@@ -920,9 +1112,9 @@ public class StockMarketSimulation {
     // 更新股價走勢圖和 SMA
     private void updatePriceChart() {
         priceSeries.add(timeStep, stock.getPrice());
-        keepSeriesWithinLimit(priceSeries, 100); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(priceSeries, 9000000); // 保留最新 100 筆數據
         smaSeries.add(timeStep, marketAnalyzer.getSMA());
-        keepSeriesWithinLimit(smaSeries, 100); // 保留最新 100 筆數據
+        keepSeriesWithinLimit(smaSeries, 9000000); // 保留最新 100 筆數據
     }
 
     // 新增方法來更新其他技術指標
@@ -953,62 +1145,69 @@ public class StockMarketSimulation {
      * @param volume 本次成交的量
      */
     public void updateVolumeChart(int volume) {
-        // 累加每次成交的量到總成交量
         accumulatedVolume += volume;
 
-        // 僅在新的時間步長時才更新圖表
+        // 確認是否進入新的時間步長
         if (isNewTimeStep()) {
-            // 確保在每個時間步長內，即使沒有交易量，也會添加零成交量的柱狀體
             while (previousTimeStep < timeStep - 1) {
                 previousTimeStep++;
-                volumeDataset.addValue(0, "Volume", String.valueOf(previousTimeStep));
-                keepCategoryDatasetWithinLimit(volumeDataset, 100); // 保留最新 100 筆數據
-                colorList.add(Color.BLUE); // 沒有成交量時設置顏色為藍色
-                if (colorList.size() > 100) {
-                    colorList.remove(0);
+
+                // 確保時間步長不超過 volumeDataset 的範圍
+                if (volumeDataset.getColumnCount() >= 30) {
+                    String firstColumnKey = (String) volumeDataset.getColumnKeys().get(0);
+                    volumeDataset.removeColumn(firstColumnKey);
                 }
+
+                if (!volumeDataset.getColumnKeys().contains(String.valueOf(previousTimeStep))) {
+                    volumeDataset.addValue(0, "Volume", String.valueOf(previousTimeStep));
+                }
+
+                keepCategoryDatasetWithinLimit(volumeDataset, 30);
             }
 
             // 添加當前時間步長的成交量
-            volumeDataset.addValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
-            keepCategoryDatasetWithinLimit(volumeDataset, 100); // 保留最新 100 筆數據
+            if (!volumeDataset.getColumnKeys().contains(String.valueOf(timeStep))) {
+                volumeDataset.addValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
+            } else {
+                volumeDataset.setValue(accumulatedVolume, "Volume", String.valueOf(timeStep));
+            }
 
-            // 取得當前股價，並確保與前一價格進行比較
+            keepCategoryDatasetWithinLimit(volumeDataset, 30);
+
+            // 取得當前和前一時間步長的價格
             double currentPrice = stock.getPrice();
-            double previousPrice = timeStep > 0 && timeStep - 1 < priceSeries.getItemCount()
+            double previousPrice = (timeStep > 0 && timeStep - 1 < priceSeries.getItemCount())
                     ? priceSeries.getY(timeStep - 1).doubleValue()
                     : currentPrice;
 
-            // 若時間步長大於當前 priceSeries 的項數，則新增當前股價
             if (timeStep >= priceSeries.getItemCount()) {
                 priceSeries.add(timeStep, currentPrice);
-                keepSeriesWithinLimit(priceSeries, 100); // 保留最新 100 筆數據
+                SwingUtilities.invokeLater(() -> keepSeriesWithinLimit(priceSeries, 9000000));
             }
 
-            // 設定顏色：累積成交量為 0 時設為藍色；若當前價格高於前一價格設為紅色，否則設為綠色
-            Color color = accumulatedVolume == 0 ? Color.BLUE : (currentPrice > previousPrice ? Color.RED : Color.GREEN);
-            colorList.add(color);
+            // 根據價格變動確定顏色
+            Color color = Color.BLUE; // 預設為藍色
+            if (currentPrice > previousPrice) {
+                color = Color.GREEN; // 價格上漲 → 綠色
+            } else if (currentPrice < previousPrice) {
+                color = Color.RED; // 價格下跌 → 紅色
+            }
 
-            // 確保 colorList 的大小不超過 100
-            if (colorList.size() > 100) {
+            // 確保 colorList 只保留最新 10 筆
+            if (colorList.size() >= 30) {
                 colorList.remove(0);
             }
+            colorList.add(color);
 
-            // 重置累積成交量
+            // 重置成交量並更新步長
             accumulatedVolume = 0;
-
-            // 自增時間步長
+            previousTimeStep = timeStep;
             timeStep++;
         }
     }
 
-    // 用於檢查是否進入新的時間步長
     private boolean isNewTimeStep() {
-        if (timeStep != previousTimeStep) {
-            previousTimeStep = timeStep; // 更新 previousTimeStep 為當前的 timeStep
-            return true; // 表示進入新的時間步長
-        }
-        return false; // 否則仍在當前的時間步長內
+        return timeStep > previousTimeStep;
     }
 
     // 限制 XYSeries 中的數據點數量，僅保留最新的 maxPoints 筆數據
@@ -1051,9 +1250,33 @@ public class StockMarketSimulation {
         }
     }
 
-    // 主程式
+    // 在 main 方法中添加日誌
     public static void main(String[] args) {
-        SwingUtilities.invokeLater(StockMarketSimulation::new);
+        MarketLogger logger = MarketLogger.getInstance();
+        logger.info("股票市場模擬程式啟動", "APPLICATION_START");
+
+        SwingUtilities.invokeLater(() -> {
+            try {
+                new StockMarketSimulation();
+                logger.info("股票市場模擬程式初始化完成", "APPLICATION_START");
+            } catch (Exception e) {
+                logger.error("股票市場模擬程式啟動失敗", "APPLICATION_START");
+                logger.error(e, "APPLICATION_START");
+                JOptionPane.showMessageDialog(null,
+                        "股票市場模擬程式啟動失敗：" + e.getMessage(),
+                        "錯誤",
+                        JOptionPane.ERROR_MESSAGE);
+            }
+        });
+    }
+
+    /**
+     * 啟動日誌查看視窗
+     */
+    public void openLogViewer() {
+        SwingUtilities.invokeLater(() -> {
+            new LogViewerWindow();
+        });
     }
 
     // 檢查市場庫存
@@ -1094,12 +1317,18 @@ public class StockMarketSimulation {
         return totalInventory;
     }
 
-    // 更新用戶資訊顯示
+    // 更新用戶資訊(個人戶AI)
     private void updateUserInfo() {
         SwingUtilities.invokeLater(() -> {
             userStockLabel.setText("個人股票數量: " + userInvestor.getAccount().getStockInventory());
             userCashLabel.setText("個人金錢餘額: " + String.format("%.2f", userInvestor.getAccount().getAvailableFunds()));
-            // userAvgPriceLabel.setText("個人股票均價: " + String.format("%.2f", userInvestor.getAccount().getAverageCostPrice()));
+            // 假設 PersonalAI 也有跟 RetailInvestorAI 一樣的 updateAverageCostPrice() 機制:
+            userAvgPriceLabel.setText("個人股票均價: "
+                    + String.format("%.2f", userInvestor.getAverageCostPrice()));
+            // 若 PersonalAI 有自訂「目標價」概念，也可在此更新:
+            userTargetPrice.setText("個人目標價: " + String.format("%.2f", userInvestor.getTakeProfitPrice()));
+            // ↑ 需確定 PersonalAI 有 getTakeProfitPrice() 之類方法才可顯示
         });
     }
+
 }
