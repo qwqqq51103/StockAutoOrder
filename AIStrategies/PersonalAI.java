@@ -21,7 +21,7 @@ public class PersonalAI extends RetailInvestorAI {
     private OrderBook orderBook; // 亦可在 makeDecision 時指定
     private Stock stock;  // 股票實例
 
-    public PersonalAI(double initialCash, String traderID, StockMarketSimulation simulation, OrderBook orderBook,Stock stock) {
+    public PersonalAI(double initialCash, String traderID, StockMarketSimulation simulation, OrderBook orderBook, Stock stock) {
         super(initialCash, traderID, simulation);
         this.simulation = simulation;
         this.orderBook = orderBook;
@@ -77,12 +77,12 @@ public class PersonalAI extends RetailInvestorAI {
         double funds = getAccount().getAvailableFunds();
 
         if (stock == null) {
-//            System.out.println("【錯誤】市價買入失敗: stock 為 null");
+            //System.out.println("【錯誤】市價買入失敗: stock 為 null");
             return 0;
         }
 
         if (orderBook == null) {
-//            System.out.print("【錯誤】市價買入失敗: orderBook 為 null");
+            //System.out.println("【錯誤】市價買入失敗: orderBook 為 null");
             return 0;
         }
 
@@ -91,6 +91,7 @@ public class PersonalAI extends RetailInvestorAI {
             return 0;
         }
 
+        // 使用 orderBook 的 marketBuy 方法（已經實現了市價單邏輯）
         orderBook.marketBuy(this, buyAmount);
         // 若有部分成交亦可視情況而定，這裡直接回傳 buyAmount
         return buyAmount;
@@ -109,6 +110,7 @@ public class PersonalAI extends RetailInvestorAI {
             return 0;
         }
 
+        // 使用 orderBook 的 marketSell 方法（已經實現了市價單邏輯）
         orderBook.marketSell(this, sellAmount);
         return sellAmount;
     }
@@ -130,13 +132,12 @@ public class PersonalAI extends RetailInvestorAI {
         }
 
         // 檢查市場中是否有足夠賣單 (若要模擬失敗的話)
-//        int availableSell = orderBook.getAvailableSellVolume(currentPrice);
-//        if (availableSell < amount) {
-//            return 0;
-//        }
-
-        // 成功掛限價買單
-        Order buyOrder = new Order("buy", currentPrice, amount, this, false, false);
+        //int availableSell = orderBook.getAvailableSellVolume(currentPrice);
+        //if (availableSell < amount) {
+        //    return 0;
+        //}
+        // 成功掛限價買單 - 使用工廠方法
+        Order buyOrder = Order.createLimitBuyOrder(currentPrice, amount, this);
         orderBook.submitBuyOrder(buyOrder, currentPrice);
         return amount;
     }
@@ -153,25 +154,72 @@ public class PersonalAI extends RetailInvestorAI {
         if (hold < amount) {
             return 0;
         }
-//        int availableBuy = orderBook.getAvailableBuyVolume(currentPrice);
-//        if (availableBuy < amount) {
-//            return 0;
-//        }
+        //int availableBuy = orderBook.getAvailableBuyVolume(currentPrice);
+        //if (availableBuy < amount) {
+        //    return 0;
+        //}
 
-        // 成功掛限價賣單
-        Order sellOrder = new Order("sell", currentPrice, amount, this, false, false);
+        // 成功掛限價賣單 - 使用工廠方法
+        Order sellOrder = Order.createLimitSellOrder(currentPrice, amount, this);
         orderBook.submitSellOrder(sellOrder, currentPrice);
         return amount;
     }
-    
-    public void onOrderCancelled(Order order) {
-    System.out.println("[個人AI] 訂單已取消，ID：" + order.getId()
-        + "，價格：" + order.getPrice()
-        + "，數量：" + order.getVolume()
-        + "，類型：" + order.getType());
 
-    // 你可以在這裡加入更多動作（如重設目標價、通知 UI、統計等）
-}
+    /**
+     * FOK買入操作：檢查資金 & 市場可賣數量，使用FOK訂單
+     *
+     * @param amount 欲買股數
+     * @param currentPrice 目前股價
+     * @return 實際買入股數 (0=失敗)
+     */
+    public int FOK買入操作(int amount, double currentPrice) {
+        double totalCost = currentPrice * amount;
+        double funds = getAccount().getAvailableFunds();
+
+        // 檢查資金
+        if (funds < totalCost) {
+            return 0;
+        }
+
+        // 使用 orderBook 的 submitFokBuyOrder 方法
+        boolean success = orderBook.submitFokBuyOrder(currentPrice, amount, this);
+        if (success) {
+            return amount;
+        } else {
+            return 0; // FOK單失敗，無法完全滿足
+        }
+    }
+
+    /**
+     * FOK賣出操作：檢查持股 & 市場可買數量，使用FOK訂單
+     *
+     * @param amount 欲賣股數
+     * @param currentPrice 目前股價
+     * @return 實際賣出股數 (0=失敗)
+     */
+    public int FOK賣出操作(int amount, double currentPrice) {
+        int hold = getAccumulatedStocks();
+        if (hold < amount) {
+            return 0;
+        }
+
+        // 使用 orderBook 的 submitFokSellOrder 方法
+        boolean success = orderBook.submitFokSellOrder(currentPrice, amount, this);
+        if (success) {
+            return amount;
+        } else {
+            return 0; // FOK單失敗，無法完全滿足
+        }
+    }
+
+    public void onOrderCancelled(Order order) {
+        System.out.println("[個人AI] 訂單已取消，ID：" + order.getId()
+                + "，價格：" + order.getPrice()
+                + "，數量：" + order.getVolume()
+                + "，類型：" + order.getType());
+
+        // 你可以在這裡加入更多動作（如重設目標價、通知 UI、統計等）
+    }
 
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {

@@ -327,46 +327,74 @@ public class RetailInvestorAI implements Trader {
     }
 
     // ========== 隨機操作 ==========
+    /**
+     * 隨機交易 - 增強版，加入不同訂單類型
+     */
     private void executeRandomTransaction(double availableFunds, double currentPrice, StringBuilder decisionReason, Stock stock) {
         double sma = simulation.getMarketAnalyzer().calculateSMA();
         double rsi = simulation.getMarketAnalyzer().getRSI();
         double volatility = simulation.getMarketAnalyzer().getVolatility();
-        if (random.nextBoolean() && availableFunds >= currentPrice) {
+
+        // 選擇交易類型
+        String txType = random.nextDouble() < 0.5 ? "buy" : "sell";
+
+        if ("buy".equals(txType) && availableFunds >= currentPrice) {
             int buyAmount = random.nextInt(50) + 1; // 1~50 股
-            if (random.nextBoolean()) {
+
+            // 選擇訂單類型
+            double orderTypeRandom = random.nextDouble();
+            if (orderTypeRandom < 0.4) {
+                // 40% 機率市價單
                 int actualBuy = 市價買入操作(buyAmount);
                 if (actualBuy > 0) {
                     decisionReason.append("【隨機操作】市價買入 ").append(actualBuy).append(" 股。\n");
                     setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
-                } else {
-                    //decisionReason.append("【隨機操作】市價買入失敗，資金或掛單不足。\n");
                 }
-            } else {
+            } else if (orderTypeRandom < 0.9) {
+                // 50% 機率限價單
                 double buyLimitPrice = computeBuyLimitPrice(currentPrice, sma, rsi, volatility);
                 int actualBuy = 限價買入操作(buyAmount, buyLimitPrice);
                 if (actualBuy > 0) {
                     decisionReason.append("【隨機操作】限價買入 ").append(actualBuy).append(" 股，價格 " + decimalFormat.format(buyLimitPrice) + "。\n");
                     setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
+                }
+            } else {
+                // 10% 機率FOK單
+                double buyPrice = computeBuyLimitPrice(currentPrice, sma, rsi, volatility);
+                boolean success = orderBook.submitFokBuyOrder(buyPrice, buyAmount, this);
+                if (success) {
+                    decisionReason.append("【隨機操作】FOK買入 ").append(buyAmount).append(" 股，價格 " + decimalFormat.format(buyPrice) + "。\n");
+                    setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
                 } else {
-                    //decisionReason.append("【隨機操作】限價買入失敗，資金或賣單不足。\n");
+                    decisionReason.append("【隨機操作】FOK買入失敗，無法完全滿足。\n");
                 }
             }
         } else if (getAccumulatedStocks() > 0) {
             int sellAmount = random.nextInt(getAccumulatedStocks()) + 1;
-            if (random.nextBoolean()) {
+
+            // 選擇訂單類型
+            double orderTypeRandom = random.nextDouble();
+            if (orderTypeRandom < 0.4) {
+                // 40% 機率市價單
                 int actualSell = 市價賣出操作(sellAmount);
                 if (actualSell > 0) {
                     decisionReason.append("【隨機操作】市價賣出 ").append(actualSell).append(" 股。\n");
-                } else {
-                    //decisionReason.append("【隨機操作】市價賣出失敗，持股或買單不足。\n");
                 }
-            } else {
+            } else if (orderTypeRandom < 0.9) {
+                // 50% 機率限價單
                 double sellLimitPrice = computeSellLimitPrice(currentPrice, sma, rsi, volatility);
                 int actualSell = 限價賣出操作(sellAmount, sellLimitPrice);
                 if (actualSell > 0) {
                     decisionReason.append("【隨機操作】限價賣出 ").append(actualSell).append(" 股，價格 " + decimalFormat.format(sellLimitPrice) + "。\n");
+                }
+            } else {
+                // 10% 機率FOK單
+                double sellPrice = computeSellLimitPrice(currentPrice, sma, rsi, volatility);
+                boolean success = orderBook.submitFokSellOrder(sellPrice, sellAmount, this);
+                if (success) {
+                    decisionReason.append("【隨機操作】FOK賣出 ").append(sellAmount).append(" 股，價格 " + decimalFormat.format(sellPrice) + "。\n");
                 } else {
-                    //decisionReason.append("【隨機操作】限價賣出失敗，持股或買單不足。\n");
+                    decisionReason.append("【隨機操作】FOK賣出失敗，無法完全滿足。\n");
                 }
             }
 
@@ -434,10 +462,7 @@ public class RetailInvestorAI implements Trader {
 
     // ========== 實際掛單操作 (成功/失敗印出) ==========
     /**
-     * 市價買入操作：先檢查資金，再呼叫 orderBook.marketBuy 市價買入不需要輸入價格
-     *
-     * @param buyAmount 欲買股數
-     * @return 實際買入數 (0=失敗)
+     * 修改散戶AI類的市價買入操作方法 - 使用新的市價單API
      */
     private int 市價買入操作(int buyAmount) {
         double price = stock.getPrice();
@@ -457,16 +482,13 @@ public class RetailInvestorAI implements Trader {
             return 0;
         }
 
+        // 使用新的市價買單API
         orderBook.marketBuy(this, buyAmount);
-//        // 若有部分成交亦可視情況而定，這裡直接回傳 buyAmount
-        return 0;
+        return buyAmount;
     }
 
     /**
-     * 市價賣出操作：先檢查持股，再呼叫 orderBook.marketSell 市價賣出不需要輸入價格
-     *
-     * @param sellAmount 欲賣股數
-     * @return 實際賣出數 (0=失敗)
+     * 修改散戶AI類的市價賣出操作方法 - 使用新的市價單API
      */
     private int 市價賣出操作(int sellAmount) {
         int hold = getAccumulatedStocks();
@@ -475,22 +497,31 @@ public class RetailInvestorAI implements Trader {
             return 0;
         }
 
+        // 使用新的市價賣單API
         orderBook.marketSell(this, sellAmount);
-        return 0;
+        return sellAmount;
     }
 
+    /**
+     * 限價買入操作 - 增強版，支援多種訂單類型
+     *
+     * @param amount 欲買股數
+     * @param suggestedPrice 系統計算的建議價格
+     * @return 實際買入股數 (0=失敗)
+     */
     private int 限價買入操作(int amount, double suggestedPrice) {
         double funds = account.getAvailableFunds();
         double currentPrice = stock.getPrice();
+
+        // 處理價格輸入 - 使用智能決策或手動輸入
         double finalPrice = 處理買入價格輸入(amount, suggestedPrice, currentPrice, funds);
-//        System.out.println("AI限價買入操作：" + suggestedPrice + "目前市價 : " + currentPrice);
+
         if (finalPrice <= 0) {
             return 0;
         }
 
+        // 檢查資金
         double totalCost = finalPrice * amount;
-
-        // 資金檢查
         if (funds < totalCost) {
             if (!autoInputOrderAmount) {
                 showError("資金不足，交易取消");
@@ -498,18 +529,23 @@ public class RetailInvestorAI implements Trader {
             return 0;
         }
 
-        // 檢查市場賣單量
-        int availableSell = orderBook.getAvailableSellVolume(finalPrice);
-        if (availableSell < amount) {
-            if (!autoInputOrderAmount) {
-                showError("市場中沒有足夠的賣單量，交易取消");
+        // 決定訂單類型 (根據隨機性和當前模式)
+        if (random.nextDouble() < 0.1) {
+            // 10% 機率使用FOK訂單
+            boolean success = orderBook.submitFokBuyOrder(finalPrice, amount, this);
+            if (success) {
+                System.out.println("提交FOK買單成功: " + amount + "股，價格 " + finalPrice);
+                return amount;
+            } else {
+                System.out.println("提交FOK買單失敗: 無法完全滿足");
+                return 0;
             }
-            return 0;
+        } else {
+            // 90% 機率使用普通限價單
+            Order buyOrder = Order.createLimitBuyOrder(finalPrice, amount, this);
+            orderBook.submitBuyOrder(buyOrder, finalPrice);
+            return amount;
         }
-        // 掛單成功
-        Order buyOrder = new Order("buy", finalPrice, amount, this, false, false);
-        orderBook.submitBuyOrder(buyOrder, finalPrice);
-        return amount;
     }
 
     /**
@@ -658,7 +694,7 @@ public class RetailInvestorAI implements Trader {
     }
 
     /**
-     * 限價賣出操作：檢查持股 & 市場可買數量，再掛 sellOrder
+     * 限價賣出操作 - 增強版，支援多種訂單類型
      *
      * @param amount 欲賣股數
      * @param suggestedPrice 系統計算的建議價格
@@ -667,7 +703,6 @@ public class RetailInvestorAI implements Trader {
     private int 限價賣出操作(int amount, double suggestedPrice) {
         int hold = getAccumulatedStocks();
         double currentPrice = stock.getPrice();
-        double finalPrice = suggestedPrice;
 
         // 檢查持股是否足夠
         if (hold < amount) {
@@ -677,24 +712,30 @@ public class RetailInvestorAI implements Trader {
             return 0;
         }
 
-        // 處理價格輸入
-        finalPrice = 處理賣出價格輸入(amount, suggestedPrice, currentPrice, hold);
+        // 處理價格輸入 - 使用智能決策或手動輸入
+        double finalPrice = 處理賣出價格輸入(amount, suggestedPrice, currentPrice, hold);
+
         if (finalPrice <= 0) {
             return 0; // 使用者取消或輸入錯誤
         }
 
-        // 檢查市場買單量
-        int availableBuy = orderBook.getAvailableBuyVolume(finalPrice);
-        if (availableBuy < amount) {
-            if (!autoInputOrderAmount) {
-                showError("市場中沒有足夠的買單量，交易取消");
+        // 決定訂單類型 (根據隨機性和當前模式)
+        if (random.nextDouble() < 0.1) {
+            // 10% 機率使用FOK訂單
+            boolean success = orderBook.submitFokSellOrder(finalPrice, amount, this);
+            if (success) {
+                System.out.println("提交FOK賣單成功: " + amount + "股，價格 " + finalPrice);
+                return amount;
+            } else {
+                System.out.println("提交FOK賣單失敗: 無法完全滿足");
+                return 0;
             }
-            return 0;
+        } else {
+            // 90% 機率使用普通限價單
+            Order sellOrder = Order.createLimitSellOrder(finalPrice, amount, this);
+            orderBook.submitSellOrder(sellOrder, finalPrice);
+            return amount;
         }
-        // 成功掛限價賣單
-        Order sellOrder = new Order("sell", finalPrice, amount, this, false, false);
-        orderBook.submitSellOrder(sellOrder, finalPrice);
-        return amount;
     }
 
     /**

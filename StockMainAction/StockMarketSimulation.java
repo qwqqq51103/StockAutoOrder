@@ -65,10 +65,11 @@ public class StockMarketSimulation {
     private MarketAnalyzer marketAnalyzer;  // 市場分析器
     private MarketBehavior marketBehavior;  // 市場行為模擬
     private List<Color> colorList = new ArrayList<>();  // 用於成交量圖表的顏色列表
+    private MatchingEnginePanel matchingEnginePanel;
 
     private double initialRetailCash = 10000, initialMainForceCash = 25000;  // 初始現金
-    private int initialRetails = 10;  // 初始散戶數量
-    private int marketBehaviorStock = 12000; //市場數量
+    private int initialRetails = 50;  // 初始散戶數量
+    private int marketBehaviorStock = 100000; //市場數量
     private double marketBehaviorGash = -999990; //市場現金
 
     private final ReentrantLock orderBookLock = new ReentrantLock();
@@ -87,7 +88,7 @@ public class StockMarketSimulation {
     // 啟動價格波動模擬
     private void startAutoPriceFluctuation() {
         int initialDelay = 0; // 初始延遲
-        int period = 100; // 執行間隔（單位：毫秒）
+        int period = 500; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -227,12 +228,12 @@ public class StockMarketSimulation {
         initializeRetailInvestors(initialRetails); // 初始化散戶
 
         // 單獨初始化用戶投資者
-        userInvestor = new PersonalAI(50000, "Personal", this, orderBook, stock);
+        userInvestor = new PersonalAI(5000000, "Personal", this, orderBook, stock);
 
         // priceSeries 和其他數據系列已在 initializeCharts() 中初始化
         String[] columnNames = {"買量", "買價", "賣價", "賣量"};
         Object[][] initialData = new Object[10][4];
-        orderBookTable = new OrderBookTable(initialData, columnNames);
+        orderBookTable = new OrderBookTable();
     }
 
     // 初始化圖表
@@ -310,33 +311,41 @@ public class StockMarketSimulation {
         controlFrame.setVisible(true);
     }
 
-    // 設定 GUI 結構
+    /**
+     * 修改 initializeGUI 方法，整合 MatchingEnginePanel
+     */
     private void initializeGUI() {
         frame = new JFrame("股票市場模擬");
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(1600, 900); // 增加窗口大小以容納新增的元件
         frame.setLocationRelativeTo(null); // 居中顯示
 
+        // 創建撮合引擎控制面板
+        MatchingEnginePanel matchingEnginePanel = new MatchingEnginePanel(orderBook);
+
         JPanel chartPanel = new JPanel(new GridLayout(4, 1)); // 調整為4行1列
         chartPanel.add(new ChartPanel(createPriceChart()));
         chartPanel.add(new ChartPanel(createVolatilityChart()));
         chartPanel.add(new ChartPanel(createRSIChart()));
         chartPanel.add(new ChartPanel(createVolumeChart())); // 新增成交量圖表
-
         // 如果需要，可以新增 WAP 圖表
         // chartPanel.add(new ChartPanel(createWAPChart()));
-        // 更新 GridLayout 的行數為 4 或更多，根據新增的圖表數量
+
         JPanel labelPanel = new JPanel(new GridLayout(5, 2, 10, 10)); // 調整為5行2列，增加間距
         initializeLabels(labelPanel);
 
-        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chartPanel, labelPanel);
+        // 將撮合引擎面板添加到標籤面板下方
+        JPanel southPanel = new JPanel(new BorderLayout());
+        southPanel.add(labelPanel, BorderLayout.CENTER);
+        southPanel.add(matchingEnginePanel, BorderLayout.SOUTH);
+
+        JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, chartPanel, southPanel);
         splitPane.setResizeWeight(0.7);
 
         JPanel infoPanel = new JPanel(new BorderLayout());
         infoTextArea = new JTextArea(8, 30);
         infoTextArea.setEditable(false);
         JScrollPane infoScrollPane = new JScrollPane(infoTextArea);
-
         JSplitPane infoSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT, orderBookTable.getScrollPane(), infoScrollPane);
         infoSplitPane.setResizeWeight(0.3);
 
@@ -354,10 +363,8 @@ public class StockMarketSimulation {
         JPanel profitPanel = new JPanel(new GridLayout(2, 1));
         retailProfitChart = createProfitChart("散戶損益", "散戶", retailInvestors.size());
         mainForceProfitChart = createProfitChart("主力損益", "主力", 1);
-
         ChartPanel retailProfitChartPanel = new ChartPanel(retailProfitChart);
         ChartPanel mainForceProfitChartPanel = new ChartPanel(mainForceProfitChart);
-
         profitPanel.add(retailProfitChartPanel);
         profitPanel.add(mainForceProfitChartPanel);
         tabbedPane.addTab("損益表", profitPanel);
@@ -368,6 +375,24 @@ public class StockMarketSimulation {
         indicatorsPanel.add(new ChartPanel(createRSIChart()));
         indicatorsPanel.add(new ChartPanel(createWAPChart())); // 如有需要，新增 WAP 圖表
         tabbedPane.addTab("技術指標", indicatorsPanel);
+
+        // 創建交易設置分頁，包含撮合引擎控制面板
+        JPanel settingsPanel = new JPanel(new BorderLayout());
+
+        // 第二種方式：將撮合引擎控制面板放在新的"交易設置"分頁中
+        // 可以在此頁面添加其他交易設置控件
+        JPanel tradingSettingsPanel = new JPanel();
+        tradingSettingsPanel.setLayout(new BoxLayout(tradingSettingsPanel, BoxLayout.Y_AXIS));
+        tradingSettingsPanel.add(matchingEnginePanel);
+
+        // 可以添加更多設置控件
+        // ...
+        settingsPanel.add(tradingSettingsPanel, BorderLayout.NORTH);
+        JPanel emptyPanel = new JPanel();
+        emptyPanel.setPreferredSize(new Dimension(600, 400));
+        settingsPanel.add(emptyPanel, BorderLayout.CENTER);
+
+        tabbedPane.addTab("交易設置", settingsPanel);
 
         // 將主分頁面板添加至主視窗
         frame.add(tabbedPane, BorderLayout.CENTER);
@@ -750,44 +775,104 @@ public class StockMarketSimulation {
         });
     }
 
-    // 更新訂單簿顯示
+    /**
+     * 更新訂單簿顯示 - 增強版，顯示訂單類型和撮合模式
+     */
     public void updateOrderBookDisplay() {
         SwingUtilities.invokeLater(() -> {
-            Object[][] updatedData = new Object[10][4];
+            // 創建一個更大的數據表以容納更多信息
+            // 買單部分: [數量, 價格, 類型]
+            // 賣單部分: [價格, 數量, 類型]
+            Object[][] updatedData = new Object[12][6]; // 增加兩行用於顯示標題和撮合模式
+
+            // 第一行顯示當前撮合模式
+            updatedData[0][0] = "當前撮合模式:";
+            updatedData[0][1] = orderBook.getMatchingMode().toString();
+            updatedData[0][2] = "";
+            updatedData[0][3] = "";
+            updatedData[0][4] = "";
+            updatedData[0][5] = "";
+
+            // 第二行顯示列標題
+            updatedData[1][0] = "買單數量";
+            updatedData[1][1] = "買單價格";
+            updatedData[1][2] = "買單類型";
+            updatedData[1][3] = "賣單價格";
+            updatedData[1][4] = "賣單數量";
+            updatedData[1][5] = "賣單類型";
+
             List<Order> buyOrders = orderBook.getTopBuyOrders(10);
             List<Order> sellOrders = orderBook.getTopSellOrders(10);
 
             for (int i = 0; i < 10; i++) {
+                int rowIndex = i + 2; // 前兩行已用於標題
+
                 // 填充買單
                 if (i < buyOrders.size()) {
                     Order buyOrder = buyOrders.get(i);
                     if (buyOrder != null && buyOrder.getTrader() != null) {
-                        updatedData[i][0] = buyOrder.getVolume();
-                        updatedData[i][1] = String.format("%.2f", buyOrder.getPrice());
+                        updatedData[rowIndex][0] = buyOrder.getVolume();
+
+                        // 處理市價單的價格顯示
+                        if (buyOrder.isMarketOrder()) {
+                            updatedData[rowIndex][1] = "市價";
+                        } else {
+                            updatedData[rowIndex][1] = String.format("%.2f", buyOrder.getPrice());
+                        }
+
+                        // 顯示訂單類型
+                        if (buyOrder.isMarketOrder()) {
+                            updatedData[rowIndex][2] = "市價單";
+                        } else if (buyOrder.isFillOrKill()) {
+                            updatedData[rowIndex][2] = "FOK單";
+                        } else {
+                            updatedData[rowIndex][2] = "限價單";
+                        }
                     } else {
-                        updatedData[i][0] = "";
-                        updatedData[i][1] = "";
+                        updatedData[rowIndex][0] = "";
+                        updatedData[rowIndex][1] = "";
+                        updatedData[rowIndex][2] = "";
                     }
                 } else {
-                    updatedData[i][0] = "";
-                    updatedData[i][1] = "";
+                    updatedData[rowIndex][0] = "";
+                    updatedData[rowIndex][1] = "";
+                    updatedData[rowIndex][2] = "";
                 }
 
                 // 填充賣單
                 if (i < sellOrders.size()) {
                     Order sellOrder = sellOrders.get(i);
                     if (sellOrder != null && sellOrder.getTrader() != null) {
-                        updatedData[i][2] = String.format("%.2f", sellOrder.getPrice());
-                        updatedData[i][3] = sellOrder.getVolume();
+                        // 處理市價單的價格顯示
+                        if (sellOrder.isMarketOrder()) {
+                            updatedData[rowIndex][3] = "市價";
+                        } else {
+                            updatedData[rowIndex][3] = String.format("%.2f", sellOrder.getPrice());
+                        }
+
+                        updatedData[rowIndex][4] = sellOrder.getVolume();
+
+                        // 顯示訂單類型
+                        if (sellOrder.isMarketOrder()) {
+                            updatedData[rowIndex][5] = "市價單";
+                        } else if (sellOrder.isFillOrKill()) {
+                            updatedData[rowIndex][5] = "FOK單";
+                        } else {
+                            updatedData[rowIndex][5] = "限價單";
+                        }
                     } else {
-                        updatedData[i][2] = "";
-                        updatedData[i][3] = "";
+                        updatedData[rowIndex][3] = "";
+                        updatedData[rowIndex][4] = "";
+                        updatedData[rowIndex][5] = "";
                     }
                 } else {
-                    updatedData[i][2] = "";
-                    updatedData[i][3] = "";
+                    updatedData[rowIndex][3] = "";
+                    updatedData[rowIndex][4] = "";
+                    updatedData[rowIndex][5] = "";
                 }
             }
+
+            // 使用修改後的數據更新訂單簿表格
             orderBookTable.updateData(updatedData);
         });
     }

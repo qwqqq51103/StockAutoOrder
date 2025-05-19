@@ -1,5 +1,6 @@
 package AIStrategies;
 
+import Core.MatchingMode;
 import UserManagement.UserAccount;
 import Core.Order;
 import Core.Trader;
@@ -163,7 +164,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
 
     /**
-     * 主力行為：根據市場狀況做出交易決策
+     * 主力行為：根據市場狀況做出交易決策 - 增強版 支持各種訂單類型和更多策略選擇
      */
     public void makeDecision() {
         double currentPrice = stock.getPrice();
@@ -173,72 +174,236 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double volatility = simulation.getMarketAnalyzer().calculateVolatility();
         double riskFactor = getRiskFactor(); // 計算主力的風險係數
 
+        // 嘗試獲取價格趨勢
+        double recentTrend = 0.0;
+        try {
+            recentTrend = simulation.getMarketAnalyzer().getRecentPriceTrend();
+        } catch (Exception e) {
+            // 忽略錯誤，使用默認值
+        }
+
+        // 顯示當前撮合模式
+        MatchingMode currentMode = orderBook.getMatchingMode();
+        System.out.println(String.format("【主力決策】當前撮合模式: %s, 趨勢指標: %.3f",
+                currentMode, recentTrend));
+
         if (!Double.isNaN(sma)) {
             double priceDifferenceRatio = (currentPrice - sma) / sma;
             // 限制價格差在 [-0.5, 0.5] 之間
             priceDifferenceRatio = Math.max(-0.5, Math.min(priceDifferenceRatio, 0.5));
 
             double actionProbability = random.nextDouble();
+            StringBuilder decisionLog = new StringBuilder();
 
             // 1. 動量交易策略（追漲買入）
             if (actionProbability < 0.1 && currentPrice > sma && volatility > 0.02) {
                 int momentumVolume = calculateMomentumVolume(volatility);
-                // 僅呼叫吸籌操作，不印成功與否，交由功能函數判斷
-                吸籌操作(momentumVolume);
+
+                // 根據撮合模式選擇不同的訂單類型
+                if (currentMode == MatchingMode.MARKET_PRESSURE || currentMode == MatchingMode.RANDOM) {
+                    // 市場壓力或隨機模式下，使用市價單快速追漲
+                    decisionLog.append("【動量交易-市價追漲】");
+                    拉抬操作(momentumVolume);
+                } else {
+                    // 其他撮合模式下，使用限價單吸籌
+                    decisionLog.append("【動量交易-限價吸籌】");
+                    吸籌操作(momentumVolume);
+                }
 
                 // 2. 均值回歸策略
             } else if (actionProbability < 0.15 && Math.abs(priceDifferenceRatio) > 0.1) {
                 if (priceDifferenceRatio > 0) {
                     // 股價高於均線一定幅度 -> 逢高賣出
                     int revertSellVolume = calculateRevertSellVolume(priceDifferenceRatio);
-                    賣出操作(revertSellVolume);
+
+                    // 根據偏離程度決定使用哪種訂單類型
+                    if (priceDifferenceRatio > 0.2) {
+                        // 極度偏離，使用市價單快速賣出
+                        decisionLog.append("【均值回歸-市價賣出】極度高於均線");
+                        市價賣出操作(revertSellVolume);
+                    } else if (currentMode == MatchingMode.PRICE_TIME) {
+                        // 價格時間優先模式下，使用FOK單確保完整成交
+                        decisionLog.append("【均值回歸-FOK賣出】高於均線");
+                        精確控制賣出操作(revertSellVolume, currentPrice);
+                    } else {
+                        // 常規情況，使用限價單
+                        decisionLog.append("【均值回歸-限價賣出】高於均線");
+                        賣出操作(revertSellVolume);
+                    }
                 } else {
                     // 股價低於均線一定幅度 -> 逢低買入
                     int revertBuyVolume = calculateRevertBuyVolume(priceDifferenceRatio);
-                    吸籌操作(revertBuyVolume);
+
+                    // 根據偏離程度和撮合模式決定訂單類型
+                    if (priceDifferenceRatio < -0.2 && currentMode != MatchingMode.VOLUME_WEIGHTED) {
+                        // 極度低於均線，且不在成交量加權模式下，使用FOK單確保完整買入
+                        decisionLog.append("【均值回歸-FOK買入】極度低於均線");
+                        精確控制買入操作(revertBuyVolume, currentPrice);
+                    } else {
+                        // 常規情況，使用限價單
+                        decisionLog.append("【均值回歸-限價買入】低於均線");
+                        吸籌操作(revertBuyVolume);
+                    }
                 }
 
                 // 3. 價值投資策略（低估買入）
             } else if (currentPrice < sma * 0.9 && actionProbability < 0.2) {
                 int valueBuyVolume = calculateValueBuyVolume();
-                吸籌操作(valueBuyVolume);
+
+                // 根據價格趨勢選擇訂單類型
+                if (recentTrend < -0.05) {
+                    // 下跌趨勢明顯，謹慎買入，使用少量的FOK單
+                    int reducedVolume = valueBuyVolume / 3;
+                    decisionLog.append("【價值投資-謹慎FOK買入】下跌趨勢中");
+                    精確控制買入操作(reducedVolume, currentPrice * 0.98);
+                } else {
+                    // 常規情況，使用限價單
+                    decisionLog.append("【價值投資-限價買入】價格低估");
+                    吸籌操作(valueBuyVolume);
+                }
 
                 // 4. 風險控制策略（風險過高時暫停操作）
-            } else if (riskFactor > 10) {
-                System.out.println(String.format("【風險管控】風險係數 %.2f 過高，主力暫停操作。", riskFactor));
+            } else if (riskFactor > 0.8) {
+                decisionLog.append(String.format("【風險管控】風險係數 %.2f 過高，主力暫停操作", riskFactor));
+                System.out.println(decisionLog.toString());
                 return;
 
-                // 5. 市價買入（追蹤市場流動性）
-            } else if (actionProbability < 0.25 && availableFunds > currentPrice) {
+                // 5. 市價拉抬（追蹤市場流動性）
+            } else if (actionProbability < 0.25 && availableFunds > currentPrice * 100) {
                 int buyQuantity = calculateLiftVolume();
-                拉抬操作(buyQuantity);
 
-                // 6. 市價賣出（減少風險）
+                // 根據撮合模式和波動性決定如何拉抬
+                if (volatility > 0.03 && currentMode == MatchingMode.MARKET_PRESSURE) {
+                    // 高波動 + 市場壓力模式，使用較大量的市價單快速拉抬
+                    decisionLog.append("【強力拉抬-市價買入】高波動環境");
+                    拉抬操作(buyQuantity * 2);
+                } else {
+                    // 常規拉抬
+                    decisionLog.append("【常規拉抬-市價買入】");
+                    拉抬操作(buyQuantity);
+                }
+
+                // 6. 市價減倉（降低風險）
             } else if (actionProbability < 0.3 && getAccumulatedStocks() > 0) {
                 int sellQuantity = calculateSellVolume();
-                市價賣出操作(sellQuantity);
+
+                // 根據RSI指標決定減倉方式
+                if (rsi > 70) {
+                    // RSI高，超買狀態，大量減倉
+                    decisionLog.append("【超買減倉-市價賣出】RSI過高");
+                    市價賣出操作(sellQuantity * 2);
+                } else {
+                    // 常規減倉
+                    decisionLog.append("【常規減倉-市價賣出】");
+                    市價賣出操作(sellQuantity);
+                }
 
                 // 7. 高風險行為：洗盤
-            } else if (actionProbability < 0.35 && getAccumulatedStocks() > 0) {
+            } else if (actionProbability < 0.35 && getAccumulatedStocks() > 200) {
                 int washVolume = calculateWashVolume(volatility);
-                洗盤操作(washVolume);
+
+                // 根據當前撮合模式選擇洗盤策略
+                if (currentMode == MatchingMode.VOLUME_WEIGHTED) {
+                    // 在成交量加權模式下，洗盤效果更好，使用更大量
+                    decisionLog.append("【加強洗盤】成交量加權模式");
+                    洗盤操作(washVolume * 2);
+                } else {
+                    // 常規洗盤
+                    decisionLog.append("【常規洗盤】");
+                    洗盤操作(washVolume);
+                }
 
                 // 8. 隨機取消掛單
             } else if (actionProbability < 0.4) {
                 if (!orderBook.getBuyOrders().isEmpty()) {
                     Order orderToCancel = orderBook.getBuyOrders().get(0);
                     //orderBook.cancelOrder(orderToCancel.getId());
-                    System.out.println(String.format("【隨機取消掛單】取消買單 ID: %s，數量: %d 股",
+                    decisionLog.append(String.format("【隨機取消掛單】取消買單 ID: %s，數量: %d 股",
                             orderToCancel.getId(), orderToCancel.getVolume()));
                 }
+
+                // 9. 新增：目標價附近的精確控制（確保利潤）
+            } else if (actionProbability < 0.45 && getTargetPrice() > 0
+                    && Math.abs(currentPrice - getTargetPrice()) / getTargetPrice() < 0.05) {
+
+                // 接近目標價，精確控制持倉
+                if (currentPrice >= getTargetPrice()) {
+                    // 已達目標價，開始獲利了結
+                    int profitVolume = (int) (getAccumulatedStocks() * 0.3); // 賣出30%持股
+                    if (profitVolume > 0) {
+                        decisionLog.append("【獲利了結-FOK賣出】已達目標價");
+                        精確控制賣出操作(profitVolume, currentPrice);
+                    }
+                } else {
+                    // 接近但未達目標價，可能再加碼一些
+                    int topupVolume = calculateValueBuyVolume() / 4; // 小量加碼
+                    if (topupVolume > 0 && availableFunds > currentPrice * topupVolume) {
+                        decisionLog.append("【目標布局-FOK買入】接近目標價");
+                        精確控制買入操作(topupVolume, currentPrice);
+                    }
+                }
+
+                // 10. 新增：撮合模式特殊策略
+            } else if (actionProbability < 0.5) {
+                // 根據不同撮合模式採取特殊策略
+                switch (currentMode) {
+                    case PRICE_TIME:
+                        // 價格時間優先模式下，快速掛單搶先機
+                        if (availableFunds > currentPrice * 100 && random.nextBoolean()) {
+                            decisionLog.append("【時間優先策略】快速掛買單");
+                            吸籌操作(50);
+                        }
+                        break;
+
+                    case VOLUME_WEIGHTED:
+                        // 成交量加權模式下，大單有優勢
+                        if (availableFunds > currentPrice * 500 && random.nextBoolean()) {
+                            decisionLog.append("【大單策略】大量買入獲取優勢");
+                            吸籌操作(500);
+                        }
+                        break;
+
+                    case MARKET_PRESSURE:
+                        // 市場壓力模式下，順勢而為
+                        if (recentTrend > 0.02 && availableFunds > currentPrice * 200) {
+                            decisionLog.append("【順勢策略】上漲趨勢中買入");
+                            拉抬操作(200);
+                        } else if (recentTrend < -0.02 && getAccumulatedStocks() > 100) {
+                            decisionLog.append("【順勢策略】下跌趨勢中賣出");
+                            市價賣出操作(100);
+                        }
+                        break;
+
+                    case RANDOM:
+                        // 隨機模式下，增加FOK單使用頻率
+                        if (random.nextBoolean() && availableFunds > currentPrice * 100) {
+                            decisionLog.append("【隨機模式策略】FOK買入");
+                            精確控制買入操作(100, currentPrice);
+                        }
+                        break;
+
+                    default:
+                        // 標準模式，使用常規策略
+                        if (availableFunds > currentPrice * 100 && getAccumulatedStocks() < 500) {
+                            decisionLog.append("【標準策略】常規買入");
+                            吸籌操作(100);
+                        }
+                        break;
+                }
             }
+
+            // 輸出決策日誌
+            if (decisionLog.length() > 0) {
+                System.out.println(decisionLog.toString());
+            }
+
         } else {
             System.out.println("【決策提示】尚無法計算 SMA，主力正在觀望中。");
         }
     }
 
     /**
-     * 吸籌操作：實際嘗試掛買單
+     * 吸籌操作：使用限價買單吸籌
      *
      * @param volume 想要買入的股數
      * @return 實際成功買入的股數 (0 表示失敗)
@@ -249,15 +414,19 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 simulation.getMarketAnalyzer().getRSI(),
                 simulation.getMarketAnalyzer().getVolatility());
 
+        // 檢查是否有足夠的賣單可供吸籌
         int availableVolume = orderBook.getAvailableSellVolume(limitPrice);
         if (availableVolume < volume) {
             return 0;
         }
+
+        // 檢查是否有足夠的資金
         if (account.getAvailableFunds() < limitPrice * volume) {
             return 0;
         }
 
-        Order buyOrder = new Order("buy", limitPrice, volume, this, false, false);
+        // 使用工廠方法創建限價買單
+        Order buyOrder = Order.createLimitBuyOrder(limitPrice, volume, this);
         orderBook.submitBuyOrder(buyOrder, limitPrice);
 
         System.out.printf("【吸籌】掛買單 %d 股 @ %.2f%n", volume, limitPrice);
@@ -265,7 +434,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
 
     /**
-     * 賣出操作：實際嘗試掛賣單
+     * 賣出操作：使用限價賣單
      *
      * @param volume 想要賣出的股數
      * @return 實際成功賣出的股數 (0 表示失敗)
@@ -276,15 +445,19 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 simulation.getMarketAnalyzer().getRSI(),
                 simulation.getMarketAnalyzer().getVolatility());
 
+        // 檢查是否有足夠的買單
         int availableBuy = orderBook.getAvailableBuyVolume(limitPrice);
         if (availableBuy < volume) {
             return 0;
         }
+
+        // 檢查是否有足夠的持股
         if (getAccumulatedStocks() < volume) {
             return 0;
         }
 
-        Order sellOrder = new Order("sell", limitPrice, volume, this, false, false);
+        // 使用工廠方法創建限價賣單
+        Order sellOrder = Order.createLimitSellOrder(limitPrice, volume, this);
         orderBook.submitSellOrder(sellOrder, limitPrice);
 
         System.out.printf("【賣出】掛賣單 %d 股 @ %.2f%n", volume, limitPrice);
@@ -292,26 +465,41 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
 
     /**
-     * 洗盤操作：實際嘗試大量賣出
+     * 洗盤操作：大量賣出壓低股價，也可使用FOK訂單
      *
      * @param volume 想要用於洗盤的賣出量
      * @return 實際成功洗盤的股數 (0 表示失敗)
      */
     public int 洗盤操作(int volume) {
         double price = stock.getPrice();
+
+        // 檢查持股是否足夠
         if (getAccumulatedStocks() < volume) {
-//            System.out.println(String.format("【洗盤操作】失敗：主力持股不足，欲洗 %d 股，但僅有 %d 股",
-//                    volume, getAccumulatedStocks()));
+            //System.out.println(String.format("【洗盤操作】失敗：主力持股不足，欲洗 %d 股，但僅有 %d 股",
+            //        volume, getAccumulatedStocks()));
             return 0;
         }
 
-        Order sellOrder = new Order("sell", price, volume, this, false, false);
-        orderBook.submitSellOrder(sellOrder, price);
+        // 根據洗盤需求決定使用哪種訂單類型
+        if (random.nextDouble() < 0.3) {
+            // 30%機率使用FOK賣單，確保一次性大量賣出
+            boolean success = orderBook.submitFokSellOrder(price * 0.99, volume, this);
+            if (success) {
+                System.out.println(String.format("【洗盤操作-FOK】成功：FOK賣出 %d 股，價格 %.2f，用於快速壓低股價",
+                        volume, price * 0.99));
+                return volume;
+            } else {
+                return 0;
+            }
+        } else {
+            // 70%機率使用普通限價賣單
+            Order sellOrder = Order.createLimitSellOrder(price, volume, this);
+            orderBook.submitSellOrder(sellOrder, price);
 
-        System.out.println(String.format("【洗盤操作】成功：一次賣出 %d 股，價格 %.2f，用於壓低股價",
-                volume, price));
-
-        return volume;
+            System.out.println(String.format("【洗盤操作】成功：限價賣出 %d 股，價格 %.2f，用於壓低股價",
+                    volume, price));
+            return volume;
+        }
     }
 
     /**
@@ -322,13 +510,15 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     public int 拉抬操作(int volume) {
         double price = stock.getPrice();
+
+        // 檢查資金是否足夠
         if (account.getAvailableFunds() < price * volume) {
-//            System.out.println(String.format("【拉抬操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
-//                    volume, price * volume, account.getAvailableFunds()));
+            //System.out.println(String.format("【拉抬操作】失敗：主力可用資金不足，買 %d 股需要 %.2f 元，僅剩 %.2f 元",
+            //        volume, price * volume, account.getAvailableFunds()));
             return 0;
         }
 
-        // 成功掛單 (市價單以 marketBuy 實現, 或這裡直接下買單)
+        // 使用市價買單
         orderBook.marketBuy(this, volume);
 
         System.out.println(String.format("【拉抬操作】成功：市價買入 %d 股，預計成本上限 %.2f",
@@ -344,18 +534,73 @@ public class MainForceStrategyWithOrderBook implements Trader {
      * @return 實際成功賣出的股數
      */
     public int 市價賣出操作(int volume) {
+        // 檢查持股是否足夠
         if (getAccumulatedStocks() < volume) {
-//            System.out.println(String.format("【市價賣出】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
-//                    volume, getAccumulatedStocks()));
+            //System.out.println(String.format("【市價賣出】失敗：主力持股不足，欲賣 %d 股，但僅有 %d 股",
+            //        volume, getAccumulatedStocks()));
             return 0;
         }
 
-        // 成功市價賣出
+        // 使用市價賣單
         orderBook.marketSell(this, volume);
 
         System.out.println(String.format("【市價賣出】成功：預計賣出 %d 股 (最終成交量視訂單簿而定)",
                 volume));
         return volume;
+    }
+
+    /**
+     * 精確控制操作：使用FOK買單確保完整成交
+     *
+     * @param volume 想要買入的股數
+     * @param price 限定價格
+     * @return 實際成功買入的股數 (0表示失敗)
+     */
+    public int 精確控制買入操作(int volume, double price) {
+        // 檢查資金是否足夠
+        if (account.getAvailableFunds() < price * volume) {
+            return 0;
+        }
+
+        // 使用FOK買單，確保完全成交或完全取消
+        boolean success = orderBook.submitFokBuyOrder(price, volume, this);
+
+        if (success) {
+            System.out.println(String.format("【精確控制】FOK買入 %d 股 @ %.2f 成功，用於精確控制持股",
+                    volume, price));
+            return volume;
+        } else {
+            System.out.println(String.format("【精確控制】FOK買入 %d 股 @ %.2f 失敗，無法完全成交",
+                    volume, price));
+            return 0;
+        }
+    }
+
+    /**
+     * 精確控制操作：使用FOK賣單確保完整成交
+     *
+     * @param volume 想要賣出的股數
+     * @param price 限定價格
+     * @return 實際成功賣出的股數 (0表示失敗)
+     */
+    public int 精確控制賣出操作(int volume, double price) {
+        // 檢查持股是否足夠
+        if (getAccumulatedStocks() < volume) {
+            return 0;
+        }
+
+        // 使用FOK賣單，確保完全成交或完全取消
+        boolean success = orderBook.submitFokSellOrder(price, volume, this);
+
+        if (success) {
+            System.out.println(String.format("【精確控制】FOK賣出 %d 股 @ %.2f 成功，用於精確控制持股",
+                    volume, price));
+            return volume;
+        } else {
+            System.out.println(String.format("【精確控制】FOK賣出 %d 股 @ %.2f 失敗，無法完全成交",
+                    volume, price));
+            return 0;
+        }
     }
 
     // ==== 各種輔助計算函數 ====

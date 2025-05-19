@@ -1,8 +1,10 @@
 package Analysis;
 
+import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.Iterator;
+import java.util.List;
 
 /**
  * 市場分析器 - 用於計算 SMA、波動性、平均成交量和加權平均價格
@@ -39,7 +41,7 @@ public class MarketAnalyzer {
     /**
      * 添加交易數據並更新價格和成交量歷史
      *
-     * @param price  成交價格
+     * @param price 成交價格
      * @param volume 成交量
      */
     public synchronized void addTransaction(double price, int volume) {
@@ -206,5 +208,119 @@ public class MarketAnalyzer {
         double wap = sumPriceVolume / sumVolume;
         //System.out.println("MarketAnalyzer - 計算加權平均價格: " + wap);
         return wap;
+    }
+
+    /**
+     * 計算近期價格趨勢 返回一個介於-1到1之間的值，表示價格變化方向和強度 正值表示上漲趨勢，負值表示下跌趨勢，0表示無明顯趨勢
+     *
+     * @return 趨勢值，範圍: [-1, 1]
+     */
+    public double getRecentPriceTrend() {
+        // 如果歷史價格數據不足，無法計算趨勢
+        if (recentPriceData.size() < 2) {
+            return 0.0;
+        }
+
+        // 取最近的價格數據來計算趨勢
+        int windowSize = Math.min(20, recentPriceData.size() - 1); // 最多使用最近20個數據點
+
+        // 取得窗口內的價格數據
+        List<Double> recentPrices = new ArrayList<>(recentPriceData);
+        // 只使用最近的 windowSize + 1 個數據點
+        if (recentPrices.size() > windowSize + 1) {
+            recentPrices = recentPrices.subList(recentPrices.size() - windowSize - 1, recentPrices.size());
+        }
+
+        // 計算簡單線性回歸的斜率
+        // 首先計算x和y的平均值
+        double sumX = 0;
+        double sumY = 0;
+        for (int i = 0; i < recentPrices.size(); i++) {
+            sumX += i;
+            sumY += recentPrices.get(i);
+        }
+        double avgX = sumX / recentPrices.size();
+        double avgY = sumY / recentPrices.size();
+
+        // 計算斜率: slope = Σ((x_i - avgX) * (y_i - avgY)) / Σ((x_i - avgX)^2)
+        double numerator = 0;
+        double denominator = 0;
+        for (int i = 0; i < recentPrices.size(); i++) {
+            double xDiff = i - avgX;
+            double yDiff = recentPrices.get(i) - avgY;
+            numerator += xDiff * yDiff;
+            denominator += xDiff * xDiff;
+        }
+
+        // 防止除以零
+        if (Math.abs(denominator) < 0.0001) {
+            return 0.0;
+        }
+
+        // 計算斜率
+        double slope = numerator / denominator;
+
+        // 標準化斜率為-1到1之間的值
+        // 使用最後一個價格的百分比變化來標準化
+        double lastPrice = recentPrices.get(recentPrices.size() - 1);
+        double normalizedSlope = slope * windowSize / lastPrice; // 標準化
+
+        // 限制在 [-1, 1] 範圍內
+        return Math.max(-1.0, Math.min(normalizedSlope, 1.0));
+    }
+
+    /**
+     * 另一種實現: 使用移動平均線計算趨勢 當短期均線在長期均線之上時為上漲趨勢，反之為下跌趨勢
+     *
+     * @return 趨勢值，範圍: [-1, 1]
+     */
+    public double getTrendUsingMA() {
+        if (recentPriceData.size() < 20) {
+            return 0.0; // 數據不足以計算
+        }
+
+        // 計算5日和20日移動平均線
+        double shortMA = calculateSMA(5); // 短期均線
+        double longMA = calculateSMA(20); // 長期均線
+
+        if (shortMA == 0 || longMA == 0) {
+            return 0.0; // 均線計算失敗
+        }
+
+        // 計算均線差異的百分比
+        double diff = (shortMA - longMA) / longMA;
+
+        // 標準化到 [-1, 1] 範圍
+        // 通常 ±5% 的差異已經很明顯了
+        double normalizedDiff = diff * 20; // 5% 差異將轉換為 ±1
+
+        // 限制在 [-1, 1] 範圍內
+        return Math.max(-1.0, Math.min(normalizedDiff, 1.0));
+    }
+
+    /**
+     * 計算指定期間的簡單移動平均線
+     *
+     * @param period 期間長度
+     * @return 移動平均線值
+     */
+    public double calculateSMA(int period) {
+        if (recentPriceData.size() < period) {
+            return 0.0; // 數據不足
+        }
+
+        // 創建一個 List 來處理 Deque 資料
+        List<Double> prices = new ArrayList<>(recentPriceData);
+
+        // 取最近 period 個價格
+        List<Double> recentPrices = prices.subList(prices.size() - period, prices.size());
+
+        // 計算平均值
+        double sum = 0;
+        for (double price : recentPrices) {
+            sum += price;
+        }
+
+        return sum / period;
     }
 }

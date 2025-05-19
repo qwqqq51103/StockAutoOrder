@@ -17,9 +17,10 @@ public class Order {
     private long timestamp; // 用於時間優先
     private boolean isSimulation; // 新增屬性
     private boolean isMarketOrder; // 用於標記是否為市價單
+    private boolean isFillOrKill; // 成交或取消標記
 
     // 構造函數
-    public Order(String type, double price, int volume, Trader trader, boolean isSimulation, boolean isMarketOrder) {
+    public Order(String type, double price, int volume, Trader trader, boolean isSimulation, boolean isMarketOrder, boolean isFillOrKill) {
         if (type == null || (!type.equalsIgnoreCase("buy") && !type.equalsIgnoreCase("sell"))) {
             throw new IllegalArgumentException("訂單類型必須是 'buy' 或 'sell'");
         }
@@ -33,21 +34,60 @@ public class Order {
         this.traderAccount = trader.getAccount(); // 從 Trader 接口獲取帳戶
         this.isSimulation = isSimulation;
         this.isMarketOrder = isMarketOrder; // 設定是否為市價單
+        this.isFillOrKill = isFillOrKill;
         this.timestamp = System.currentTimeMillis();
         this.id = UUID.randomUUID().toString();  // 使用 UUID 生成唯一 ID
     }
 
+    /**
+     * 靜態工廠方法 - 正確版本，包含所有必要的參數
+     */
+// 建立市價買單
+    public static Order createMarketBuyOrder(int volume, Trader trader) {
+        return new Order("buy", 0, volume, trader, false, true, false);
+        // type, price, volume, trader, isSimulation, isMarketOrder, isFillOrKill
+    }
+
+// 建立市價賣單
+    public static Order createMarketSellOrder(int volume, Trader trader) {
+        return new Order("sell", 0, volume, trader, false, true, false);
+        // type, price, volume, trader, isSimulation, isMarketOrder, isFillOrKill
+    }
+
+// 建立限價買單
+    public static Order createLimitBuyOrder(double price, int volume, Trader trader) {
+        return new Order("buy", price, volume, trader, false, false, false);
+        // type, price, volume, trader, isSimulation, isMarketOrder, isFillOrKill
+    }
+
+// 建立限價賣單
+    public static Order createLimitSellOrder(double price, int volume, Trader trader) {
+        return new Order("sell", price, volume, trader, false, false, false);
+        // type, price, volume, trader, isSimulation, isMarketOrder, isFillOrKill
+    }
+
+// 建立FOK買單 (Fill or Kill，成交或取消)
+    public static Order createFokBuyOrder(double price, int volume, Trader trader) {
+        return new Order("buy", price, volume, trader, false, false, true);
+        // type, price, volume, trader, isSimulation, isMarketOrder, isFillOrKill
+    }
+
+// 建立FOK賣單
+    public static Order createFokSellOrder(double price, int volume, Trader trader) {
+        return new Order("sell", price, volume, trader, false, false, true);
+        // type, price, volume, trader, isSimulation, isMarketOrder, isFillOrKill
+    }
+
     @Override
     public String toString() {
-        return "Order{"
-                + "id='" + id + '\''
-                + ", type='" + type + '\''
-                + ", price=" + price
-                + ", volume=" + volume
-                + ", traderType='" + trader.getTraderType() + '\''
-                + ", timestamp=" + timestamp
-                + ", isMarketOrder=" + isMarketOrder
-                + '}';
+        if (isMarketOrder) {
+            return String.format("%s市價單 %d股 (Trader:%s)",
+                    "buy".equals(type) ? "買入" : "賣出", volume, trader.getTraderType());
+        } else {
+            return String.format("%s限價單 %.2f元 %d股 %s (Trader:%s)",
+                    "buy".equals(type) ? "買入" : "賣出", price, volume,
+                    isFillOrKill ? "FOK" : "", trader.getTraderType());
+        }
     }
 
     // Getter 和 Setter 方法
@@ -94,5 +134,9 @@ public class Order {
     // 用於檢查訂單是否為市價單
     public boolean isMarketOrder() {
         return isMarketOrder;
+    }
+
+    public boolean isFillOrKill() {
+        return isFillOrKill;
     }
 }
