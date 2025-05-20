@@ -1,4 +1,4 @@
-package Analysis;
+package StockMainAction.model;
 
 import java.util.ArrayList;
 import java.util.Deque;

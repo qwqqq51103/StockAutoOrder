@@ -1,10 +1,10 @@
-package Core;
+package StockMainAction.model.core;
 
-import AIStrategies.PersonalAI;
-import Core.Stock;
-import OrderManagement.OrderBookListener;
+import StockMainAction.model.PersonalAI;
+import StockMainAction.model.core.Stock;
+import StockMainAction.controller.listeners.OrderBookListener;
 import StockMainAction.StockMarketSimulation;
-import UserManagement.UserAccount;
+import StockMainAction.model.user.UserAccount;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -21,7 +21,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.Map;
-import Logging.MarketLogger;
+import StockMainAction.util.logging.MarketLogger;
 
 /**
  * 訂單簿類別，管理買賣訂單的提交和撮合（改良後的版本）。

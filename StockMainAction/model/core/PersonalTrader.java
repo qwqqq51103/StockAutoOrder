@@ -1,6 +1,6 @@
-package Core;
+package StockMainAction.model.core;
 
-import UserManagement.UserAccount;
+import StockMainAction.model.user.UserAccount;
 
 /**
  * 個人戶交易者類別，實現 Trader 接口

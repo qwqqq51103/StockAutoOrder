@@ -1,4 +1,4 @@
-package OrderManagement;
+package StockMainAction.view.components;
 
 import javax.swing.*;
 import javax.swing.table.DefaultTableCellRenderer;

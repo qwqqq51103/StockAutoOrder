@@ -1,6 +1,6 @@
-package Core;
+package StockMainAction.model.core;
 
-import UserManagement.UserAccount;
+import StockMainAction.model.user.UserAccount;
 import java.util.UUID;
 
 /**

@@ -1,17 +1,17 @@
-package AIStrategies;
+package StockMainAction.model;
 
-import Core.MatchingMode;
-import UserManagement.UserAccount;
-import Core.Order;
-import Core.Trader;
-import Core.OrderBook;
-import Core.Stock;
+import StockMainAction.model.core.MatchingMode;
+import StockMainAction.model.user.UserAccount;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.Trader;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Stock;
 import StockMainAction.StockMarketSimulation;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.Queue;
 import java.util.Random;
-import Logging.MarketLogger;
+import StockMainAction.util.logging.MarketLogger;
 import java.util.Arrays;
 
 /**

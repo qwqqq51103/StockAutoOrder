@@ -1,6 +1,6 @@
-package Core;
+package StockMainAction.model.core;
 
-import UserManagement.UserAccount;
+import StockMainAction.model.user.UserAccount;
 
 /**
  * Trader 接口，定義所有交易者的共同行為

@@ -1,8 +1,0 @@
-/**
- * 此套件負責市場行為分析以及相關數據處理。
- *
- * 類別：
- * - MarketAnalyzer.java: 分析股票市場趨勢和模式。
- * - MarketBehavior.java: 模擬並記錄市場參與者的行為。
- */
-package Analysis;
