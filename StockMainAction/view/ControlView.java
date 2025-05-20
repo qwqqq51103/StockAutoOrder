@@ -1,7 +1,7 @@
 package StockMainAction.view;
 
-import Core.MatchingMode;
-import Core.OrderBook;
+import StockMainAction.model.core.MatchingMode;
+import StockMainAction.model.core.OrderBook;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;

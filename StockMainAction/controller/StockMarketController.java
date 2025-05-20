@@ -5,8 +5,8 @@ import StockMainAction.view.ControlView;
 import StockMainAction.view.MainView;
 import StockMainAction.view.OrderViewer;
 import javafx.util.Pair;
-import Logging.LogViewerWindow;
-import Logging.MarketLogger;
+import StockMainAction.util.logging.LogViewerWindow;
+import StockMainAction.util.logging.MarketLogger;
 
 import javax.swing.*;
 import java.awt.event.WindowAdapter;

@@ -1,10 +1,10 @@
-package AIStrategies;
+package StockMainAction.model;
 
-import Core.Order;
-import Core.OrderBook;
-import Core.Stock;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Stock;
 import StockMainAction.StockMarketSimulation;
-import UserManagement.UserAccount;
+import StockMainAction.model.user.UserAccount;
 
 /**
  * 個人戶 AI，繼承自散戶 AI RetailInvestorAI， 但可以覆寫部分方法，以符合個人戶的行為需求。

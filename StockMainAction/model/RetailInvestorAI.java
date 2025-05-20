@@ -1,10 +1,10 @@
-package AIStrategies;
+package StockMainAction.model;
 
-import UserManagement.UserAccount;
-import Core.Order;
-import Core.Trader;
-import Core.OrderBook;
-import Core.Stock;
+import StockMainAction.model.user.UserAccount;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.Trader;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Stock;
 import StockMainAction.StockMarketSimulation;
 import java.util.Random;
 import java.util.LinkedList;
@@ -12,7 +12,7 @@ import java.util.Queue;
 import javax.swing.JOptionPane;
 import java.text.DecimalFormat;
 import jdk.nashorn.internal.runtime.regexp.joni.Config;
-import Logging.MarketLogger;
+import StockMainAction.util.logging.MarketLogger;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 

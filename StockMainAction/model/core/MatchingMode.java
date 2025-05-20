@@ -1,4 +1,4 @@
-package Core;
+package StockMainAction.model.core;
 
 import java.util.Random;
 

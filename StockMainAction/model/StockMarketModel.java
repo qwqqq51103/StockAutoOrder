@@ -1,14 +1,9 @@
 package StockMainAction.model;
 
-import AIStrategies.RetailInvestorAI;
-import AIStrategies.MainForceStrategyWithOrderBook;
-import AIStrategies.PersonalAI;
-import Analysis.MarketBehavior;
-import Analysis.MarketAnalyzer;
-import Core.Order;
-import Core.OrderBook;
-import Core.Stock;
-import Logging.MarketLogger;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Stock;
+import StockMainAction.util.logging.MarketLogger;
 import javafx.util.Pair;
 
 import java.util.ArrayList;

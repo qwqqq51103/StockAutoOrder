@@ -1,4 +1,4 @@
-package Core;
+package StockMainAction.model.core;
 
 /**
  * 股票類別，專門負責處理股票相關的屬性與方法

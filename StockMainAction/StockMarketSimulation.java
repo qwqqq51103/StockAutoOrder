@@ -1,16 +1,15 @@
 package StockMainAction;
 
-import AIStrategies.RetailInvestorAI;
-import AIStrategies.MainForceStrategyWithOrderBook;
-import AIStrategies.PersonalAI;
-import OrderManagement.OrderBookTable;
-import OrderManagement.OrderViewer;
-import Analysis.MarketBehavior;
-import Analysis.MarketAnalyzer;
-import Core.Order;
-import Core.OrderBook;
-import Core.Stock;
-import Logging.LogViewerWindow;
+import StockMainAction.model.RetailInvestorAI;
+import StockMainAction.model.MainForceStrategyWithOrderBook;
+import StockMainAction.model.PersonalAI;
+import StockMainAction.view.components.OrderBookTable;
+import StockMainAction.model.MarketBehavior;
+import StockMainAction.model.MarketAnalyzer;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Stock;
+import StockMainAction.util.logging.LogViewerWindow;
 import javax.swing.*;
 import java.awt.*;
 import org.jfree.chart.ChartFactory;
@@ -41,7 +40,8 @@ import java.awt.BasicStroke;
 import javax.swing.JOptionPane;
 import org.jfree.chart.plot.Plot;
 import javafx.util.Pair;
-import Logging.MarketLogger;
+import StockMainAction.util.logging.MarketLogger;
+import StockMainAction.view.OrderViewer;
 
 public class StockMarketSimulation {
 

@@ -1,14 +1,14 @@
-package Analysis;
+package StockMainAction.model;
 
-import Core.Order;
-import Core.Trader;
-import Core.OrderBook;
-import Core.Stock;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.Trader;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Stock;
 import StockMainAction.StockMarketSimulation;
-import UserManagement.UserAccount;
+import StockMainAction.model.user.UserAccount;
 import java.util.List;
 import java.util.Random;
-import Logging.MarketLogger;
+import StockMainAction.util.logging.MarketLogger;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 

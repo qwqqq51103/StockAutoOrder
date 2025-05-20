@@ -1,8 +1,8 @@
 package StockMainAction.view;
 
-import Core.MatchingMode;
-import Core.Order;
-import Core.OrderBook;
+import StockMainAction.model.core.MatchingMode;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.StockMarketModel;
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.ChartPanel;

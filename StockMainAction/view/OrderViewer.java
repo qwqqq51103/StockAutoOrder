@@ -1,8 +1,8 @@
 package StockMainAction.view;
 
-import Core.Order;
-import Core.OrderBook;
-import OrderManagement.OrderBookListener;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.controller.listeners.OrderBookListener;
 import javax.swing.*;
 import java.awt.*;
 import java.util.List;

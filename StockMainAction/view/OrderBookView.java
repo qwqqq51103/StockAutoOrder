@@ -1,8 +1,8 @@
 package StockMainAction.view;
 
-import Core.Order;
-import Core.OrderBook;
-import OrderManagement.OrderBookTable;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.OrderBook;
+import StockMainAction.view.components.OrderBookTable;
 
 import javax.swing.*;
 import java.util.ArrayList;

@@ -1,4 +1,4 @@
-package Logging;
+package StockMainAction.util.logging;
 
 import java.io.IOException;
 import java.io.InputStream;

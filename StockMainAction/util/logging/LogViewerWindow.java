@@ -1,4 +1,4 @@
-package Logging;
+package StockMainAction.util.logging;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
