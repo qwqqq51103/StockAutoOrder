@@ -34,6 +34,7 @@ public class RetailInvestorAI implements Trader {
     private boolean autoInputOrderAmount = true; // 是否自動輸入訂單金額
     private DecimalFormat decimalFormat = new DecimalFormat("#,##0.00"); // 格式化價格顯示
     private static final MarketLogger logger = MarketLogger.getInstance();
+    private StockMarketModel model;
 
     // 停損和止盈價格
     private Double stopLossPrice = null;
@@ -59,11 +60,11 @@ public class RetailInvestorAI implements Trader {
      *
      * @param initialCash 初始現金
      * @param traderID 散戶的唯一標識符
-     * @param simulation 模擬實例
+     * @param model 市場模型
      */
-    public RetailInvestorAI(double initialCash, String traderID, StockMarketSimulation simulation) {
+    public RetailInvestorAI(double initialCash, String traderID, StockMarketModel model) {
         this.traderID = traderID;
-        this.simulation = simulation;
+        this.model = model;
 
         // 初始化價格歷史
         this.priceHistory = new LinkedList<>();
@@ -77,6 +78,8 @@ public class RetailInvestorAI implements Trader {
 
         // 初始化帳戶
         this.account = new UserAccount(initialCash, 0);
+
+        logger.info("【散戶AI】建立成功，ID: " + traderID + "，初始資金: " + initialCash, "RETAIL_INVESTOR_INIT");
     }
 
     // ========== Trader 介面實作 ==========
@@ -97,15 +100,17 @@ public class RetailInvestorAI implements Trader {
         if ("buy".equals(type)) {
             // 限價單買入
             account.incrementStocks(volume);
-            // System.out.println(String.format("【散戶-限價買入更新】買入 %d 股，價格 %.2f", volume, price));
+            logger.info(String.format("【散戶-限價買入更新】散戶 %s 買入 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
         } else if ("sell".equals(type)) {
             // 限價單賣出
             account.incrementFunds(transactionAmount);
-            // System.out.println(String.format("【散戶-限價賣出更新】賣出 %d 股，價格 %.2f", volume, price));
+            logger.info(String.format("【散戶-限價賣出更新】散戶 %s 賣出 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
         }
 
-        // 更新 GUI
-        simulation.updateLabels();
+        // 通過 model 更新 UI
+        if (model != null) {
+            model.notifyListenersOfUpdates();
+        }
     }
 
     @Override
@@ -114,14 +119,17 @@ public class RetailInvestorAI implements Trader {
         double transactionAmount = price * volume;
 
         if ("buy".equals(type)) {
-            // System.out.println(String.format("【散戶-市價買入更新】買入 %d 股，價格 %.2f", volume, price));
+            logger.info(String.format("【散戶-市價買入更新】散戶 %s 買入 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
             account.incrementStocks(volume);
         } else if ("sell".equals(type)) {
-            // System.out.println(String.format("【散戶-市價賣出更新】賣出 %d 股，價格 %.2f", volume, price));
+            logger.info(String.format("【散戶-市價賣出更新】散戶 %s 賣出 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
             account.incrementFunds(transactionAmount);
         }
 
-        simulation.updateLabels();
+        // 通過 model 更新 UI
+        if (model != null) {
+            model.notifyListenersOfUpdates();
+        }
     }
 
     // ========== 核心行為決策 ==========
@@ -132,7 +140,11 @@ public class RetailInvestorAI implements Trader {
      * @param orderBook 訂單簿實例
      * @param simulation 模擬實例
      */
-    public void makeDecision(Stock stock, OrderBook orderBook, StockMarketSimulation simulation) {
+    public void makeDecision(Stock stock, OrderBook orderBook, StockMarketModel model) {
+        // 如果傳入的 model 不為 null，更新當前實例的 model 引用
+        if (model != null) {
+            this.model = model;
+        }
         try {
             logger.debug(String.format(
                     "散戶%s 決策分析開始：可用資金=%.2f, 當前股價=%.2f",
@@ -142,9 +154,9 @@ public class RetailInvestorAI implements Trader {
             this.orderBook = orderBook; // 如需使用私有函式下單時需有此參考
             double availableFunds = account.getAvailableFunds();
             double currentPrice = stock.getPrice();
-            double sma = simulation.getMarketAnalyzer().calculateSMA();
-            double rsi = simulation.getMarketAnalyzer().getRSI();
-            double volatility = simulation.getMarketAnalyzer().getVolatility();
+            double sma = model.getMarketAnalyzer().calculateSMA();
+            double rsi = model.getMarketAnalyzer().getRSI();
+            double volatility = model.getMarketAnalyzer().getVolatility();
             StringBuilder decisionReason = new StringBuilder();
 
             // 每次決策時，動態調整買/賣門檻
@@ -486,13 +498,27 @@ public class RetailInvestorAI implements Trader {
                     ), "RETAIL_INVESTOR_STOP_POINTS");
                 }
 
-                simulation.updateInfoTextArea(decisionReason.toString());
+                if (model != null) {
+                    model.sendInfoMessage(decisionReason.toString());
+                } else {
+                    logger.warn(String.format(
+                            "散戶%s 無法更新 UI，model 為 null",
+                            traderID
+                    ), "RETAIL_INVESTOR_DECISION");
+                }
                 logger.debug(String.format(
                         "散戶%s 決策完成，結果：%s",
                         traderID, decisionReason.toString()
                 ), "RETAIL_INVESTOR_DECISION");
             } else {
-                simulation.updateInfoTextArea("【散戶】尚無法計算 SMA，暫無決策。\n");
+                if (model != null) {
+                    model.sendInfoMessage("【散戶】尚無法計算 SMA，暫無決策。\n");
+                } else {
+                    logger.warn(String.format(
+                            "散戶%s 無法更新 UI，model 為 null",
+                            traderID
+                    ), "RETAIL_INVESTOR_DECISION");
+                }
                 logger.warn(String.format(
                         "散戶%s 無法計算 SMA，暫無決策",
                         traderID
@@ -593,9 +619,9 @@ public class RetailInvestorAI implements Trader {
      * 隨機交易 - 增強版，加入不同訂單類型
      */
     private void executeRandomTransaction(double availableFunds, double currentPrice, StringBuilder decisionReason, Stock stock) {
-        double sma = simulation.getMarketAnalyzer().calculateSMA();
-        double rsi = simulation.getMarketAnalyzer().getRSI();
-        double volatility = simulation.getMarketAnalyzer().getVolatility();
+        double sma = model.getMarketAnalyzer().calculateSMA();
+        double rsi = model.getMarketAnalyzer().getRSI();
+        double volatility = model.getMarketAnalyzer().getVolatility();
 
         // 選擇交易類型
         String txType = random.nextDouble() < 0.5 ? "buy" : "sell";
@@ -627,7 +653,7 @@ public class RetailInvestorAI implements Trader {
                             traderID, actualBuy
                     ), "RETAIL_INVESTOR_RANDOM");
                     decisionReason.append("【隨機操作】市價買入 ").append(actualBuy).append(" 股。\n");
-                    setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
+                    setStopLossAndTakeProfit(currentPrice, model.getMarketAnalyzer().getVolatility());
                 } else {
                     logger.warn(String.format(
                             "散戶%s 隨機市價買入失敗：買入量 %d",
@@ -649,7 +675,7 @@ public class RetailInvestorAI implements Trader {
                             traderID, actualBuy, buyLimitPrice
                     ), "RETAIL_INVESTOR_RANDOM");
                     decisionReason.append("【隨機操作】限價買入 ").append(actualBuy).append(" 股，價格 " + decimalFormat.format(buyLimitPrice) + "。\n");
-                    setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
+                    setStopLossAndTakeProfit(currentPrice, model.getMarketAnalyzer().getVolatility());
                 } else {
                     logger.warn(String.format(
                             "散戶%s 隨機限價買入失敗：買入量 %d，限價=%.2f",
@@ -671,7 +697,7 @@ public class RetailInvestorAI implements Trader {
                             traderID, buyAmount, buyPrice
                     ), "RETAIL_INVESTOR_RANDOM");
                     decisionReason.append("【隨機操作】FOK買入 ").append(buyAmount).append(" 股，價格 " + decimalFormat.format(buyPrice) + "。\n");
-                    setStopLossAndTakeProfit(currentPrice, simulation.getMarketAnalyzer().getVolatility());
+                    setStopLossAndTakeProfit(currentPrice, model.getMarketAnalyzer().getVolatility());
                 } else {
                     logger.warn(String.format(
                             "散戶%s 隨機FOK買入失敗：買入量 %d，價格=%.2f",
@@ -966,9 +992,9 @@ public class RetailInvestorAI implements Trader {
      */
     private double 智能決定買入價格(double suggestedPrice, double currentPrice) {
         // 獲取市場分析數據
-        double sma = simulation.getMarketAnalyzer().calculateSMA();
-        double rsi = simulation.getMarketAnalyzer().getRSI();
-        double volatility = simulation.getMarketAnalyzer().getVolatility();
+        double sma = model.getMarketAnalyzer().calculateSMA();
+        double rsi = model.getMarketAnalyzer().getRSI();
+        double volatility = model.getMarketAnalyzer().getVolatility();
 
         logger.debug(String.format(
                 "散戶%s 智能買入定價開始：當前價格=%.2f, 建議價格=%.2f, SMA=%.2f, RSI=%.2f, 波動性=%.4f",
@@ -1164,9 +1190,9 @@ public class RetailInvestorAI implements Trader {
      */
     private double 智能決定賣出價格(double suggestedPrice, double currentPrice) {
         // 獲取市場分析數據
-        double sma = simulation.getMarketAnalyzer().calculateSMA();
-        double rsi = simulation.getMarketAnalyzer().getRSI();
-        double volatility = simulation.getMarketAnalyzer().getVolatility();
+        double sma = model.getMarketAnalyzer().calculateSMA();
+        double rsi = model.getMarketAnalyzer().getRSI();
+        double volatility = model.getMarketAnalyzer().getVolatility();
 
         logger.debug(String.format(
                 "散戶%s 智能賣出定價開始：當前價格=%.2f, 建議價格=%.2f, SMA=%.2f, RSI=%.2f, 波動性=%.4f",

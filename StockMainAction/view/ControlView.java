@@ -1,5 +1,6 @@
 package StockMainAction.view;
 
+import StockMainAction.MatchingEnginePanel;
 import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.OrderBook;
 
@@ -28,6 +29,9 @@ public class ControlView extends JFrame {
     private JLabel userAvgPriceLabel;
     private JLabel userTargetPrice;
 
+    // 撮合引擎面板
+    private MatchingEnginePanel matchingEnginePanel;
+
     /**
      * 構造函數
      */
@@ -41,25 +45,31 @@ public class ControlView extends JFrame {
     private void initializeUI() {
         setTitle("股票市場模擬 - 控制視窗");
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
-        setSize(400, 400);
+        setSize(500, 600);  // 稍微調大窗口以容納撮合引擎面板
         setLocationRelativeTo(null);
 
-        JPanel controlPanel = new JPanel();
-        controlPanel.setLayout(new GridLayout(9, 1, 10, 10));
+        // 創建主面板，使用垂直 BoxLayout
+        JPanel mainPanel = new JPanel();
+        mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
 
-        // 用戶資訊面板
+        // === 創建用戶資訊面板 ===
         JPanel userInfoPanel = new JPanel(new GridLayout(4, 1, 5, 5));
+        userInfoPanel.setBorder(BorderFactory.createTitledBorder("個人資訊"));
+
         userStockLabel = new JLabel("個人股票數量: 0");
         userCashLabel = new JLabel("個人金錢餘額: 0.00");
         userAvgPriceLabel = new JLabel("個人平均價: 0.00");
         userTargetPrice = new JLabel("個人目標價: 0.00");
+
         userInfoPanel.add(userStockLabel);
         userInfoPanel.add(userCashLabel);
         userInfoPanel.add(userAvgPriceLabel);
         userInfoPanel.add(userTargetPrice);
 
-        // 創建控制按鈕
-        stopButton = new JButton("停止");
+        // === 創建交易操作面板 ===
+        JPanel tradePanel = new JPanel(new GridLayout(3, 2, 10, 10));
+        tradePanel.setBorder(BorderFactory.createTitledBorder("交易操作"));
+
         limitBuyButton = new JButton("限價買入");
         limitSellButton = new JButton("限價賣出");
         marketBuyButton = new JButton("市價買入");
@@ -67,18 +77,35 @@ public class ControlView extends JFrame {
         cancelOrderButton = new JButton("取消訂單");
         viewOrdersButton = new JButton("查看訂單");
 
-        // 添加元件到控制面板
-        controlPanel.add(new JLabel("個人資訊:"));
-        controlPanel.add(userInfoPanel);
-        controlPanel.add(limitBuyButton);
-        controlPanel.add(limitSellButton);
-        controlPanel.add(marketBuyButton);
-        controlPanel.add(marketSellButton);
-        controlPanel.add(cancelOrderButton);
-        controlPanel.add(viewOrdersButton);
-        controlPanel.add(stopButton);
+        tradePanel.add(limitBuyButton);
+        tradePanel.add(limitSellButton);
+        tradePanel.add(marketBuyButton);
+        tradePanel.add(marketSellButton);
+        tradePanel.add(cancelOrderButton);
+        tradePanel.add(viewOrdersButton);
 
-        add(controlPanel, BorderLayout.CENTER);
+        // === 創建系統控制面板 ===
+        JPanel systemPanel = new JPanel(new FlowLayout(FlowLayout.CENTER));
+        systemPanel.setBorder(BorderFactory.createTitledBorder("系統控制"));
+
+        stopButton = new JButton("停止");
+        systemPanel.add(stopButton);
+
+        // === 初始化撮合引擎面板 ===
+        matchingEnginePanel = new MatchingEnginePanel();
+
+        // === 將所有面板添加到主面板 ===
+        mainPanel.add(userInfoPanel);
+        mainPanel.add(Box.createRigidArea(new Dimension(0, 10)));  // 添加間距
+        mainPanel.add(tradePanel);
+        mainPanel.add(Box.createRigidArea(new Dimension(0, 10)));  // 添加間距
+        mainPanel.add(systemPanel);
+        mainPanel.add(Box.createRigidArea(new Dimension(0, 10)));  // 添加間距
+        mainPanel.add(matchingEnginePanel);
+
+        // 添加主面板到窗口
+        JScrollPane scrollPane = new JScrollPane(mainPanel);
+        add(scrollPane, BorderLayout.CENTER);
     }
 
     /**
@@ -96,111 +123,110 @@ public class ControlView extends JFrame {
     /**
      * 創建撮合引擎控制面板
      */
-    public JPanel createMatchingEnginePanel(OrderBook orderBook) {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(BorderFactory.createTitledBorder(
-                BorderFactory.createEtchedBorder(),
-                "撮合引擎設置",
-                TitledBorder.CENTER,
-                TitledBorder.TOP));
-
-        // 創建主面板
-        JPanel mainPanel = new JPanel(new GridLayout(3, 1, 5, 5));
-
-        // 1. 撮合模式選擇
-        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JLabel modeLabel = new JLabel("撮合模式:");
-        JComboBox<MatchingMode> modeComboBox = new JComboBox<>(MatchingMode.values());
-        modeComboBox.setSelectedItem(orderBook.getMatchingMode());
-        modeComboBox.addActionListener(e -> {
-            MatchingMode selectedMode = (MatchingMode) modeComboBox.getSelectedItem();
-            orderBook.setMatchingMode(selectedMode);
-        });
-
-        modePanel.add(modeLabel);
-        modePanel.add(modeComboBox);
-
-        // 2. 隨機模式設置
-        JPanel randomPanel = new JPanel(new BorderLayout());
-        JPanel randomCheckPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-
-        JCheckBox randomModeCheckbox = new JCheckBox("隨機切換模式", false);
-        JLabel probabilityLabel = new JLabel("切換概率:");
-
-        randomCheckPanel.add(randomModeCheckbox);
-        randomCheckPanel.add(probabilityLabel);
-
-        JSlider probabilitySlider = new JSlider(0, 100, 15);
-        probabilitySlider.setMajorTickSpacing(25);
-        probabilitySlider.setMinorTickSpacing(5);
-        probabilitySlider.setPaintTicks(true);
-        probabilitySlider.setPaintLabels(true);
-        probabilitySlider.setEnabled(false);
-
-        randomModeCheckbox.addActionListener(e -> {
-            boolean selected = randomModeCheckbox.isSelected();
-            probabilitySlider.setEnabled(selected);
-            orderBook.setRandomModeSwitching(selected,
-                    selected ? probabilitySlider.getValue() / 100.0 : 0);
-        });
-
-        probabilitySlider.addChangeListener(e -> {
-            if (!probabilitySlider.getValueIsAdjusting() && randomModeCheckbox.isSelected()) {
-                orderBook.setRandomModeSwitching(true, probabilitySlider.getValue() / 100.0);
-            }
-        });
-
-        randomPanel.add(randomCheckPanel, BorderLayout.NORTH);
-        randomPanel.add(probabilitySlider, BorderLayout.CENTER);
-
-        // 3. 流動性設置
-        JPanel liquidityPanel = new JPanel(new BorderLayout());
-        JPanel liquidityLabelPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-
-        JLabel liquidityLabel = new JLabel("市場流動性:");
-        liquidityLabelPanel.add(liquidityLabel);
-
-        JSlider liquiditySlider = new JSlider(50, 200, 100);
-        liquiditySlider.setMajorTickSpacing(50);
-        liquiditySlider.setMinorTickSpacing(10);
-        liquiditySlider.setPaintTicks(true);
-        liquiditySlider.setPaintLabels(true);
-
-        // 添加標籤
-        Hashtable<Integer, JLabel> labelTable = new Hashtable<>();
-        labelTable.put(50, new JLabel("低"));
-        labelTable.put(100, new JLabel("中"));
-        labelTable.put(150, new JLabel("高"));
-        labelTable.put(200, new JLabel("極高"));
-        liquiditySlider.setLabelTable(labelTable);
-
-        liquiditySlider.addChangeListener(e -> {
-            if (!liquiditySlider.getValueIsAdjusting()) {
-                orderBook.setLiquidityFactor(liquiditySlider.getValue() / 100.0);
-            }
-        });
-
-        liquidityPanel.add(liquidityLabelPanel, BorderLayout.NORTH);
-        liquidityPanel.add(liquiditySlider, BorderLayout.CENTER);
-
-        // 組合面板
-        mainPanel.add(modePanel);
-        mainPanel.add(randomPanel);
-        mainPanel.add(liquidityPanel);
-
-        // 添加說明按鈕
-        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-        JButton helpButton = new JButton("說明");
-        helpButton.addActionListener(e -> showHelpDialog());
-        buttonPanel.add(helpButton);
-
-        // 添加到主面板
-        panel.add(mainPanel, BorderLayout.CENTER);
-        panel.add(buttonPanel, BorderLayout.SOUTH);
-
-        return panel;
-    }
-
+//    public JPanel createMatchingEnginePanel(OrderBook orderBook) {
+//        JPanel panel = new JPanel(new BorderLayout());
+//        panel.setBorder(BorderFactory.createTitledBorder(
+//                BorderFactory.createEtchedBorder(),
+//                "撮合引擎設置",
+//                TitledBorder.CENTER,
+//                TitledBorder.TOP));
+//
+//        // 創建主面板
+//        JPanel mainPanel = new JPanel(new GridLayout(3, 1, 5, 5));
+//
+//        // 1. 撮合模式選擇
+//        JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+//        JLabel modeLabel = new JLabel("撮合模式:");
+//        JComboBox<MatchingMode> modeComboBox = new JComboBox<>(MatchingMode.values());
+//        modeComboBox.setSelectedItem(orderBook.getMatchingMode());
+//        modeComboBox.addActionListener(e -> {
+//            MatchingMode selectedMode = (MatchingMode) modeComboBox.getSelectedItem();
+//            orderBook.setMatchingMode(selectedMode);
+//        });
+//
+//        modePanel.add(modeLabel);
+//        modePanel.add(modeComboBox);
+//
+//        // 2. 隨機模式設置
+//        JPanel randomPanel = new JPanel(new BorderLayout());
+//        JPanel randomCheckPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+//
+//        JCheckBox randomModeCheckbox = new JCheckBox("隨機切換模式", false);
+//        JLabel probabilityLabel = new JLabel("切換概率:");
+//
+//        randomCheckPanel.add(randomModeCheckbox);
+//        randomCheckPanel.add(probabilityLabel);
+//
+//        JSlider probabilitySlider = new JSlider(0, 100, 15);
+//        probabilitySlider.setMajorTickSpacing(25);
+//        probabilitySlider.setMinorTickSpacing(5);
+//        probabilitySlider.setPaintTicks(true);
+//        probabilitySlider.setPaintLabels(true);
+//        probabilitySlider.setEnabled(false);
+//
+//        randomModeCheckbox.addActionListener(e -> {
+//            boolean selected = randomModeCheckbox.isSelected();
+//            probabilitySlider.setEnabled(selected);
+//            orderBook.setRandomModeSwitching(selected,
+//                    selected ? probabilitySlider.getValue() / 100.0 : 0);
+//        });
+//
+//        probabilitySlider.addChangeListener(e -> {
+//            if (!probabilitySlider.getValueIsAdjusting() && randomModeCheckbox.isSelected()) {
+//                orderBook.setRandomModeSwitching(true, probabilitySlider.getValue() / 100.0);
+//            }
+//        });
+//
+//        randomPanel.add(randomCheckPanel, BorderLayout.NORTH);
+//        randomPanel.add(probabilitySlider, BorderLayout.CENTER);
+//
+//        // 3. 流動性設置
+//        JPanel liquidityPanel = new JPanel(new BorderLayout());
+//        JPanel liquidityLabelPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+//
+//        JLabel liquidityLabel = new JLabel("市場流動性:");
+//        liquidityLabelPanel.add(liquidityLabel);
+//
+//        JSlider liquiditySlider = new JSlider(50, 200, 100);
+//        liquiditySlider.setMajorTickSpacing(50);
+//        liquiditySlider.setMinorTickSpacing(10);
+//        liquiditySlider.setPaintTicks(true);
+//        liquiditySlider.setPaintLabels(true);
+//
+//        // 添加標籤
+//        Hashtable<Integer, JLabel> labelTable = new Hashtable<>();
+//        labelTable.put(50, new JLabel("低"));
+//        labelTable.put(100, new JLabel("中"));
+//        labelTable.put(150, new JLabel("高"));
+//        labelTable.put(200, new JLabel("極高"));
+//        liquiditySlider.setLabelTable(labelTable);
+//
+//        liquiditySlider.addChangeListener(e -> {
+//            if (!liquiditySlider.getValueIsAdjusting()) {
+//                orderBook.setLiquidityFactor(liquiditySlider.getValue() / 100.0);
+//            }
+//        });
+//
+//        liquidityPanel.add(liquidityLabelPanel, BorderLayout.NORTH);
+//        liquidityPanel.add(liquiditySlider, BorderLayout.CENTER);
+//
+//        // 組合面板
+//        mainPanel.add(modePanel);
+//        mainPanel.add(randomPanel);
+//        mainPanel.add(liquidityPanel);
+//
+//        // 添加說明按鈕
+//        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+//        JButton helpButton = new JButton("說明");
+//        helpButton.addActionListener(e -> showHelpDialog());
+//        buttonPanel.add(helpButton);
+//
+//        // 添加到主面板
+//        panel.add(mainPanel, BorderLayout.CENTER);
+//        panel.add(buttonPanel, BorderLayout.SOUTH);
+//
+//        return panel;
+//    }
     /**
      * 顯示撮合機制說明對話框
      */
@@ -257,5 +283,9 @@ public class ControlView extends JFrame {
 
     public JButton getViewOrdersButton() {
         return viewOrdersButton;
+    }
+
+    public MatchingEnginePanel getMatchingEnginePanel() {
+        return matchingEnginePanel;
     }
 }

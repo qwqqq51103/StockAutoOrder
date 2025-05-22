@@ -6,7 +6,6 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.Trader;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
-import StockMainAction.StockMarketSimulation;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.Queue;
@@ -21,13 +20,13 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     private OrderBook orderBook;
     private Stock stock;
-    private StockMarketSimulation simulation;
     private StringBuilder tradeLog;
     private double targetPrice;         // 主力目標價位
     private double averageCostPrice;    // 目前籌碼的平均成本價格
     private Random random;
     private UserAccount account;        // 主力的 UserAccount
     private int initStock = 0;
+    private StockMarketModel model;
 
     // 目標價的期望利潤率（例如 50%）
     private static final double EXPECTED_PROFIT_MARGIN = 0.5;
@@ -57,10 +56,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
      * @param simulation 模擬實例
      * @param initialCash 初始現金
      */
-    public MainForceStrategyWithOrderBook(OrderBook orderBook, Stock stock, StockMarketSimulation simulation, double initialCash) {
+    public MainForceStrategyWithOrderBook(OrderBook orderBook, Stock stock, StockMarketModel model, double initialCash) {
         this.orderBook = orderBook;
         this.stock = stock;
-        this.simulation = simulation;
+        this.model = model;
         this.tradeLog = new StringBuilder();
         this.random = new Random();
         this.recentVolumes = new LinkedList<>();
@@ -100,36 +99,38 @@ public class MainForceStrategyWithOrderBook implements Trader {
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {
         double transactionAmount = price * volume;
-
         if ("buy".equals(type)) {
             // 限價單買入：增加股數
             account.incrementStocks(volume);
-
             // 更新平均成本價
             double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
             averageCostPrice = totalInvestment / getAccumulatedStocks();
-
             // 更新目標價
             calculateTargetPrice();
-
             System.out.println(String.format("【限價買入後更新】主力買入 %d 股，成交價 %.2f，更新後平均成本價 %.2f",
                     volume, price, averageCostPrice));
-
         } else if ("sell".equals(type)) {
             // 限價單賣出：增加現金
             account.incrementFunds(transactionAmount);
-
             // 若持股為零，重置平均成本價
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
             }
-
             System.out.println(String.format("【限價賣出後更新】主力賣出 %d 股，成交價 %.2f，更新後持股 %d 股",
                     volume, price, getAccumulatedStocks()));
         }
 
         // 更新界面上的標籤
-        simulation.updateLabels();
+        // 替換原來的 simulation.updateLabels();
+        if (model != null) {
+            model.updateLabels();
+        } else {
+            // 如果 model 為 null，使用日誌記錄
+            logger.warn(String.format(
+                    "無法更新界面標籤，model 為 null (type=%s, volume=%d, price=%.2f)",
+                    type, volume, price
+            ), "TRANSACTION_UPDATE");
+        }
     }
 
     /**
@@ -164,7 +165,11 @@ public class MainForceStrategyWithOrderBook implements Trader {
         }
 
         // 更新界面上的標籤
-        simulation.updateLabels();
+        if (model != null) {
+            model.updateLabels();
+        } else {
+            logger.warn("無法更新界面標籤，model 為 null", "TRANSACTION_UPDATE");
+        }
     }
 
     /**
@@ -174,9 +179,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
         try {
             double currentPrice = stock.getPrice();
             double availableFunds = account.getAvailableFunds();
-            double sma = simulation.getMarketAnalyzer().calculateSMA();
-            double rsi = simulation.getMarketAnalyzer().getRSI();
-            double volatility = simulation.getMarketAnalyzer().calculateVolatility();
+            double sma = model.getMarketAnalyzer().calculateSMA();
+            double rsi = model.getMarketAnalyzer().getRSI();
+            double volatility = model.getMarketAnalyzer().calculateVolatility();
             double riskFactor = getRiskFactor(); // 計算主力的風險係數
 
             logger.info(String.format(
@@ -187,7 +192,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             // 嘗試獲取價格趨勢
             double recentTrend = 0.0;
             try {
-                recentTrend = simulation.getMarketAnalyzer().getRecentPriceTrend();
+                recentTrend = model.getMarketAnalyzer().getRecentPriceTrend();
                 logger.debug(String.format("最近價格趨勢: %.4f", recentTrend), "MAIN_FORCE_TREND");
             } catch (Exception e) {
                 logger.warn("無法獲取價格趨勢：" + e.getMessage(), "MAIN_FORCE_TREND");
@@ -423,9 +428,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
         try {
             double limitPrice = computeBuyLimitPrice(
                     stock.getPrice(),
-                    simulation.getMarketAnalyzer().getSMA(),
-                    simulation.getMarketAnalyzer().getRSI(),
-                    simulation.getMarketAnalyzer().getVolatility()
+                    model.getMarketAnalyzer().getSMA(),
+                    model.getMarketAnalyzer().getRSI(),
+                    model.getMarketAnalyzer().getVolatility()
             );
 
             logger.debug(String.format(
@@ -478,9 +483,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
         try {
             double limitPrice = computeSellLimitPrice(
                     stock.getPrice(),
-                    simulation.getMarketAnalyzer().getSMA(),
-                    simulation.getMarketAnalyzer().getRSI(),
-                    simulation.getMarketAnalyzer().getVolatility()
+                    model.getMarketAnalyzer().getSMA(),
+                    model.getMarketAnalyzer().getRSI(),
+                    model.getMarketAnalyzer().getVolatility()
             );
 
             logger.debug(String.format(

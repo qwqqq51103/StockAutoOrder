@@ -1,6 +1,9 @@
 package StockMainAction.controller;
 
+import StockMainAction.MatchingEnginePanel;
 import StockMainAction.model.StockMarketModel;
+import StockMainAction.model.core.MatchingMode;
+import StockMainAction.model.core.OrderBook;
 import StockMainAction.view.ControlView;
 import StockMainAction.view.MainView;
 import StockMainAction.view.OrderViewer;
@@ -51,6 +54,10 @@ public class StockMarketController implements StockMarketModel.ModelListener {
 
         // 打開日誌視窗
         openLogViewer();
+
+        //初始化撮合引擎控制
+        initializeMatchingEngineControl();
+        logger.info("控制器初始化完成，包括撮合引擎控制", "CONTROLLER_INIT");
     }
 
     /**
@@ -90,6 +97,67 @@ public class StockMarketController implements StockMarketModel.ModelListener {
             OrderViewer orderViewer = new OrderViewer(model.getOrderBook());
             orderViewer.setVisible(true);
         });
+    }
+
+    /**
+     * 初始化撮合引擎控制
+     */
+    public void initializeMatchingEngineControl() {
+        MatchingEnginePanel panel = controlView.getMatchingEnginePanel();
+        if (panel == null) {
+            logger.error("無法獲取撮合引擎面板", "CONTROLLER_INIT");
+            return;
+        }
+
+        // 設置初始值
+        OrderBook orderBook = model.getOrderBook();
+        if (orderBook != null) {
+            MatchingMode currentMode = orderBook.getMatchingMode();
+            panel.updateCurrentMode(currentMode);
+
+            // 添加詳細日誌
+            logger.info("初始化撮合引擎面板：當前模式=" + currentMode, "MATCHING_ENGINE");
+
+            // 設置應用按鈕監聽器，並添加詳細日誌
+            panel.setApplyButtonListener(e -> {
+                try {
+                    MatchingMode selectedMode = panel.getSelectedMatchingMode();
+                    logger.info("嘗試更改撮合模式：" + selectedMode, "MATCHING_ENGINE");
+
+                    // 確保 OrderBook 實例有效
+                    if (model.getOrderBook() == null) {
+                        logger.error("OrderBook 實例為 null", "MATCHING_ENGINE");
+                        return;
+                    }
+
+                    // 設置撮合模式
+                    model.getOrderBook().setMatchingMode(selectedMode);
+                    panel.updateCurrentMode(selectedMode);
+
+                    // 設置隨機切換和流動性參數
+                    boolean randomSwitching = panel.isRandomModeSwitchingEnabled();
+                    double probability = panel.getRandomModeSwitchingProbability();
+                    double liquidityFactor = panel.getLiquidityFactor();
+
+                    model.getOrderBook().setRandomModeSwitching(randomSwitching, probability);
+                    model.getOrderBook().setLiquidityFactor(liquidityFactor);
+
+                    // 記錄成功的操作
+                    logger.error("成功更改撮合設置：模式=" + selectedMode
+                            + ", 隨機切換=" + (randomSwitching ? "啟用" : "禁用")
+                            + ", 切換概率=" + probability
+                            + ", 流動性=" + liquidityFactor, "MATCHING_ENGINE");
+
+                    // 通知用戶
+                    model.sendInfoMessage("撮合設置已更新：模式=" + selectedMode);
+                } catch (Exception ex) {
+                    logger.error("更改撮合模式時發生錯誤：" + ex.getMessage(), "MATCHING_ENGINE");
+                    ex.printStackTrace();
+                }
+            });
+        } else {
+            logger.error("OrderBook 實例為 null", "CONTROLLER_INIT");
+        }
     }
 
     /**

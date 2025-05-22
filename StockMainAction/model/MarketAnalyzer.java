@@ -323,4 +323,222 @@ public class MarketAnalyzer {
 
         return sum / period;
     }
+
+    /**
+     * 計算MACD (Moving Average Convergence Divergence)
+     *
+     * @param shortPeriod 短期EMA期間（通常為12）
+     * @param longPeriod 長期EMA期間（通常為26）
+     * @param signalPeriod 訊號線期間（通常為9）
+     * @return 包含 [macdLine, signalLine, histogram] 的數組
+     */
+    public double[] calculateMACD(int shortPeriod, int longPeriod, int signalPeriod) {
+        if (recentPriceData.size() < longPeriod) {
+            return new double[]{Double.NaN, Double.NaN, Double.NaN};
+        }
+
+        // 將Deque轉換為List以便於處理
+        List<Double> prices = new ArrayList<>(recentPriceData);
+
+        // 計算短期和長期的EMA
+        double shortEMA = calculateEMA(prices, shortPeriod);
+        double longEMA = calculateEMA(prices, longPeriod);
+
+        // 計算MACD線 = 短期EMA - 長期EMA
+        double macdLine = shortEMA - longEMA;
+
+        // 歷史MACD值用於計算訊號線
+        List<Double> macdHistory = new ArrayList<>();
+
+        // 計算歷史MACD值
+        for (int i = prices.size() - longPeriod; i < prices.size(); i++) {
+            List<Double> subPrices = prices.subList(0, i + 1);
+            double shortEMA_i = calculateEMA(subPrices, shortPeriod);
+            double longEMA_i = calculateEMA(subPrices, longPeriod);
+            macdHistory.add(shortEMA_i - longEMA_i);
+        }
+
+        // 計算訊號線 (MACD的EMA)
+        double signalLine = 0;
+        if (macdHistory.size() >= signalPeriod) {
+            List<Double> recentMacd = macdHistory.subList(macdHistory.size() - signalPeriod, macdHistory.size());
+            signalLine = calculateEMA(recentMacd, signalPeriod);
+        } else {
+            signalLine = Double.NaN;
+        }
+
+        // 計算柱狀圖 = MACD線 - 訊號線
+        double histogram = macdLine - signalLine;
+
+        return new double[]{macdLine, signalLine, histogram};
+    }
+
+    /**
+     * 計算指數移動平均線 (EMA)
+     *
+     * @param prices 價格資料列表
+     * @param period 計算期間
+     * @return EMA值
+     */
+    private double calculateEMA(List<Double> prices, int period) {
+        if (prices.size() < period) {
+            return Double.NaN;
+        }
+
+        // 首先計算初始SMA作為EMA的起點
+        double sum = 0;
+        for (int i = 0; i < period; i++) {
+            sum += prices.get(i);
+        }
+        double sma = sum / period;
+
+        // 計算乘數 k = 2/(period+1)
+        double multiplier = 2.0 / (period + 1);
+
+        // 計算EMA
+        double ema = sma;
+        for (int i = period; i < prices.size(); i++) {
+            // EMA(today) = (Price(today) * k) + (EMA(yesterday) * (1 – k))
+            ema = (prices.get(i) * multiplier) + (ema * (1 - multiplier));
+        }
+
+        return ema;
+    }
+
+    /**
+     * 計算布林帶
+     *
+     * @param period 計算期間（通常為20）
+     * @param stdDevMultiplier 標準差乘數（通常為2）
+     * @return 包含 [upperBand, middleBand, lowerBand] 的數組
+     */
+    public double[] calculateBollingerBands(int period, double stdDevMultiplier) {
+        if (recentPriceData.size() < period) {
+            return new double[]{Double.NaN, Double.NaN, Double.NaN};
+        }
+
+        // 將Deque轉換為List以便於處理
+        List<Double> prices = new ArrayList<>(recentPriceData);
+        List<Double> recentPrices = prices.subList(prices.size() - period, prices.size());
+
+        // 計算中間帶 (SMA)
+        double sum = 0;
+        for (double price : recentPrices) {
+            sum += price;
+        }
+        double middleBand = sum / period;
+
+        // 計算標準差
+        double variance = 0;
+        for (double price : recentPrices) {
+            variance += Math.pow(price - middleBand, 2);
+        }
+        variance /= period;
+        double standardDeviation = Math.sqrt(variance);
+
+        // 計算上下帶
+        double upperBand = middleBand + (standardDeviation * stdDevMultiplier);
+        double lowerBand = middleBand - (standardDeviation * stdDevMultiplier);
+
+        return new double[]{upperBand, middleBand, lowerBand};
+    }
+
+    /**
+     * 計算KDJ指標
+     *
+     * @param nPeriod 用於計算%K的週期（通常為9）
+     * @param kPeriod 用於計算K值的週期（通常為3）
+     * @param dPeriod 用於計算D值的週期（通常為3）
+     * @return 包含 [kValue, dValue, jValue] 的數組
+     */
+    public double[] calculateKDJ(int nPeriod, int kPeriod, int dPeriod) {
+        if (recentPriceData.size() < nPeriod) {
+            return new double[]{Double.NaN, Double.NaN, Double.NaN};
+        }
+
+        // 將Deque轉換為List以便於處理
+        List<Double> prices = new ArrayList<>(recentPriceData);
+
+        // 取最近的nPeriod個數據
+        List<Double> recentPrices = prices.subList(prices.size() - nPeriod, prices.size());
+
+        // 計算最高價和最低價
+        double highestHigh = Double.NEGATIVE_INFINITY;
+        double lowestLow = Double.POSITIVE_INFINITY;
+
+        for (double price : recentPrices) {
+            if (price > highestHigh) {
+                highestHigh = price;
+            }
+            if (price < lowestLow) {
+                lowestLow = price;
+            }
+        }
+
+        // 計算當前價格
+        double currentPrice = prices.get(prices.size() - 1);
+
+        // 計算RSV (Raw Stochastic Value)
+        double rsv = 0;
+        if (highestHigh != lowestLow) {
+            rsv = ((currentPrice - lowestLow) / (highestHigh - lowestLow)) * 100;
+        }
+
+        // 使用歷史數據計算K、D值
+        List<Double> kHistory = new ArrayList<>();
+        List<Double> dHistory = new ArrayList<>();
+
+        // 預設起始值為50
+        double lastK = 50;
+        double lastD = 50;
+
+        // 計算K、D的歷史值
+        for (int i = nPeriod; i <= prices.size(); i++) {
+            List<Double> periodPrices = prices.subList(i - nPeriod, i);
+
+            double periodHigh = Double.NEGATIVE_INFINITY;
+            double periodLow = Double.POSITIVE_INFINITY;
+
+            for (double price : periodPrices) {
+                if (price > periodHigh) {
+                    periodHigh = price;
+                }
+                if (price < periodLow) {
+                    periodLow = price;
+                }
+            }
+
+            double periodPrice = prices.get(i - 1);
+            double periodRSV = 0;
+
+            if (periodHigh != periodLow) {
+                periodRSV = ((periodPrice - periodLow) / (periodHigh - periodLow)) * 100;
+            }
+
+            // 計算K值 = 前一日K值 * (2/3) + 當日RSV * (1/3)
+            double k = (lastK * (kPeriod - 1) + periodRSV) / kPeriod;
+            kHistory.add(k);
+            lastK = k;
+
+            // 如果K值歷史足夠計算D值
+            if (kHistory.size() >= dPeriod) {
+                // 計算D值 = 前一日D值 * (2/3) + 當日K值 * (1/3)
+                double d = (lastD * (dPeriod - 1) + k) / dPeriod;
+                dHistory.add(d);
+                lastD = d;
+            }
+        }
+
+        // 獲取最新的K值和D值
+        double kValue = kHistory.get(kHistory.size() - 1);
+        double dValue = dHistory.get(dHistory.size() - 1);
+
+        // 計算J值 = (3 * K) - (2 * D)
+        double jValue = (3 * kValue) - (2 * dValue);
+
+        // 確保J值在0-100範圍內
+        jValue = Math.max(0, Math.min(100, jValue));
+
+        return new double[]{kValue, dValue, jValue};
+    }
 }

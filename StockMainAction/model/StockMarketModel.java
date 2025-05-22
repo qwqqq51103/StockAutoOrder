@@ -1,5 +1,6 @@
 package StockMainAction.model;
 
+import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
@@ -13,6 +14,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import javax.swing.SwingUtilities;
 
 /**
  * 股票市場模型 - 包含核心業務邏輯 作為MVC架構中的Model組件
@@ -35,7 +37,7 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 100000, initialMainForceCash = 200000;
+    private double initialRetailCash = 100000, initialMainForceCash = 2980000;
     private int initialRetails = 1;
     private int marketBehaviorStock = 5000;
     private double marketBehaviorGash = 10000;
@@ -68,7 +70,7 @@ public class StockMarketModel {
         void onOrderBookChanged();
     }
 
-    private List<ModelListener> listeners = new ArrayList<>();
+    public List<ModelListener> listeners = new ArrayList<>();
 
     /**
      * 構造函數
@@ -83,25 +85,29 @@ public class StockMarketModel {
     public void initializeSimulation() {
         logger.info("初始化股票市場模型", "MODEL_INIT");
         try {
+            // 初始化訂單簿
+            orderBook = new OrderBook(this);
+            logger.info("OrderBook 初始化完成", "MODEL_INIT");
+            // 設置默認撮合模式
+            orderBook.setMatchingMode(MatchingMode.PRICE_TIME);
+            logger.info("設置默認撮合模式：" + orderBook.getMatchingMode(), "MODEL_INIT");
+
             stock = new Stock("台積電", 10, 1000);
 
             // 初始化市場行為
-            marketBehavior = new MarketBehavior(stock.getPrice(), marketBehaviorGash, marketBehaviorStock, null);
-
-            // 初始化訂單簿
-            orderBook = new OrderBook(null);
+            this.marketBehavior = new MarketBehavior(10.0, marketBehaviorGash, marketBehaviorStock, this, orderBook);
 
             timeStep = 0;
             marketAnalyzer = new MarketAnalyzer(2); // 設定適當的SMA週期
 
             // 初始化主力
-            mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, null, initialMainForceCash);
+            mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, this, initialMainForceCash);
 
             // 初始化散戶
             initializeRetailInvestors(initialRetails);
 
             // 初始化用戶投資者
-            userInvestor = new PersonalAI(5000000, "Personal", null, orderBook, stock);
+            userInvestor = new PersonalAI(5000000, "Personal", this, orderBook, stock);
 
             logger.info("市場模型初始化完成", "MODEL_INIT");
         } catch (Exception e) {
@@ -116,7 +122,7 @@ public class StockMarketModel {
     private void initializeRetailInvestors(int numberOfInvestors) {
         retailInvestors = new ArrayList<>();
         for (int i = 0; i < numberOfInvestors; i++) {
-            RetailInvestorAI investor = new RetailInvestorAI(initialRetailCash, "RetailInvestor" + (i + 1), null);
+            RetailInvestorAI investor = new RetailInvestorAI(initialRetailCash, "RetailInvestor" + (i + 1), this);
             retailInvestors.add(investor);
         }
     }
@@ -204,7 +210,7 @@ public class StockMarketModel {
     /**
      * 通知所有監聽器更新
      */
-    private void notifyListenersOfUpdates() {
+    public void notifyListenersOfUpdates() {
         double price = stock.getPrice();
         double sma = marketAnalyzer.calculateSMA();
         double volatility = marketAnalyzer.calculateVolatility();
@@ -261,7 +267,7 @@ public class StockMarketModel {
      */
     private void executeRetailInvestorDecisions() {
         for (RetailInvestorAI investor : retailInvestors) {
-            investor.makeDecision(stock, orderBook, null);
+            investor.makeDecision(stock, orderBook, this);
         }
     }
 
@@ -293,7 +299,9 @@ public class StockMarketModel {
         int calculatedInventory = calculateMarketInventory();
         int initialInventory = marketBehaviorStock;
         if (calculatedInventory != initialInventory) {
-            logger.error("市場庫存異常：預期 " + initialInventory + "，實際 " + calculatedInventory, "MARKET_VALIDATION");
+            logger.error("初始化市場庫存檢查: 設定值=" + marketBehaviorStock
+                    + "，市場行為持股=" + marketBehavior.getStockInventory()
+                    + "，總計算庫存=" + calculateMarketInventory(), "MODEL_INIT");
         }
     }
 
@@ -399,6 +407,35 @@ public class StockMarketModel {
     }
 
     /**
+     * 更改撮合模式
+     */
+    public void changeMatchingMode(MatchingMode mode) {
+        try {
+            if (orderBook != null) {
+                orderBook.setMatchingMode(mode);
+                // 通知所有監聽器
+                notifyListenersOfUpdates();
+                logger.info("模型層成功更改撮合模式：" + mode, "MARKET_MODEL");
+            } else {
+                logger.error("無法更改撮合模式：OrderBook 為 null", "MARKET_MODEL");
+            }
+        } catch (Exception e) {
+            logger.error("更改撮合模式時發生錯誤：" + e.getMessage(), "MARKET_MODEL");
+        }
+    }
+
+    /**
+     * 發送資訊訊息給所有監聽器
+     *
+     * @param message 要發送的訊息
+     */
+    public void sendInfoMessage(String message) {
+        for (ModelListener listener : listeners) {
+            listener.onInfoMessage(message);
+        }
+    }
+
+    /**
      * 添加模型監聽器
      */
     public void addModelListener(ModelListener listener) {
@@ -412,6 +449,46 @@ public class StockMarketModel {
      */
     public void removeModelListener(ModelListener listener) {
         listeners.remove(listener);
+    }
+
+    /**
+     * 更新界面標籤 替代 simulation.updateLabels() 方法
+     */
+    public void updateLabels() {
+        // 通知所有監聽器更新界面
+        notifyListenersOfUpdates();
+    }
+
+    /**
+     * 更新交易量圖表
+     *
+     * @param txVolume 交易量
+     */
+    public void updateVolumeChart(int txVolume) {
+        // 通知監聽器更新交易量圖表
+        for (ModelListener listener : listeners) {
+            listener.onVolumeUpdated(txVolume);
+        }
+    }
+
+    /**
+     * 更新訂單簿顯示
+     */
+    public void updateOrderBookDisplay() {
+        // 通知監聽器訂單簿已變更
+        for (ModelListener listener : listeners) {
+            listener.onOrderBookChanged();
+        }
+    }
+
+    /**
+     * 多線程安全地更新訂單簿顯示
+     */
+    public void swingUpdateOrderBookDisplay() {
+        // 在 Swing 線程中更新訂單簿顯示
+        SwingUtilities.invokeLater(() -> {
+            updateOrderBookDisplay();
+        });
     }
 
     /**

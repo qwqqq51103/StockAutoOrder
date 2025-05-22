@@ -1,34 +1,148 @@
-src/
-  ├── AIStrategies/  # AI 策略模組
-  │   ├── MainForceStrategyWithOrderBook.java  # 主力策略，基於訂單簿數據實現主力交易邏輯。
-  │   ├── RetailInvestorAI.java               # 散戶 AI，模擬散戶投資者行為的演算法。
-  │
-  ├── Analysis/  # 分析模組，提供市場行為的數據分析工具
-  │   ├── MarketAnalyzer.java  # 市場分析器，用於分析股票市場趨勢與模式。
-  │   ├── MarketBehavior.java  # 市場行為記錄器，模擬並記錄市場參與者的行為。
-  │   ├── info                 # 包含模組的相關文檔與說明。
-  │
-  ├── Core/  # 核心模組，包含基礎數據結構與邏輯
-  │   ├── Order.java         # 訂單類別，包含訂單的基本屬性（例如 ID、數量、價格等）。
-  │   ├── OrderBook.java     # 訂單簿類別，負責管理所有買賣訂單。
-  │   ├── Stock.java         # 股票類別，表示單一股票及其屬性（如名稱、代號等）。
-  │   ├── Trader.java        # 交易者類別，描述交易者的基本行為與屬性。
-  │   ├── info               # 包含模組的相關文檔與說明。
-  │
-  ├── OrderManagement/  # 訂單管理模組，處理訂單檢視與相關邏輯
-  │   ├── CustomOrderViewer.java       # 自定義訂單檢視器，提供特定需求的訂單檢視功能。
-  │   ├── NewOrderBookTable.java       # 新版訂單表格，改進 UI 和數據處理性能。
-  │   ├── NewOrderViewer.java          # 新版訂單檢視器，增強用戶體驗。
-  │   ├── OrderBookListener.java       # 訂單簿監聽器，用於監測訂單簿的變更。
-  │   ├── OrderBookTable.java          # 訂單表格，用於顯示訂單數據。
-  │   ├── OrderViewer.java             # 訂單檢視器視窗，用於查看不同類型交易者的訂單詳情。
-  │
-  ├── StockMainAction/  # 模擬運行模組
-  │   ├── StockMarketSimulation.java  # 股票市場模擬器，負責模擬市場的動態行為。
-  │
-  ├── UserManagement/  # 使用者管理模組
-  │   ├── UserAccount.java  # 使用者帳戶類別，處理帳戶的屬性與操作。
+股票市場模擬系統專案架構
+概述
+本專案是一個完整的股票市場模擬系統，具備市場行為建模、多種交易者類型（散戶、主力、個人交易者）、訂單簿管理，以及即時市場數據視覺化功能。
 
+專案目錄結構
+StockMainAction
+主要封包，包含整個模擬的核心元件。
+
+StockMainAction/
+├── StockMarketSimulation.java     # 模擬主類別，負責協調整體模擬流程
+├── controller/                    # MVC 控制器元件
+│   ├── StockMarketController.java # 連接模型與視圖的控制器
+│   └── listeners/
+│       └── OrderBookListener.java # 訂單簿更新監聽介面
+├── model/                         # 模型元件
+│   ├── MarketAnalyzer.java        # 市場趨勢與技術指標分析
+│   ├── MarketBehavior.java        # 模擬市場參與者行為
+│   ├── MainForceStrategyWithOrderBook.java # 主力交易策略實作（含訂單簿）
+│   ├── PersonalAI.java            # 個人交易者 AI，自定義行為
+│   ├── RetailInvestorAI.java      # 散戶行為模擬 AI
+│   ├── StockMarketModel.java      # MVC 架構中的市場核心模型
+│   ├── core/                      # 核心資料結構
+│   │   ├── MatchingMode.java      # 撮合模式/演算法定義
+│   │   ├── Order.java             # 訂單物件（買/賣）
+│   │   ├── OrderBook.java         # 撮合訂單用的訂單簿
+│   │   ├── PersonalTrader.java    # 個人交易者實作
+│   │   ├── Stock.java             # 股票資料物件
+│   │   ├── Trader.java            # 所有交易者的共用介面
+│   │   └── Transaction.java       # 交易紀錄結構
+│   └── user/
+│       └── UserAccount.java       # 使用者帳戶管理（資金與持股）
+├── util/                          # 工具類別元件
+│   └── logging/                   # 日誌系統
+│       ├── LogViewerWindow.java   # 日誌檢視 GUI 視窗
+│       ├── LoggerConfig.java      # 日誌設定
+│       └── MarketLogger.java      # 自訂日誌紀錄器
+└── view/                          # 視圖元件
+    ├── ControlView.java           # 控制面板視圖
+    ├── MainView.java              # 主畫面與市場圖表視圖
+    ├── OrderBookView.java         # 訂單簿視圖
+    ├── OrderViewer.java           # 訂單瀏覽與篩選介面
+    └── components/                # 可重用的 UI 元件
+        ├── NewOrderBookTable.java # 強化版訂單簿表格
+        └── OrderBookTable.java    # 標準訂單簿表格
+
+主要元件說明
+模擬核心
+StockMarketSimulation：模擬主控類別，負責定時更新參與者與處理訂單。
+
+StockMarketModel：MVC 中的核心模型，維護市場狀態資料。
+
+市場機制
+OrderBook：負責管理買賣訂單與實現不同撮合演算法。
+
+MatchingMode：定義多種訂單撮合策略（標準、價格時間優先、加權、壓力平衡、隨機）。
+
+MarketBehavior：根據不同因子模擬市場走勢與訂單提交。
+
+交易者元件
+RetailInvestorAI：模擬散戶的交易行為與策略。
+
+MainForceStrategyWithOrderBook：實作主力機構的交易策略，含主力控盤/做市行為。
+
+PersonalAI：用戶可控制的個人交易者，可手動下單。
+
+市場分析
+MarketAnalyzer：計算技術指標（SMA、RSI、WAP、波動率等）。
+
+使用者介面
+MainView：顯示即時圖表與市場資訊的主畫面。
+
+ControlView：使用者控制交易操作的面板。
+
+OrderViewer：提供訂單查看與篩選功能。
+
+日誌系統
+MarketLogger：自訂的市場事件日誌紀錄器。
+
+LogViewerWindow：可即時檢視並篩選日誌的視窗介面。
+
+技術功能特點
+訂單類型支援
+限價單：指定價格買賣。
+
+市價單：依市場價格成交。
+
+FOK單（Fill or Kill）：完全成交否則取消。
+
+撮合演算法
+標準模式：買價 ≥ 賣價時以中間價格成交。
+
+價格時間優先：同價位按時間優先順序撮合。
+
+加權平均模式：大單有更大價格影響力。
+
+市場壓力模式：考慮買賣單失衡進行調整。
+
+隨機模式：模擬市場隨機波動與不確定性。
+
+技術分析指標
+簡單移動平均線（SMA）
+
+相對強弱指數（RSI）
+
+加權平均價格（WAP）
+
+波動率分析
+
+成交量分析
+
+視覺化
+即時價格圖
+
+成交量圖
+
+技術指標面板
+
+損益追蹤
+
+訂單簿深度圖示
+
+設定功能
+撮合模式選擇
+
+流動性因子調整
+
+隨機模式切換機率
+
+日誌等級自定義
+
+
+未來更新
+-----------------------------------------------------------------------------------------------
+視覺設計優化：統一主題、響應式布局、多窗口整合
+主視圖改進：分割面板、多圖表支持、圖表交互增強
+控制視圖改進：卡片式布局、交互式訂單輸入、即時帳戶儀表板
+撮合引擎面板改進：視覺化撮合過程、參數微調、即時統計
+訂單簿視圖改進：熱圖式訂單簿、深度圖、多視圖切換
+專業功能面板：市場信息、交易策略、交易日誌
+系統整合與狀態欄：狀態欄、全局設置系統
+高級視覺化與動畫：價格走勢動畫、交易執行效果、技術分析繪製
+表格與數據優化：可排序過濾的訂單表格、深度熱圖、交易歷史
+使用者體驗改善：聲音反饋、暗色模式、自動保存設置、插件架構
+https://chatgpt.com/canvas/shared/682d86cde3a88191a5d21bb3d85a8e22
+-----------------------------------------------------------------------------------------------
 
 
 更新日誌

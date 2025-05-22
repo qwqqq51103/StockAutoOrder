@@ -23,6 +23,8 @@ public class MarketBehavior implements Trader {
     private int timeStep = 0;           // 時間步長，用於模擬時間因素
     private UserAccount account;
     private StockMarketSimulation simulation; // 引用模擬實例
+    private StockMarketModel model;
+    private final OrderBook orderBook;
     private static final MarketLogger logger = MarketLogger.getInstance();
 
     // 依現價掛單的百分比偏移量（負值＝低於現價掛買、正值＝高於現價掛賣）
@@ -46,18 +48,21 @@ public class MarketBehavior implements Trader {
      *
      * @param initialPrice 初始價格
      * @param initialFunds 初始資金
-     * @param initialStocks 初始股票數量
-     * @param simulation 引用 StockMarketSimulation 實例
+     * @par am initialStocks 初始股票數量
+     * @param model 引用 StockMarketModel 實例
      */
-    public MarketBehavior(double initialPrice, double initialFunds, int initialStocks, StockMarketSimulation simulation) {
+    public MarketBehavior(double initialPrice, double initialFunds, int initialStocks, StockMarketModel model, OrderBook orderBook) {
         this.longTermMeanPrice = initialPrice;
         this.account = new UserAccount(initialFunds, initialStocks);
-        this.simulation = simulation;
+        this.model = model;
+        this.orderBook = orderBook;
+        this.random = new Random();
 
         if (this.account != null) {
-            System.out.println("【市場行為】UserAccount 建立成功，初始資金: " + initialFunds + "，初始持股: " + initialStocks);
+            logger.info("【市場行為】UserAccount 建立成功，初始資金: " + initialFunds
+                    + "，初始持股: " + initialStocks, "MARKET_BEHAVIOR_INIT");
         } else {
-            System.out.println("【市場行為】UserAccount 建立失敗。");
+            logger.error("【市場行為】UserAccount 建立失敗。", "MARKET_BEHAVIOR_INIT");
         }
     }
 
@@ -175,7 +180,7 @@ public class MarketBehavior implements Trader {
             ), "MARKET_BEHAVIOR");
 
             // === A. 技術面 ===
-            double sma = simulation.getMarketAnalyzer().calculateSMA();
+            double sma = model.getMarketAnalyzer().calculateSMA();
             double smaScore = Double.isNaN(sma) ? 0
                     : (currentPrice - sma) / sma; // 正值 → 價格高於均線
 
@@ -201,7 +206,7 @@ public class MarketBehavior implements Trader {
             ), "MARKET_BEHAVIOR");
 
             // === D. 量能面 ===
-            double avgVol = simulation.getMarketAnalyzer().getRecentAverageVolume();
+            double avgVol = model.getMarketAnalyzer().getRecentAverageVolume();
             double volumeScore = (avgVol == 0) ? 0
                     : (recentVolume - avgVol) / avgVol; // 放大 >0、縮量 <0
 
@@ -396,7 +401,7 @@ public class MarketBehavior implements Trader {
             ), "MARKET_BEHAVIOR");
 
             // 傳遞到 MarketAnalyzer
-            simulation.getMarketAnalyzer().addPrice(newOrderPrice);
+            model.getMarketAnalyzer().addPrice(newOrderPrice);
 
             logger.debug(String.format(
                     "市場波動結束：時間步=%d",

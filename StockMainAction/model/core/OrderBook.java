@@ -4,6 +4,7 @@ import StockMainAction.model.PersonalAI;
 import StockMainAction.model.core.Stock;
 import StockMainAction.controller.listeners.OrderBookListener;
 import StockMainAction.StockMarketSimulation;
+import StockMainAction.model.StockMarketModel;
 import StockMainAction.model.user.UserAccount;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -31,6 +32,7 @@ public class OrderBook {
     private List<Order> buyOrders;   // 買單列表 (由高價到低價)
     private List<Order> sellOrders;  // 賣單列表 (由低價到高價)
     private StockMarketSimulation simulation;
+    private StockMarketModel model;
 
     // Listener list
     private List<OrderBookListener> listeners;
@@ -61,10 +63,10 @@ public class OrderBook {
      *
      * @param simulation 模擬實例
      */
-    public OrderBook(StockMarketSimulation simulation) {
+    public OrderBook(StockMarketModel model) {
         this.buyOrders = new ArrayList<>();
         this.sellOrders = new ArrayList<>();
-        this.simulation = simulation;
+        this.model = model;
         this.listeners = new ArrayList<>();
     }
 
@@ -318,6 +320,7 @@ public class OrderBook {
      */
     public void processOrders(Stock stock) {
         logger.info("開始處理訂單撮合", "ORDER_PROCESSING");
+        logger.debug("處理訂單：使用模式=" + matchingMode, "ORDER_BOOK");
 
         // 準備異常日誌文件
         File logFile = new File(System.getProperty("user.home") + "/Desktop/MarketAnomalies.log");
@@ -444,7 +447,12 @@ public class OrderBook {
                                     txVolume
                             ), "ORDER_PROCESSING");
 
-                            simulation.updateVolumeChart(txVolume);
+                            // 更新 UI，替換原有的 simulation 調用
+                            if (model != null) {
+                                model.updateVolumeChart(txVolume);
+                            } else {
+                                System.out.println("警告：無法更新 UI，updateVolumeChart 為 null");
+                            }
                             notifyListeners();
 
                             i = 0; // 重新開始
@@ -463,11 +471,13 @@ public class OrderBook {
                     currentRound, totalTransactionVolume
             ), "ORDER_PROCESSING");
 
-            // 更新 UI
-            SwingUtilities.invokeLater(() -> {
-                simulation.updateLabels();
-                simulation.updateOrderBookDisplay();
-            });
+            // 更新 UI，替換原有的 simulation 調用
+            if (model != null) {
+                model.updateLabels();
+                model.updateOrderBookDisplay();
+            } else {
+                System.out.println("警告：無法更新 UI，updateLabels、updateOrderBookDisplay 為 null");
+            }
 
         } catch (IOException e) {
             logger.error("無法寫入異常日誌：" + e.getMessage(), "ORDER_PROCESSING");
@@ -602,7 +612,7 @@ public class OrderBook {
                     // 壓力平衡，適度偏向近期趨勢
                     double recentTrend = 0.0;
                     try {
-                        recentTrend = simulation.getMarketAnalyzer().getRecentPriceTrend();
+                        recentTrend = model.getMarketAnalyzer().getRecentPriceTrend();
                     } catch (Exception e) {
                         // 如果無法獲取趨勢，使用默認值
                     }
@@ -695,7 +705,7 @@ public class OrderBook {
         writer.newLine();
 
         // 9. 傳遞給 MarketAnalyzer
-        simulation.getMarketAnalyzer().addTransaction(finalPrice, txVolume);
+        model.getMarketAnalyzer().addTransaction(finalPrice, txVolume);
 
         // 10. 更新買方/賣方的帳戶
         updateTraderStatus(buyOrder, sellOrder, txVolume, finalPrice);
@@ -731,20 +741,23 @@ public class OrderBook {
     }
 
     /**
-     * 更新撮合模式
-     *
-     * @param mode 新的撮合模式
+     * 設置撮合模式
      */
     public void setMatchingMode(MatchingMode mode) {
-        this.matchingMode = mode;
-        System.out.println("撮合模式已更改為: " + mode);
+        if (mode == null) {
+            logger.warn("嘗試設置 null 撮合模式，使用默認模式", "ORDER_BOOK");
+            this.matchingMode = MatchingMode.PRICE_TIME;
+        } else {
+            logger.info("設置撮合模式：從 " + this.matchingMode + " 變更為 " + mode, "ORDER_BOOK");
+            this.matchingMode = mode;
+        }
     }
 
     /**
      * 獲取當前撮合模式
      */
     public MatchingMode getMatchingMode() {
-        return this.matchingMode;
+        return matchingMode;
     }
 
     /**
@@ -769,8 +782,8 @@ public class OrderBook {
      * @param factor 流動性係數 (0.5-2.0)
      */
     public void setLiquidityFactor(double factor) {
-        this.liquidityFactor = Math.max(0.5, Math.min(2.0, factor));
-        System.out.println("流動性係數更新為: " + this.liquidityFactor);
+        this.liquidityFactor = factor;
+        logger.info("設置流動性因子：" + factor, "ORDER_BOOK");
     }
 
     /**
@@ -900,8 +913,8 @@ public class OrderBook {
             // 更新 MarketAnalyzer
             if (totalTxVolume > 0) {
                 double avgPrice = totalTxValue / totalTxVolume;
-                simulation.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
-                simulation.getMarketAnalyzer().addPrice(avgPrice);
+                model.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
+                model.getMarketAnalyzer().addPrice(avgPrice);
 
                 logger.info(String.format(
                         "市價買入總結：成交量=%d, 平均價格=%.2f, 總成交值=%.2f",
@@ -909,11 +922,14 @@ public class OrderBook {
                 ), "MARKET_BUY");
 
                 final int finalVolume = totalTxVolume;
-                SwingUtilities.invokeLater(() -> {
-                    simulation.updateLabels();
-                    simulation.updateVolumeChart(finalVolume);
-                    simulation.updateOrderBookDisplay();
-                });
+                // 更新 UI，替換原有的 simulation 調用
+                if (model != null) {
+                    model.updateVolumeChart(finalVolume);
+                    model.updateLabels();
+                    model.updateOrderBookDisplay();
+                } else {
+                    System.out.println("警告：無法更新 UI，model 為 null");
+                }
             }
 
             notifyListeners();
@@ -1004,8 +1020,8 @@ public class OrderBook {
             // 更新 MarketAnalyzer
             if (totalTxVolume > 0) {
                 double avgPrice = totalTxValue / totalTxVolume;
-                simulation.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
-                simulation.getMarketAnalyzer().addPrice(avgPrice);
+                model.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
+                model.getMarketAnalyzer().addPrice(avgPrice);
 
                 logger.info(String.format(
                         "市價賣出總結：成交量=%d, 平均價格=%.2f, 總成交值=%.2f",
@@ -1013,11 +1029,14 @@ public class OrderBook {
                 ), "MARKET_SELL");
 
                 final int finalVolume = totalTxVolume;
-                SwingUtilities.invokeLater(() -> {
-                    simulation.updateLabels();
-                    simulation.updateVolumeChart(finalVolume);
-                    simulation.updateOrderBookDisplay();
-                });
+                // 更新 UI，替換原有的 simulation 調用
+                if (model != null) {
+                    model.updateVolumeChart(finalVolume);
+                    model.updateLabels();
+                    model.updateOrderBookDisplay();
+                } else {
+                    System.out.println("警告：無法更新 UI，model 為 null");
+                }
             }
 
             notifyListeners();
@@ -1082,7 +1101,7 @@ public class OrderBook {
                 }
             }
 
-            SwingUtilities.invokeLater(() -> simulation.updateOrderBookDisplay());
+            SwingUtilities.invokeLater(() -> model.updateOrderBookDisplay());
             notifyListeners();
 
         } catch (Exception e) {

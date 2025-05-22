@@ -20,10 +20,11 @@ public class PersonalAI extends RetailInvestorAI {
     private StockMarketSimulation simulation;
     private OrderBook orderBook; // 亦可在 makeDecision 時指定
     private Stock stock;  // 股票實例
+    private StockMarketModel model;
 
-    public PersonalAI(double initialCash, String traderID, StockMarketSimulation simulation, OrderBook orderBook, Stock stock) {
-        super(initialCash, traderID, simulation);
-        this.simulation = simulation;
+    public PersonalAI(double initialCash, String traderID, StockMarketModel model, OrderBook orderBook, Stock stock) {
+        super(initialCash, traderID, model);  // 修正：使用 model 參數
+        this.model = model;  // 修正：使用 model 參數
         this.orderBook = orderBook;
         this.stock = stock;
     }
@@ -256,6 +257,6 @@ public class PersonalAI extends RetailInvestorAI {
         }
 
         // 更新 UI 標籤
-        simulation.updateLabels();
+        model.updateLabels();
     }
 }
