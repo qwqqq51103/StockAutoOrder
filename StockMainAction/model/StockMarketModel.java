@@ -1,5 +1,6 @@
 package StockMainAction.model;
 
+import StockMainAction.controller.TechnicalIndicatorsCalculator;
 import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
@@ -49,12 +50,24 @@ public class StockMarketModel {
     // 日誌記錄器
     private static final MarketLogger logger = MarketLogger.getInstance();
 
+    // 加技術指標計算器作為成員變數
+    private TechnicalIndicatorsCalculator technicalCalculator;
+
     // 模型監聽器介面 - 用於通知View更新
     public interface ModelListener {
 
         void onPriceChanged(double price, double sma);
 
         void onTechnicalIndicatorsUpdated(double volatility, double rsi, double wap);
+
+        // 新增：MACD指標更新事件
+        void onMACDUpdated(double macdLine, double signalLine, double histogram);
+
+        // 新增：布林帶指標更新事件  
+        void onBollingerBandsUpdated(double upperBand, double middleBand, double lowerBand);
+
+        // 新增：KDJ指標更新事件
+        void onKDJUpdated(double kValue, double dValue, double jValue);
 
         void onVolumeUpdated(int volume);
 
@@ -77,6 +90,7 @@ public class StockMarketModel {
      */
     public StockMarketModel() {
         initializeSimulation();
+        this.technicalCalculator = new TechnicalIndicatorsCalculator();
     }
 
     /**
@@ -138,7 +152,7 @@ public class StockMarketModel {
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
-        int period = 500; // 執行間隔（單位：毫秒）
+        int period = 100; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -217,10 +231,37 @@ public class StockMarketModel {
         double rsi = marketAnalyzer.getRSI();
         double wap = marketAnalyzer.getWeightedAveragePrice();
 
-        // 通知價格變化
+        // 更新技術指標計算器的價格數據
+        // 注意：這裡假設high和low與當前價格相同，實際應用中可能需要真實的高低價數據
+        double high = price; // 如果有真實的高價數據，請替換
+        double low = price;  // 如果有真實的低價數據，請替換
+        technicalCalculator.updatePriceData(price, high, low);
+
+        // 計算新的技術指標
+        double[] macdResult = technicalCalculator.calculateMACD();
+        double[] bollingerResult = technicalCalculator.calculateBollingerBands();
+        double[] kdjResult = technicalCalculator.calculateKDJ();
+
+        // 通知所有監聽器
         for (ModelListener listener : listeners) {
+            // 原有的通知
             listener.onPriceChanged(price, sma);
             listener.onTechnicalIndicatorsUpdated(volatility, rsi, wap);
+
+            // 新增的技術指標通知
+            if (macdResult != null) {
+                listener.onMACDUpdated(macdResult[0], macdResult[1], macdResult[2]);
+            }
+
+            if (bollingerResult != null) {
+                listener.onBollingerBandsUpdated(bollingerResult[0], bollingerResult[1], bollingerResult[2]);
+            }
+
+            if (kdjResult != null) {
+                listener.onKDJUpdated(kdjResult[0], kdjResult[1], kdjResult[2]);
+            }
+
+            // 原有的其他通知
             listener.onMarketStateChanged(
                     getAverageRetailCash(),
                     getAverageRetailStocks(),
@@ -239,6 +280,11 @@ public class StockMarketModel {
             );
             listener.onOrderBookChanged();
         }
+    }
+
+    // 可選：提供獲取技術指標計算器的方法（用於調試或配置）
+    public TechnicalIndicatorsCalculator getTechnicalCalculator() {
+        return technicalCalculator;
     }
 
     /**

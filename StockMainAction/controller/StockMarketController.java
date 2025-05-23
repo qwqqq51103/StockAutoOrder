@@ -396,6 +396,21 @@ public class StockMarketController implements StockMarketModel.ModelListener {
     }
 
     @Override
+    public void onMACDUpdated(double macdLine, double signalLine, double histogram) {
+        mainView.updateMACDIndicator(model.getTimeStep(), macdLine, signalLine, histogram);
+    }
+
+    @Override
+    public void onBollingerBandsUpdated(double upperBand, double middleBand, double lowerBand) {
+        mainView.updateBollingerBandsIndicator(model.getTimeStep(), upperBand, middleBand, lowerBand);
+    }
+
+    @Override
+    public void onKDJUpdated(double kValue, double dValue, double jValue) {
+        mainView.updateKDJIndicator(model.getTimeStep(), kValue, dValue, jValue);
+    }
+
+    @Override
     public void onVolumeUpdated(int volume) {
         mainView.updateVolumeChart(model.getTimeStep(), volume);
     }

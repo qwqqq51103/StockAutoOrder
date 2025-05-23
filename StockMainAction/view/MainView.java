@@ -42,7 +42,9 @@ import org.jfree.data.xy.XYDataset;
 import java.awt.event.*;
 import org.jfree.chart.ChartPanel;
 import java.util.ArrayList;
+import javax.swing.event.ChangeListener;
 import org.jfree.chart.renderer.xy.XYBarRenderer;
+import org.jfree.data.Range;
 
 /**
  * 主視圖類別 - 負責顯示圖表和數據 作為MVC架構中的View組件
@@ -94,6 +96,8 @@ public class MainView extends JFrame {
     // 儲存最後一次更新的時間步長
     private int lastTimeStep = -1;
     private boolean isDarkTheme = false;  // 預設為明亮主題
+
+    private final int maxDataPoints = 100; // 限制圖表數據點數量
 
     /**
      * 構造函數
@@ -539,7 +543,7 @@ public class MainView extends JFrame {
             if (sync) {
                 try {
                     // 嘗試同步當前可見的指標面板中的圖表
-                    syncChartsInVisiblePanel(cardPanel);
+//                    syncChartsInVisiblePanel(cardPanel);
                 } catch (Exception ex) {
                     JOptionPane.showMessageDialog(this,
                             "同步縮放功能需要更新的 JFreeChart 版本",
@@ -596,7 +600,7 @@ public class MainView extends JFrame {
     }
 
     /**
-     * 創建MACD指標面板
+     * 創建MACD指標面板（事件驅動版本）
      */
     private JPanel createMACDPanel() {
         JPanel panel = new JPanel(new BorderLayout());
@@ -630,9 +634,6 @@ public class MainView extends JFrame {
             lineRenderer.setSeriesPaint(0, Color.BLUE);  // MACD線
             lineRenderer.setSeriesPaint(1, Color.RED);   // 信號線
             barRenderer.setSeriesPaint(0, new Color(0, 150, 0, 150));  // 柱狀圖
-
-            // 計算初始MACD值
-            recalculateMACD(12, 26, 9);
         }
 
         // 創建MACD圖表面板
@@ -643,33 +644,32 @@ public class MainView extends JFrame {
         enableChartInteraction(macdChartPanel);
         setupChartInteraction(macdChartPanel, "MACD");
 
-        // 創建參數面板
+        // 創建參數面板（僅顯示當前參數，實際計算由Model負責）
         JPanel paramPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
         JLabel shortPeriodLabel = new JLabel("短期EMA:");
-        JSpinner shortPeriodSpinner = new JSpinner(new SpinnerNumberModel(12, 1, 50, 1));
+        JLabel shortPeriodValue = new JLabel("12");
 
         JLabel longPeriodLabel = new JLabel("長期EMA:");
-        JSpinner longPeriodSpinner = new JSpinner(new SpinnerNumberModel(26, 1, 100, 1));
+        JLabel longPeriodValue = new JLabel("26");
 
         JLabel signalPeriodLabel = new JLabel("信號線:");
-        JSpinner signalPeriodSpinner = new JSpinner(new SpinnerNumberModel(9, 1, 30, 1));
+        JLabel signalPeriodValue = new JLabel("9");
 
-        JButton applyButton = new JButton("應用");
-        applyButton.addActionListener(e -> {
-            int shortPeriod = (Integer) shortPeriodSpinner.getValue();
-            int longPeriod = (Integer) longPeriodSpinner.getValue();
-            int signalPeriod = (Integer) signalPeriodSpinner.getValue();
-            recalculateMACD(shortPeriod, longPeriod, signalPeriod);
-        });
+        JLabel statusLabel = new JLabel("● 自動更新中");
+        statusLabel.setForeground(new Color(0, 150, 0));
 
+        // 組裝參數面板（純顯示用）
         paramPanel.add(shortPeriodLabel);
-        paramPanel.add(shortPeriodSpinner);
+        paramPanel.add(shortPeriodValue);
+        paramPanel.add(Box.createHorizontalStrut(10));
         paramPanel.add(longPeriodLabel);
-        paramPanel.add(longPeriodSpinner);
+        paramPanel.add(longPeriodValue);
+        paramPanel.add(Box.createHorizontalStrut(10));
         paramPanel.add(signalPeriodLabel);
-        paramPanel.add(signalPeriodSpinner);
-        paramPanel.add(applyButton);
+        paramPanel.add(signalPeriodValue);
+        paramPanel.add(Box.createHorizontalStrut(20));
+        paramPanel.add(statusLabel);
 
         // 組合面板
         panel.add(paramPanel, BorderLayout.NORTH);
@@ -679,7 +679,7 @@ public class MainView extends JFrame {
     }
 
     /**
-     * 創建布林帶指標面板
+     * 創建布林帶指標面板（事件驅動版本）
      */
     private JPanel createBollingerBandsPanel() {
         JPanel panel = new JPanel(new BorderLayout());
@@ -691,11 +691,8 @@ public class MainView extends JFrame {
             bollingerMiddleSeries = new XYSeries("中軌");
             bollingerLowerSeries = new XYSeries("下軌");
 
-            // 創建價格系列複製
+            // 創建價格系列（將通過事件更新）
             XYSeries priceCopy = new XYSeries("價格");
-            for (int i = 0; i < priceSeries.getItemCount(); i++) {
-                priceCopy.add(priceSeries.getX(i), priceSeries.getY(i));
-            }
 
             // 創建布林帶圖表
             XYSeriesCollection bollingerDataset = new XYSeriesCollection();
@@ -713,9 +710,6 @@ public class MainView extends JFrame {
             renderer.setSeriesPaint(1, Color.RED);    // 上軌
             renderer.setSeriesPaint(2, Color.BLUE);   // 中軌
             renderer.setSeriesPaint(3, Color.RED);    // 下軌
-
-            // 計算初始布林帶
-            recalculateBollingerBands(20, 2.0);
         }
 
         // 創建布林帶圖表面板
@@ -726,27 +720,26 @@ public class MainView extends JFrame {
         enableChartInteraction(bollingerChartPanel);
         setupChartInteraction(bollingerChartPanel, "布林帶");
 
-        // 創建參數面板
+        // 創建參數面板（僅顯示當前參數，實際計算由Model負責）
         JPanel paramPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
         JLabel periodLabel = new JLabel("SMA週期:");
-        JSpinner periodSpinner = new JSpinner(new SpinnerNumberModel(20, 5, 100, 1));
+        JLabel periodValue = new JLabel("20");
 
         JLabel stdDevLabel = new JLabel("標準差倍數:");
-        JSpinner stdDevSpinner = new JSpinner(new SpinnerNumberModel(2.0, 0.5, 5.0, 0.1));
+        JLabel stdDevValue = new JLabel("2.0");
 
-        JButton applyButton = new JButton("應用");
-        applyButton.addActionListener(e -> {
-            int period = (Integer) periodSpinner.getValue();
-            double stdDev = (Double) stdDevSpinner.getValue();
-            recalculateBollingerBands(period, stdDev);
-        });
+        JLabel statusLabel = new JLabel("● 自動更新中");
+        statusLabel.setForeground(new Color(0, 150, 0));
 
+        // 組裝參數面板（純顯示用）
         paramPanel.add(periodLabel);
-        paramPanel.add(periodSpinner);
+        paramPanel.add(periodValue);
+        paramPanel.add(Box.createHorizontalStrut(10));
         paramPanel.add(stdDevLabel);
-        paramPanel.add(stdDevSpinner);
-        paramPanel.add(applyButton);
+        paramPanel.add(stdDevValue);
+        paramPanel.add(Box.createHorizontalStrut(20));
+        paramPanel.add(statusLabel);
 
         // 組合面板
         panel.add(paramPanel, BorderLayout.NORTH);
@@ -756,7 +749,7 @@ public class MainView extends JFrame {
     }
 
     /**
-     * 創建KDJ指標面板
+     * 創建KDJ指標面板（事件驅動版本）
      */
     private JPanel createKDJPanel() {
         JPanel panel = new JPanel(new BorderLayout());
@@ -786,9 +779,6 @@ public class MainView extends JFrame {
             // 添加參考線
             plot.addRangeMarker(new ValueMarker(80.0, Color.RED, new BasicStroke(1.0f)));
             plot.addRangeMarker(new ValueMarker(20.0, Color.GREEN, new BasicStroke(1.0f)));
-
-            // 計算初始KDJ值
-            recalculateKDJ(9, 3, 3);
         }
 
         // 創建KDJ圖表面板
@@ -799,39 +789,129 @@ public class MainView extends JFrame {
         enableChartInteraction(kdjChartPanel);
         setupChartInteraction(kdjChartPanel, "KDJ");
 
-        // 創建參數面板
+        // 創建參數面板（僅顯示當前參數，實際計算由Model負責）
         JPanel paramPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
         JLabel nPeriodLabel = new JLabel("N週期:");
-        JSpinner nPeriodSpinner = new JSpinner(new SpinnerNumberModel(9, 1, 50, 1));
+        JLabel nPeriodValue = new JLabel("9");
 
         JLabel kPeriodLabel = new JLabel("K週期:");
-        JSpinner kPeriodSpinner = new JSpinner(new SpinnerNumberModel(3, 1, 20, 1));
+        JLabel kPeriodValue = new JLabel("3");
 
         JLabel dPeriodLabel = new JLabel("D週期:");
-        JSpinner dPeriodSpinner = new JSpinner(new SpinnerNumberModel(3, 1, 20, 1));
+        JLabel dPeriodValue = new JLabel("3");
 
-        JButton applyButton = new JButton("應用");
-        applyButton.addActionListener(e -> {
-            int nPeriod = (Integer) nPeriodSpinner.getValue();
-            int kPeriod = (Integer) kPeriodSpinner.getValue();
-            int dPeriod = (Integer) dPeriodSpinner.getValue();
-            recalculateKDJ(nPeriod, kPeriod, dPeriod);
-        });
+        JLabel statusLabel = new JLabel("● 自動更新中");
+        statusLabel.setForeground(new Color(0, 150, 0));
 
+        // 組裝參數面板（純顯示用）
         paramPanel.add(nPeriodLabel);
-        paramPanel.add(nPeriodSpinner);
+        paramPanel.add(nPeriodValue);
+        paramPanel.add(Box.createHorizontalStrut(10));
         paramPanel.add(kPeriodLabel);
-        paramPanel.add(kPeriodSpinner);
+        paramPanel.add(kPeriodValue);
+        paramPanel.add(Box.createHorizontalStrut(10));
         paramPanel.add(dPeriodLabel);
-        paramPanel.add(dPeriodSpinner);
-        paramPanel.add(applyButton);
+        paramPanel.add(dPeriodValue);
+        paramPanel.add(Box.createHorizontalStrut(20));
+        paramPanel.add(statusLabel);
 
         // 組合面板
         panel.add(paramPanel, BorderLayout.NORTH);
         panel.add(kdjChartPanel, BorderLayout.CENTER);
 
         return panel;
+    }
+
+    /**
+     * 更新MACD指標數據
+     */
+    public void updateMACDIndicator(int timeStep, double macdLine, double signalLine, double histogram) {
+        if (macdLineSeries != null && macdSignalSeries != null && macdHistogramSeries != null) {
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    macdLineSeries.add(timeStep, macdLine);
+                    macdSignalSeries.add(timeStep, signalLine);
+                    macdHistogramSeries.add(timeStep, histogram);
+
+                    // 限制數據點數量，保持性能
+                    limitSeriesDataPoints(macdLineSeries, maxDataPoints);
+                    limitSeriesDataPoints(macdSignalSeries, maxDataPoints);
+                    limitSeriesDataPoints(macdHistogramSeries, maxDataPoints);
+                } catch (Exception e) {
+                    System.err.println("更新MACD指標時發生錯誤: " + e.getMessage());
+                }
+            });
+        }
+    }
+
+    /**
+     * 更新布林帶指標數據
+     */
+    public void updateBollingerBandsIndicator(int timeStep, double upperBand, double middleBand, double lowerBand) {
+        if (bollingerUpperSeries != null && bollingerMiddleSeries != null && bollingerLowerSeries != null) {
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    bollingerUpperSeries.add(timeStep, upperBand);
+                    bollingerMiddleSeries.add(timeStep, middleBand);
+                    bollingerLowerSeries.add(timeStep, lowerBand);
+
+                    // 同時更新布林帶圖表中的價格線（第一個系列）
+                    if (bollingerBandsChart != null) {
+                        XYPlot plot = bollingerBandsChart.getXYPlot();
+                        XYSeriesCollection dataset = (XYSeriesCollection) plot.getDataset();
+                        if (dataset.getSeriesCount() > 0) {
+                            XYSeries priceSeries = dataset.getSeries(0);
+                            // 從主價格序列複製當前價格點
+                            if (this.priceSeries != null && this.priceSeries.getItemCount() > 0) {
+                                int lastIndex = this.priceSeries.getItemCount() - 1;
+                                double currentPrice = this.priceSeries.getY(lastIndex).doubleValue();
+                                priceSeries.add(timeStep, currentPrice);
+                                limitSeriesDataPoints(priceSeries, maxDataPoints);
+                            }
+                        }
+                    }
+
+                    // 限制數據點數量，保持性能
+                    limitSeriesDataPoints(bollingerUpperSeries, maxDataPoints);
+                    limitSeriesDataPoints(bollingerMiddleSeries, maxDataPoints);
+                    limitSeriesDataPoints(bollingerLowerSeries, maxDataPoints);
+                } catch (Exception e) {
+                    System.err.println("更新布林帶指標時發生錯誤: " + e.getMessage());
+                }
+            });
+        }
+    }
+
+    /**
+     * 更新KDJ指標數據
+     */
+    public void updateKDJIndicator(int timeStep, double kValue, double dValue, double jValue) {
+        if (kSeries != null && dSeries != null && jSeries != null) {
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    kSeries.add(timeStep, kValue);
+                    dSeries.add(timeStep, dValue);
+                    jSeries.add(timeStep, jValue);
+
+                    // 限制數據點數量，保持性能
+                    limitSeriesDataPoints(kSeries, maxDataPoints);
+                    limitSeriesDataPoints(dSeries, maxDataPoints);
+                    limitSeriesDataPoints(jSeries, maxDataPoints);
+                } catch (Exception e) {
+                    System.err.println("更新KDJ指標時發生錯誤: " + e.getMessage());
+                }
+            });
+        }
+    }
+
+    /**
+     * 限制數據系列的數據點數量
+     */
+    private void limitSeriesDataPoints(XYSeries series, int maxPoints) {
+        if (series.getItemCount() > maxPoints) {
+            series.remove(0);
+        }
     }
 
     /**
@@ -844,299 +924,185 @@ public class MainView extends JFrame {
     }
 
     /**
-     * 限制所有數據系列的顯示點數
+     * 限制所有圖表的數據點數量
      */
     private void limitAllDataPoints(int maxPoints) {
-        // 限制基本指標
-        limitDataPoints(volatilitySeries, maxPoints);
-        limitDataPoints(rsiSeries, maxPoints);
-        limitDataPoints(wapSeries, maxPoints);
-
-        // 限制MACD
-        if (macdLineSeries != null) {
-            limitDataPoints(macdLineSeries, maxPoints);
-            limitDataPoints(macdSignalSeries, maxPoints);
-            limitDataPoints(macdHistogramSeries, maxPoints);
-        }
-
-        // 限制布林帶
-        if (bollingerUpperSeries != null) {
-            limitDataPoints(bollingerUpperSeries, maxPoints);
-            limitDataPoints(bollingerMiddleSeries, maxPoints);
-            limitDataPoints(bollingerLowerSeries, maxPoints);
-        }
-
-        // 限制KDJ
-        if (kSeries != null) {
-            limitDataPoints(kSeries, maxPoints);
-            limitDataPoints(dSeries, maxPoints);
-            limitDataPoints(jSeries, maxPoints);
-        }
-
-        // 更新所有圖表
-        volatilityChart.fireChartChanged();
-        rsiChart.fireChartChanged();
-        wapChart.fireChartChanged();
-
-        if (macdChart != null) {
-            macdChart.fireChartChanged();
-        }
-        if (bollingerBandsChart != null) {
-            bollingerBandsChart.fireChartChanged();
-        }
-        if (kdjChart != null) {
-            kdjChart.fireChartChanged();
-        }
-    }
-
-    /**
-     * 同步當前可見面板中的圖表
-     */
-    private void syncChartsInVisiblePanel(JPanel cardPanel) {
-        // 遍歷所有子面板，找到當前可見的面板
-        for (Component comp : cardPanel.getComponents()) {
-            if (comp instanceof JPanel && comp.isVisible()) {
-                // 找到可見的面板，同步其中的圖表
-                linkChartsInPanel((JPanel) comp);
-                break;
+        try {
+            // 限制XY圖表（價格和技術指標）
+            if (priceChart != null) {
+                limitDataPoints(priceChart, maxPoints);
             }
-        }
-    }
 
-    /**
-     * 連結面板中的所有圖表
-     */
-    private void linkChartsInPanel(JPanel panel) {
-        List<ChartPanel> chartPanels = new ArrayList<>();
-
-        // 遞迴查找所有 ChartPanel
-        findChartPanels(panel, chartPanels);
-
-        // 如果找到多個圖表，則連結它們
-        if (chartPanels.size() > 1) {
-            ChartPanel firstPanel = chartPanels.get(0);
-            for (int i = 1; i < chartPanels.size(); i++) {
-                linkDomainAxes(firstPanel, chartPanels.get(i));
+            if (volatilityChart != null) {
+                limitDataPoints(volatilityChart, maxPoints);
             }
-        }
-    }
 
-    /**
-     * 遞迴查找面板中的所有 ChartPanel
-     */
-    private void findChartPanels(Container container, List<ChartPanel> chartPanels) {
-        for (Component comp : container.getComponents()) {
-            if (comp instanceof ChartPanel) {
-                chartPanels.add((ChartPanel) comp);
-            } else if (comp instanceof Container) {
-                findChartPanels((Container) comp, chartPanels);
+            if (rsiChart != null) {
+                limitDataPoints(rsiChart, maxPoints);
             }
+
+            if (wapChart != null) {
+                limitDataPoints(wapChart, maxPoints);
+            }
+
+            // 限制新的技術指標圖表
+            if (macdChart != null) {
+                limitDataPoints(macdChart, maxPoints);
+            }
+
+            if (bollingerBandsChart != null) {
+                limitDataPoints(bollingerBandsChart, maxPoints);
+            }
+
+            if (kdjChart != null) {
+                limitDataPoints(kdjChart, maxPoints);
+            }
+
+            // 限制利潤圖表
+            if (retailProfitChart != null) {
+                limitDataPoints(retailProfitChart, maxPoints);
+            }
+
+            if (mainForceProfitChart != null) {
+                limitDataPoints(mainForceProfitChart, maxPoints);
+            }
+
+            // 限制分類圖表（成交量）
+            if (volumeChart != null) {
+                limitDataPoints(volumeChart, maxPoints);
+            }
+
+        } catch (Exception e) {
+            System.err.println("限制所有數據點時發生錯誤: " + e.getMessage());
+            // 顯示用戶友好的錯誤訊息
+            JOptionPane.showMessageDialog(this,
+                    "調整顯示範圍時發生錯誤，請稍後再試",
+                    "顯示錯誤",
+                    JOptionPane.WARNING_MESSAGE);
         }
     }
 
     /**
-     * 重新計算MACD指標
+     * 限制指定圖表的數據點數量
      */
-    private void recalculateMACD(int shortPeriod, int longPeriod, int signalPeriod) {
-        // 清除當前數據
-        macdLineSeries.clear();
-        macdSignalSeries.clear();
-        macdHistogramSeries.clear();
-
-        // 確保有足夠的價格數據
-        if (priceSeries.getItemCount() < longPeriod + signalPeriod) {
+    private void limitDataPoints(JFreeChart chart, int maxPoints) {
+        if (chart == null) {
             return;
         }
 
-        // 收集價格數據
-        double[] prices = new double[priceSeries.getItemCount()];
-        for (int i = 0; i < priceSeries.getItemCount(); i++) {
-            prices[i] = priceSeries.getY(i).doubleValue();
-        }
+        try {
+            Plot plot = chart.getPlot();
 
-        // 計算短期EMA
-        double[] shortEma = calculateEMA(prices, shortPeriod);
-
-        // 計算長期EMA
-        double[] longEma = calculateEMA(prices, longPeriod);
-
-        // 計算MACD線
-        double[] macdLine = new double[prices.length];
-        for (int i = longPeriod - 1; i < prices.length; i++) {
-            macdLine[i] = shortEma[i] - longEma[i];
-        }
-
-        // 計算信號線（MACD的EMA）
-        double[] signalLine = calculateEMA(macdLine, signalPeriod);
-
-        // 添加數據到系列中
-        for (int i = longPeriod + signalPeriod - 1; i < prices.length; i++) {
-            double x = priceSeries.getX(i).doubleValue();
-            macdLineSeries.add(x, macdLine[i]);
-            macdSignalSeries.add(x, signalLine[i]);
-            macdHistogramSeries.add(x, macdLine[i] - signalLine[i]);
-        }
-    }
-
-    /**
-     * 計算指數移動平均線
-     */
-    private double[] calculateEMA(double[] data, int period) {
-        double[] ema = new double[data.length];
-        double multiplier = 2.0 / (period + 1);
-
-        // 初始化EMA為第一個有效數據的簡單平均
-        double sum = 0;
-        for (int i = 0; i < period && i < data.length; i++) {
-            sum += data[i];
-        }
-        ema[period - 1] = sum / period;
-
-        // 計算剩餘的EMA值
-        for (int i = period; i < data.length; i++) {
-            ema[i] = (data[i] - ema[i - 1]) * multiplier + ema[i - 1];
-        }
-
-        return ema;
-    }
-
-    /**
-     * 重新計算布林帶
-     */
-    private void recalculateBollingerBands(int period, double stdDevMultiplier) {
-        // 清除當前數據
-        bollingerUpperSeries.clear();
-        bollingerMiddleSeries.clear();
-        bollingerLowerSeries.clear();
-
-        // 確保有足夠的價格數據
-        if (priceSeries.getItemCount() < period) {
-            return;
-        }
-
-        // 收集價格數據
-        double[] prices = new double[priceSeries.getItemCount()];
-        for (int i = 0; i < priceSeries.getItemCount(); i++) {
-            prices[i] = priceSeries.getY(i).doubleValue();
-        }
-
-        // 計算移動平均線和標準差
-        for (int i = period - 1; i < prices.length; i++) {
-            double sum = 0;
-            for (int j = i - period + 1; j <= i; j++) {
-                sum += prices[j];
-            }
-            double sma = sum / period;
-
-            double sumSquaredDiff = 0;
-            for (int j = i - period + 1; j <= i; j++) {
-                double diff = prices[j] - sma;
-                sumSquaredDiff += diff * diff;
-            }
-            double stdDev = Math.sqrt(sumSquaredDiff / period);
-
-            double x = priceSeries.getX(i).doubleValue();
-            bollingerMiddleSeries.add(x, sma);
-            bollingerUpperSeries.add(x, sma + stdDevMultiplier * stdDev);
-            bollingerLowerSeries.add(x, sma - stdDevMultiplier * stdDev);
-        }
-    }
-
-    /**
-     * 重新計算KDJ指標
-     */
-    private void recalculateKDJ(int nPeriod, int kPeriod, int dPeriod) {
-        // 清除當前數據
-        kSeries.clear();
-        dSeries.clear();
-        jSeries.clear();
-
-        // 確保有足夠的價格數據
-        if (priceSeries.getItemCount() < nPeriod) {
-            return;
-        }
-
-        // 收集價格數據
-        double[] high = new double[priceSeries.getItemCount()];
-        double[] low = new double[priceSeries.getItemCount()];
-        double[] close = new double[priceSeries.getItemCount()];
-
-        // 這裡簡化處理，使用同一個價格系列作為高、低、收盤價
-        // 在實際系統中應該使用真實的高低價
-        for (int i = 0; i < priceSeries.getItemCount(); i++) {
-            double price = priceSeries.getY(i).doubleValue();
-            high[i] = price;
-            low[i] = price;
-            close[i] = price;
-        }
-
-        // 計算RSV
-        double[] rsv = new double[close.length];
-        for (int i = nPeriod - 1; i < close.length; i++) {
-            double highestHigh = Double.MIN_VALUE;
-            double lowestLow = Double.MAX_VALUE;
-
-            for (int j = i - nPeriod + 1; j <= i; j++) {
-                highestHigh = Math.max(highestHigh, high[j]);
-                lowestLow = Math.min(lowestLow, low[j]);
+            if (plot instanceof XYPlot) {
+                // 處理XY圖表（價格、技術指標等）
+                limitXYPlotDataPoints((XYPlot) plot, maxPoints);
+            } else if (plot instanceof CategoryPlot) {
+                // 處理分類圖表（成交量等）
+                limitCategoryPlotDataPoints((CategoryPlot) plot, maxPoints);
             }
 
-            rsv[i] = (close[i] - lowestLow) / (highestHigh - lowestLow) * 100;
-        }
-
-        // 計算K值（RSV的EMA）
-        double[] kValues = new double[close.length];
-        kValues[nPeriod - 1] = 50; // 初始K值設為50
-        for (int i = nPeriod; i < close.length; i++) {
-            kValues[i] = (2.0 / (kPeriod + 1)) * (rsv[i] - kValues[i - 1]) + kValues[i - 1];
-        }
-
-        // 計算D值（K的EMA）
-        double[] dValues = new double[close.length];
-        dValues[nPeriod - 1] = 50; // 初始D值設為50
-        for (int i = nPeriod; i < close.length; i++) {
-            dValues[i] = (2.0 / (dPeriod + 1)) * (kValues[i] - dValues[i - 1]) + dValues[i - 1];
-        }
-
-        // 計算J值
-        double[] jValues = new double[close.length];
-        for (int i = nPeriod - 1; i < close.length; i++) {
-            jValues[i] = 3 * kValues[i] - 2 * dValues[i];
-        }
-
-        // 添加數據到系列
-        for (int i = nPeriod; i < close.length; i++) {
-            double x = priceSeries.getX(i).doubleValue();
-            kSeries.add(x, kValues[i]);
-            dSeries.add(x, dValues[i]);
-            jSeries.add(x, jValues[i]);
+        } catch (Exception e) {
+            System.err.println("限制數據點時發生錯誤: " + e.getMessage());
+            // 不重新拋出異常，避免程序崩潰
         }
     }
 
     /**
-     * 限制數據系列的顯示點數
-     *
-     * @param series 數據系列
-     * @param maxPoints 最大點數
+     * 限制XY圖表的數據點
      */
-    private void limitDataPoints(XYSeries series, int maxPoints) {
-        if (series.getItemCount() <= maxPoints) {
-            return; // 如果數據點少於限制，不做處理
+    private void limitXYPlotDataPoints(XYPlot plot, int maxPoints) {
+        try {
+            // 處理所有數據集
+            for (int datasetIndex = 0; datasetIndex < plot.getDatasetCount(); datasetIndex++) {
+                XYDataset dataset = plot.getDataset(datasetIndex);
+                if (dataset instanceof XYSeriesCollection) {
+                    XYSeriesCollection collection = (XYSeriesCollection) dataset;
+
+                    // 限制每個系列的數據點
+                    for (int seriesIndex = 0; seriesIndex < collection.getSeriesCount(); seriesIndex++) {
+                        XYSeries series = collection.getSeries(seriesIndex);
+
+                        // 移除多餘的數據點
+                        while (series.getItemCount() > maxPoints) {
+                            series.remove(0);
+                        }
+                    }
+                }
+            }
+
+            // 安全地調整Y軸範圍
+            adjustYAxisRangeSafely(plot);
+
+        } catch (Exception e) {
+            System.err.println("限制XY圖表數據點時發生錯誤: " + e.getMessage());
         }
+    }
 
-        // 計算要顯示的起始索引
-        int startIndex = series.getItemCount() - maxPoints;
+    /**
+     * 限制分類圖表的數據點（如成交量圖表）
+     */
+    private void limitCategoryPlotDataPoints(CategoryPlot plot, int maxPoints) {
+        try {
+            CategoryDataset dataset = plot.getDataset();
+            if (dataset instanceof DefaultCategoryDataset) {
+                DefaultCategoryDataset categoryDataset = (DefaultCategoryDataset) dataset;
 
-        // 設置繪圖區域的域軸範圍
-        double minX = series.getX(startIndex).doubleValue();
-        double maxX = series.getX(series.getItemCount() - 1).doubleValue();
+                // 獲取所有列（時間點）
+                @SuppressWarnings("unchecked")
+                List<Comparable> columnKeys = categoryDataset.getColumnKeys();
 
-        // 假設所有圖表使用相同的域軸數據類型
-        JFreeChart[] charts = {volatilityChart, rsiChart, wapChart};
+                // 如果數據點超過限制，移除最舊的數據
+                while (columnKeys.size() > maxPoints) {
+                    Comparable oldestKey = columnKeys.get(0);
 
-        for (JFreeChart chart : charts) {
-            XYPlot plot = chart.getXYPlot();
-            plot.getDomainAxis().setRange(minX, maxX);
+                    // 移除所有系列中的這個時間點數據
+                    @SuppressWarnings("unchecked")
+                    List<Comparable> rowKeys = categoryDataset.getRowKeys();
+                    for (Comparable rowKey : rowKeys) {
+                        categoryDataset.removeValue(rowKey, oldestKey);
+                    }
+
+                    // 重新獲取列鍵列表
+                    columnKeys = categoryDataset.getColumnKeys();
+                }
+            }
+
+        } catch (Exception e) {
+            System.err.println("限制分類圖表數據點時發生錯誤: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 安全地調整Y軸範圍，避免相同值範圍錯誤
+     */
+    private void adjustYAxisRangeSafely(XYPlot plot) {
+        try {
+            ValueAxis yAxis = plot.getRangeAxis();
+            if (yAxis != null) {
+                // 獲取數據範圍
+                Range dataRange = plot.getDataRange(yAxis);
+
+                if (dataRange != null) {
+                    double lower = dataRange.getLowerBound();
+                    double upper = dataRange.getUpperBound();
+
+                    // 檢查是否為相同值的範圍
+                    if (Math.abs(upper - lower) < 1e-10) {
+                        // 如果範圍太小，則擴展範圍
+                        double center = (upper + lower) / 2;
+                        double expansion = Math.max(Math.abs(center) * 0.1, 1.0); // 擴展10%或至少1
+
+                        yAxis.setRange(center - expansion, center + expansion);
+                    } else {
+                        // 正常設置範圍，添加一些邊距
+                        double margin = (upper - lower) * 0.05; // 5%邊距
+                        yAxis.setRange(lower - margin, upper + margin);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("調整Y軸範圍時發生錯誤: " + e.getMessage());
+            // 靜默處理，避免程序崩潰
         }
     }
 
@@ -1156,23 +1122,6 @@ public class MainView extends JFrame {
             });
         } catch (Exception e) {
             System.err.println("連結域軸失敗: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 解除兩個圖表的域軸連結
-     */
-    private void unlinkDomainAxes(ChartPanel source, ChartPanel target) {
-        // 由於我們使用的是監聽器實現，解除連結需要移除監聽器
-        // 但在簡化實現中可能難以精確地移除特定監聽器
-        // 這裡提供一個替代解決方案：重新創建圖表
-
-        // 在實際應用中，您可能需要一個更完善的機制來管理監聽器
-        try {
-            XYPlot sourcePlot = source.getChart().getXYPlot();
-            sourcePlot.getDomainAxis().removeChangeListener(null); // 移除所有監聽器
-        } catch (Exception e) {
-            System.err.println("解除域軸連結失敗: " + e.getMessage());
         }
     }
 
@@ -1288,16 +1237,6 @@ public class MainView extends JFrame {
         label.setAlignmentX(Component.LEFT_ALIGNMENT);
         panel.add(label);
         panel.add(Box.createVerticalStrut(3)); // 標籤間垂直間隔
-    }
-
-    /**
-     * 創建標籤
-     */
-    private JLabel createLabel(JPanel panel, String text) {
-        JLabel label = new JLabel(text);
-        label.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 14));
-        panel.add(label);
-        return label;
     }
 
     /**
@@ -2103,25 +2042,81 @@ public class MainView extends JFrame {
     }
 
     /**
-     * 重置面板中的所有圖表縮放
+     * 重置所有圖表的縮放
      */
-    private void resetAllCharts(JPanel panel) {
-        // 遞迴尋找所有 ChartPanel
-        for (Component comp : panel.getComponents()) {
-            if (comp instanceof ChartPanel) {
-                ChartPanel chartPanel = (ChartPanel) comp;
-                chartPanel.restoreAutoDomainBounds();
-                chartPanel.restoreAutoRangeBounds();
-            } else if (comp instanceof JPanel) {
-                resetAllCharts((JPanel) comp);
-            } else if (comp instanceof JSplitPane) {
-                JSplitPane splitPane = (JSplitPane) comp;
-                if (splitPane.getLeftComponent() instanceof JPanel) {
-                    resetAllCharts((JPanel) splitPane.getLeftComponent());
+    private void resetAllCharts(JPanel cardPanel) {
+        try {
+            // 重置XY圖表
+            resetChartZoom(priceChart);
+            resetChartZoom(volatilityChart);
+            resetChartZoom(rsiChart);
+            resetChartZoom(wapChart);
+            resetChartZoom(macdChart);
+            resetChartZoom(bollingerBandsChart);
+            resetChartZoom(kdjChart);
+            resetChartZoom(retailProfitChart);
+            resetChartZoom(mainForceProfitChart);
+
+            // 重置分類圖表（成交量）
+            resetCategoryChartZoom(volumeChart);
+
+        } catch (Exception e) {
+            System.err.println("重置圖表縮放時發生錯誤: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 重置單個XY圖表的縮放
+     */
+    private void resetChartZoom(JFreeChart chart) {
+        if (chart != null) {
+            try {
+                Plot plot = chart.getPlot();
+                if (plot instanceof XYPlot) {
+                    XYPlot xyPlot = (XYPlot) plot;
+                    ValueAxis domainAxis = xyPlot.getDomainAxis();
+                    ValueAxis rangeAxis = xyPlot.getRangeAxis();
+
+                    if (domainAxis != null) {
+                        domainAxis.setAutoRange(true);
+                    }
+
+                    if (rangeAxis != null) {
+                        rangeAxis.setAutoRange(true);
+                    }
                 }
-                if (splitPane.getRightComponent() instanceof JPanel) {
-                    resetAllCharts((JPanel) splitPane.getRightComponent());
+            } catch (Exception e) {
+                System.err.println("重置XY圖表 " + chart.getTitle().getText() + " 時發生錯誤: " + e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 重置分類圖表的縮放
+     */
+    private void resetCategoryChartZoom(JFreeChart chart) {
+        if (chart != null) {
+            try {
+                Plot plot = chart.getPlot();
+                if (plot instanceof CategoryPlot) {
+                    CategoryPlot categoryPlot = (CategoryPlot) plot;
+                    CategoryAxis domainAxis = categoryPlot.getDomainAxis();
+                    ValueAxis rangeAxis = categoryPlot.getRangeAxis();
+
+                    // CategoryAxis 沒有 setAutoRange 方法，需要使用其他方式重置
+                    if (domainAxis != null) {
+                        // 重置分類軸的縮放和平移
+                        domainAxis.setLowerMargin(0.05); // 設置預設邊距
+                        domainAxis.setUpperMargin(0.05);
+                        domainAxis.setCategoryMargin(0.1);
+                    }
+
+                    if (rangeAxis != null) {
+                        rangeAxis.setAutoRange(true);
+                    }
                 }
+            } catch (Exception e) {
+                System.err.println("重置分類圖表 " + chart.getTitle().getText() + " 時發生錯誤: " + e.getMessage());
             }
         }
     }

@@ -417,21 +417,21 @@ public class OrderBook {
                     Order sellOrder = sellOrders.get(i);
 
                     // 自我交易檢查
-                    if (buyOrder.getTrader() == sellOrder.getTrader()) {
-                        String msg = String.format(
-                                "自我撮合異常：買單 %s, 賣單 %s",
-                                buyOrder, sellOrder
-                        );
-                        logger.warn(msg, "ORDER_PROCESSING_ANOMALY");
-
-                        writer.write(msg);
-                        writer.newLine();
-
-                        if (matchingMode == MatchingMode.STANDARD) {
-                            i++;
-                            continue;
-                        }
-                    }
+//                    if (buyOrder.getTrader() == sellOrder.getTrader()) {
+//                        String msg = String.format(
+//                                "自我撮合異常：買單 %s, 賣單 %s",
+//                                buyOrder, sellOrder
+//                        );
+//                        logger.warn(msg, "ORDER_PROCESSING_ANOMALY");
+//
+//                        writer.write(msg);
+//                        writer.newLine();
+//
+//                        if (matchingMode == MatchingMode.STANDARD) {
+//                            i++;
+//                            continue;
+//                        }
+//                    }
 
                     // 檢查是否可以撮合
                     if (canExecuteOrder(buyOrder, sellOrder)) {
