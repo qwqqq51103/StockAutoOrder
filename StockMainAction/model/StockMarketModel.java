@@ -38,8 +38,8 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 100000, initialMainForceCash = 2980000;
-    private int initialRetails = 1;
+    private double initialRetailCash = 1680000, initialMainForceCash = 6980000;
+    private int initialRetails = 3;
     private int marketBehaviorStock = 5000;
     private double marketBehaviorGash = 10000;
 
@@ -121,7 +121,7 @@ public class StockMarketModel {
             initializeRetailInvestors(initialRetails);
 
             // 初始化用戶投資者
-            userInvestor = new PersonalAI(5000000, "Personal", this, orderBook, stock);
+            userInvestor = new PersonalAI(initialRetailCash, "Personal", this, orderBook, stock);
 
             logger.info("市場模型初始化完成", "MODEL_INIT");
         } catch (Exception e) {
@@ -152,7 +152,7 @@ public class StockMarketModel {
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
-        int period = 100; // 執行間隔（單位：毫秒）
+        int period = 500; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
