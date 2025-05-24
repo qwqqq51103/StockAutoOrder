@@ -48,7 +48,7 @@ public class OrderBook {
     /**
      * 單次撮合量的限制參數。
      */
-    private static final int MIN_PER_TRANSACTION = 499; // 避免一次吃掉太多深度
+    private static final int MIN_PER_TRANSACTION = 4999; // 避免一次吃掉太多深度
     private static final int DIV_FACTOR = 30;            // 分批撮合的分母
 
     // 新增屬性
@@ -324,7 +324,7 @@ public class OrderBook {
 
         // 準備異常日誌文件
         File logFile = new File(System.getProperty("user.home") + "/Desktop/MarketAnomalies.log");
-        try ( BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true))) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true))) {
             // 處理FOK訂單
             try {
                 handleFokOrders();
@@ -432,7 +432,6 @@ public class OrderBook {
 //                            continue;
 //                        }
 //                    }
-
                     // 檢查是否可以撮合
                     if (canExecuteOrder(buyOrder, sellOrder)) {
                         int txVolume = executeTransaction(buyOrder, sellOrder, stock, writer);
@@ -643,11 +642,7 @@ public class OrderBook {
         }
     }
 
-    /**
-     * 執行一次撮合成交，並決定成交量、成交價，更新訂單與股票。
-     */
-    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock,
-            BufferedWriter writer) throws IOException {
+    private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock, BufferedWriter writer) throws IOException {
         // 1. 基本檢查
         if (!validateTransaction(buyOrder, sellOrder, stock)) {
             return 0;
@@ -663,10 +658,8 @@ public class OrderBook {
         int theoreticalMax = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
         // 根據流動性調整成交量
         int adjustedMax = (int) (theoreticalMax * liquidityFactor);
-
         // 最小成交量不變
-        int maxTransactionVolume = Math.max(MIN_PER_TRANSACTION - 1,
-                adjustedMax / DIV_FACTOR);
+        int maxTransactionVolume = Math.max(MIN_PER_TRANSACTION - 1, adjustedMax / DIV_FACTOR);
         int txVolume = Math.min(adjustedMax, maxTransactionVolume);
 
         // 市價單優先考慮最大成交
@@ -677,15 +670,18 @@ public class OrderBook {
         // 4. 根據撮合模式決定成交價
         double finalPrice = calculateMatchPrice(buyOrder, sellOrder, txVolume);
         finalPrice = adjustPriceToUnit(finalPrice);
-
         // 5. 更新股價
         stock.setPrice(finalPrice);
+
+        // 🆕 記錄成交前的剩餘量（用於成交記錄）
+        int buyOrderRemainingVolume = buyOrder.getVolume() - txVolume;
+        int sellOrderRemainingVolume = sellOrder.getVolume() - txVolume;
 
         // 6. 扣減雙方剩餘量
         buyOrder.setVolume(buyOrder.getVolume() - txVolume);
         sellOrder.setVolume(sellOrder.getVolume() - txVolume);
 
-        // 7. 若剩餘量 0，移除訂單並清理時間戳
+        // 7. 若剩餘量 0,移除訂單並清理時間戳
         if (buyOrder.getVolume() == 0) {
             buyOrders.remove(buyOrder);
             orderTimestamps.remove(buyOrder);
@@ -695,23 +691,56 @@ public class OrderBook {
             orderTimestamps.remove(sellOrder);
         }
 
-        // 8. 記錄交易
-        Transaction transaction = new Transaction(
+        // 8. 記錄交易到檔案（使用簡單格式）
+        // 這裡不要使用 Transaction 類，直接寫入字串
+        String transactionRecord = String.format("%s,%s,%.2f,%d,%s",
                 buyOrder.getTrader().getTraderType(),
                 sellOrder.getTrader().getTraderType(),
-                finalPrice, txVolume, matchingMode.toString() // 新增匹配模式記錄
+                finalPrice,
+                txVolume,
+                matchingMode.toString()
         );
-        writer.write(transaction.toString());
+        writer.write(transactionRecord);
         writer.newLine();
 
-        // 9. 傳遞給 MarketAnalyzer
+        // 🆕 9. 創建詳細的成交記錄並添加到模型
+        if (model != null) {
+            // 生成唯一的成交編號
+            String transactionId = String.format("TX%d_%04d",
+                    System.currentTimeMillis(),
+                    (int) (Math.random() * 10000));
+
+            // 創建詳細的成交記錄（使用新的建構函數）
+            Transaction detailedTransaction = new Transaction(
+                    transactionId,
+                    buyOrder,
+                    sellOrder,
+                    finalPrice,
+                    txVolume,
+                    System.currentTimeMillis()
+            );
+
+            // 設置額外信息
+            detailedTransaction.setBuyOrderRemainingVolume(buyOrderRemainingVolume);
+            detailedTransaction.setSellOrderRemainingVolume(sellOrderRemainingVolume);
+            detailedTransaction.setMatchingMode(matchingMode.toString());
+
+            // 判斷是買方還是賣方主動
+            boolean isBuyerInitiated = buyOrder.getTimestamp() > sellOrder.getTimestamp();
+            detailedTransaction.setBuyerInitiated(isBuyerInitiated);
+
+            // 添加到模型的成交記錄中
+            model.addTransaction(detailedTransaction);
+        }
+
+        // 10. 傳遞給 MarketAnalyzer
         model.getMarketAnalyzer().addTransaction(finalPrice, txVolume);
 
-        // 10. 更新買方/賣方的帳戶
+        // 11. 更新買方/賣方的帳戶
         updateTraderStatus(buyOrder, sellOrder, txVolume, finalPrice);
 
-        // 11. 印出詳細日誌，包括撮合模式
-        System.out.printf("交易完成 [%s模式]：成交量 %d，成交價格 %.2f%n",
+        // 12. 印出詳細日誌,包括撮合模式
+        System.out.printf("交易完成 [%s模式]:成交量 %d,成交價格 %.2f%n",
                 matchingMode, txVolume, finalPrice);
 
         return txVolume;
@@ -1053,8 +1082,9 @@ public class OrderBook {
     /**
      * 取消訂單
      */
-    public void cancelOrder(String orderId) {
+    public boolean cancelOrder(String orderId) {
         Order canceled = null;
+        boolean success = false;
 
         try {
             // 檢查買單
@@ -1066,6 +1096,7 @@ public class OrderBook {
                 buyOrders.remove(canceled);
                 double refund = canceled.getPrice() * canceled.getVolume();
                 canceled.getTrader().getAccount().incrementFunds(refund);
+                success = true;
 
                 logger.info(String.format(
                         "取消買單：訂單ID=%s, 交易者=%s, 退還資金=%.2f",
@@ -1075,6 +1106,7 @@ public class OrderBook {
                 if (canceled.getTrader() instanceof PersonalAI) {
                     ((PersonalAI) canceled.getTrader()).onOrderCancelled(canceled);
                 }
+
             } else {
                 // 檢查賣單
                 canceled = sellOrders.stream()
@@ -1084,6 +1116,7 @@ public class OrderBook {
                 if (canceled != null) {
                     sellOrders.remove(canceled);
                     canceled.getTrader().getAccount().incrementStocks(canceled.getVolume());
+                    success = true;
 
                     logger.info(String.format(
                             "取消賣單：訂單ID=%s, 交易者=%s, 退還股票數量=%d",
@@ -1110,6 +1143,8 @@ public class OrderBook {
                     orderId, e.getMessage()
             ), "ORDER_CANCEL");
         }
+
+        return success;
     }
 
     /**

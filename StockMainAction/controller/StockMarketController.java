@@ -18,7 +18,9 @@ import StockMainAction.model.PersonalAI;
 import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.model.core.PersonalStatistics;
 import StockMainAction.model.core.QuickTradeConfig;
+import StockMainAction.model.core.Transaction;
 import StockMainAction.model.user.UserAccount;
+import StockMainAction.view.TransactionHistoryViewer;
 import java.awt.Dimension;
 import java.awt.Font;
 
@@ -37,6 +39,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     private ControlView controlView;
     private PriceAlertManager priceAlertManager;
     private PersonalStatisticsManager personalStatsManager;
+    private TransactionHistoryViewer transactionHistoryViewer;
     private static final MarketLogger logger = MarketLogger.getInstance();
 
     // 新增快捷交易相關屬性
@@ -44,7 +47,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     private QuickTradeManager quickTradeManager;  // 新增的管理器
 
     // 初始資金配置（用於損益計算）
-    public final double initialRetailCash = 1680000;
+    public final double initialRetailCash = 16800000;
     private final double initialMainForceCash = 200000;
 
     /**
@@ -184,6 +187,39 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             OrderViewer orderViewer = new OrderViewer(model.getOrderBook());
             orderViewer.setVisible(true);
         });
+
+        // 成交記錄按鈕事件
+        JButton transactionHistoryButton = controlView.getTransactionHistoryButton();
+        if (transactionHistoryButton != null) {
+            transactionHistoryButton.addActionListener(e -> {
+                if (transactionHistoryViewer == null || !transactionHistoryViewer.isVisible()) {
+                    // 創建新視窗並傳入 model
+                    transactionHistoryViewer = new TransactionHistoryViewer(model);
+
+                    // 載入歷史記錄
+                    List<Transaction> transactions = model.getTransactionHistory();
+                    if (transactions != null && !transactions.isEmpty()) {
+                        transactionHistoryViewer.addTransactions(transactions);
+                    }
+
+                    transactionHistoryViewer.setVisible(true);
+
+                    // 視窗關閉時清空引用
+                    transactionHistoryViewer.addWindowListener(new WindowAdapter() {
+                        @Override
+                        public void windowClosed(WindowEvent e) {
+                            transactionHistoryViewer = null;
+                        }
+                    });
+                } else {
+                    // 如果已經開啟，將視窗帶到前面
+                    transactionHistoryViewer.toFront();
+                    transactionHistoryViewer.requestFocus();
+                }
+
+                mainView.appendToInfoArea("打開成交記錄視窗");
+            });
+        }
     }
 
     /**

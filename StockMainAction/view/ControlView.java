@@ -16,6 +16,7 @@ public class ControlView extends JFrame {
     // UI組件
     private JButton stopButton, limitBuyButton, limitSellButton;
     private JButton marketBuyButton, marketSellButton, cancelOrderButton, viewOrdersButton;
+    private JButton transactionHistoryButton;
     private JLabel userStockLabel, userCashLabel, userAvgPriceLabel, userTargetPrice;
     private MatchingEnginePanel matchingEnginePanel;
     private PriceAlertPanel priceAlertPanel;
@@ -136,8 +137,8 @@ public class ControlView extends JFrame {
         marketSellButton = createTradeButton("市價賣出", new Color(255, 0, 0));
         cancelOrderButton = createTradeButton("取消訂單", new Color(100, 100, 100));
         viewOrdersButton = createTradeButton("查看訂單", new Color(0, 100, 200));
-
-        // 排列按鈕
+        transactionHistoryButton = createTradeButton("成交記錄", new Color(156, 39, 176));
+        
         gbc.gridx = 0;
         gbc.gridy = 0;
         buttonPanel.add(limitBuyButton, gbc);
@@ -155,6 +156,11 @@ public class ControlView extends JFrame {
         buttonPanel.add(cancelOrderButton, gbc);
         gbc.gridx = 1;
         buttonPanel.add(viewOrdersButton, gbc);
+
+        // 🆕 添加成交記錄按鈕
+        gbc.gridx = 0;
+        gbc.gridy = 3;
+        buttonPanel.add(transactionHistoryButton, gbc);
 
         // 添加說明文字
         JPanel descPanel = new JPanel();
@@ -348,5 +354,9 @@ public class ControlView extends JFrame {
 
     public JTabbedPane getTabbedPane() {
         return tabbedPane;
+    }
+
+    public JButton getTransactionHistoryButton() {
+        return transactionHistoryButton;
     }
 }

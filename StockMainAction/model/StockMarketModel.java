@@ -5,6 +5,7 @@ import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
+import StockMainAction.model.core.Transaction;
 import StockMainAction.util.logging.MarketLogger;
 import javafx.util.Pair;
 
@@ -38,10 +39,14 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 1680000, initialMainForceCash = 6980000;
-    private int initialRetails = 3;
-    private int marketBehaviorStock = 5000;
-    private double marketBehaviorGash = 10000;
+    private double initialRetailCash = 16800000, initialMainForceCash = 698000000;
+    private int initialRetails = 20;
+    private int marketBehaviorStock = 2500000;
+    private double marketBehaviorGash = 0;
+
+    // 🆕 成交記錄列表
+    private List<Transaction> transactionHistory;
+    private static final int MAX_TRANSACTION_HISTORY = 10000; // 最多保留10000筆
 
     // 線程安全鎖
     private final ReentrantLock orderBookLock = new ReentrantLock();
@@ -85,12 +90,21 @@ public class StockMarketModel {
 
     public List<ModelListener> listeners = new ArrayList<>();
 
+    // 成交紀錄監聽器介面 - 用於通知View更新
+    public interface TransactionListener {
+
+        void onTransactionAdded(Transaction transaction);
+    }
+    
+     private List<TransactionListener> transactionListeners = new ArrayList<>();
+
     /**
      * 構造函數
      */
     public StockMarketModel() {
         initializeSimulation();
         this.technicalCalculator = new TechnicalIndicatorsCalculator();
+        this.transactionHistory = new ArrayList<>();
     }
 
     /**
@@ -560,6 +574,58 @@ public class StockMarketModel {
         } finally {
             orderBookLock.unlock();
         }
+    }
+
+    // 添加成交記錄的方法
+    public void addTransaction(Transaction transaction) {
+        transactionHistory.add(transaction);
+
+        // 限制記錄數量，避免記憶體溢出
+        if (transactionHistory.size() > MAX_TRANSACTION_HISTORY) {
+            transactionHistory.remove(0); // 移除最舊的記錄
+        }
+
+        // 通知監聽器（如果需要即時更新視窗）
+        notifyTransactionAdded(transaction);
+    }
+
+    private void notifyTransactionAdded(Transaction transaction) {
+        // 通知所有成交監聽器
+        for (TransactionListener listener : transactionListeners) {
+            listener.onTransactionAdded(transaction);
+        }
+
+        // 原有的通知
+        for (ModelListener listener : listeners) {
+            listener.onInfoMessage(String.format("新成交：%s %d股 @ %.2f",
+                    transaction.isBuyerInitiated() ? "買入" : "賣出",
+                    transaction.getVolume(),
+                    transaction.getPrice()));
+        }
+    }
+
+    public void addTransactionListener(TransactionListener listener) {
+        if (!transactionListeners.contains(listener)) {
+            transactionListeners.add(listener);
+        }
+    }
+
+    public void removeTransactionListener(TransactionListener listener) {
+        transactionListeners.remove(listener);
+    }
+
+    // 獲取成交記錄
+    public List<Transaction> getTransactionHistory() {
+        return new ArrayList<>(transactionHistory); // 返回副本
+    }
+
+    // 獲取最近N筆成交記錄
+    public List<Transaction> getRecentTransactions(int n) {
+        int size = transactionHistory.size();
+        if (size <= n) {
+            return new ArrayList<>(transactionHistory);
+        }
+        return new ArrayList<>(transactionHistory.subList(size - n, size));
     }
 
     // ======== Getter 方法 ========

@@ -16,6 +16,8 @@ import javax.swing.table.TableRowSorter;
 import javax.swing.RowFilter;
 import javax.swing.JFileChooser;
 import java.text.SimpleDateFormat;
+import javax.swing.table.TableCellRenderer;
+import javax.swing.table.TableCellEditor;
 
 /**
  * 現代化的訂單檢視器視窗
@@ -164,7 +166,7 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         UIManager.put("TabbedPane.selected", new Color(66, 165, 245));
 
         // 定義表格列名
-        String[] columnNames = {"訂單編號", "交易者", "類型", "數量", "價格", "時間", "狀態"};
+        String[] columnNames = {"訂單編號", "交易者", "類型", "數量", "價格", "時間", "狀態", "操作"};
 
         // 創建全部訂單分頁
         allOrdersModel = createTableModel(columnNames);
@@ -248,14 +250,18 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         return new DefaultTableModel(columnNames, 0) {
             @Override
             public boolean isCellEditable(int row, int column) {
-                return false;
+                // 只有操作列可編輯（用於按鈕點擊）
+                return column == 7;
             }
 
             @Override
             public Class<?> getColumnClass(int columnIndex) {
                 if (columnIndex == 3) {
                     return Integer.class; // 數量列
-                }                // 移除價格列的 Double 類型定義，因為可能是 "市價" 字串
+                }
+                if (columnIndex == 7) {
+                    return JButton.class; // 操作列
+                }
                 return String.class;
             }
         };
@@ -283,7 +289,7 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         header.setPreferredSize(new Dimension(0, 40));
         header.setBorder(BorderFactory.createMatteBorder(0, 0, 2, 0, new Color(224, 224, 224)));
 
-        // 設置列寬
+        // 設置列寬 - 修改為包含操作列
         table.getColumnModel().getColumn(0).setPreferredWidth(120); // 訂單編號
         table.getColumnModel().getColumn(1).setPreferredWidth(100); // 交易者
         table.getColumnModel().getColumn(2).setPreferredWidth(60);  // 類型
@@ -291,6 +297,11 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         table.getColumnModel().getColumn(4).setPreferredWidth(80);  // 價格
         table.getColumnModel().getColumn(5).setPreferredWidth(120); // 時間
         table.getColumnModel().getColumn(6).setPreferredWidth(80);  // 狀態
+        table.getColumnModel().getColumn(7).setPreferredWidth(80);  // 操作
+
+        // 設置按鈕列的渲染器和編輯器
+        table.getColumn("操作").setCellRenderer(new ButtonRenderer());
+        table.getColumn("操作").setCellEditor(new ButtonEditor(new JCheckBox()));
 
         // 自定義渲染器
         table.setDefaultRenderer(Object.class, new ModernTableCellRenderer());
@@ -445,6 +456,123 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         return bottomPanel;
     }
 
+    // 新增按鈕渲染器類（在 OrderViewer 類別內部）
+    private class ButtonRenderer extends JButton implements TableCellRenderer {
+
+        public ButtonRenderer() {
+            setOpaque(true);
+            setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+        }
+
+        @Override
+        public Component getTableCellRendererComponent(JTable table, Object value,
+                boolean isSelected, boolean hasFocus, int row, int column) {
+
+            setText("取消");
+            setBackground(new Color(244, 67, 54));
+            setForeground(Color.WHITE);
+            setFocusPainted(false);
+
+            // 根據訂單狀態決定是否啟用按鈕
+            String status = (String) table.getValueAt(row, 6);
+            setEnabled("待成交".equals(status));
+
+            if (!isEnabled()) {
+                setBackground(Color.LIGHT_GRAY);
+                setText("已處理");
+            }
+
+            return this;
+        }
+    }
+
+// 新增按鈕編輯器類（在 OrderViewer 類別內部）
+    private class ButtonEditor extends DefaultCellEditor {
+
+        private JButton button;
+        private String orderId;
+        private boolean isPushed;
+        private JTable currentTable;  // 添加表格引用
+
+        public ButtonEditor(JCheckBox checkBox) {
+            super(checkBox);
+
+            button = new JButton();
+            button.setOpaque(true);
+            button.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+            button.addActionListener(e -> fireEditingStopped());
+        }
+
+        @Override
+        public Component getTableCellEditorComponent(JTable table, Object value,
+                boolean isSelected, int row, int column) {
+
+            this.currentTable = table;  // 保存表格引用
+
+            // 添加錯誤檢查
+            if (table.getModel().getRowCount() <= row) {
+                return button;
+            }
+
+            Object orderIdObj = table.getValueAt(row, 0);
+            this.orderId = orderIdObj != null ? orderIdObj.toString() : "";
+
+            button.setText("取消");
+            button.setBackground(new Color(244, 67, 54));
+            button.setForeground(Color.WHITE);
+
+            isPushed = true;
+            return button;
+        }
+
+        @Override
+        public Object getCellEditorValue() {
+            if (isPushed && orderId != null && !orderId.isEmpty()) {
+                // 在 Swing 事件線程中執行
+                SwingUtilities.invokeLater(() -> cancelOrder(orderId));
+            }
+            isPushed = false;
+            return "取消";
+        }
+
+        private void cancelOrder(String orderId) {
+            int result = JOptionPane.showConfirmDialog(
+                    button,
+                    "確定要取消訂單 " + orderId + " 嗎？",
+                    "確認取消",
+                    JOptionPane.YES_NO_OPTION,
+                    JOptionPane.WARNING_MESSAGE
+            );
+
+            if (result == JOptionPane.YES_OPTION) {
+                try {
+                    // 呼叫 OrderBook 的取消訂單方法
+                    boolean success = orderBook.cancelOrder(orderId);
+
+                    if (success) {
+                        JOptionPane.showMessageDialog(button,
+                                "訂單已成功取消",
+                                "成功",
+                                JOptionPane.INFORMATION_MESSAGE);
+
+                        // 重新載入訂單列表
+                        loadAllOrders();
+                    } else {
+                        JOptionPane.showMessageDialog(button,
+                                "取消訂單失敗：訂單可能已成交或不存在",
+                                "失敗",
+                                JOptionPane.ERROR_MESSAGE);
+                    }
+                } catch (Exception e) {
+                    JOptionPane.showMessageDialog(button,
+                            "取消訂單時發生錯誤：" + e.getMessage(),
+                            "錯誤",
+                            JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }
+    }
+
     /**
      * 交易者分析面板
      */
@@ -510,7 +638,8 @@ public class OrderViewer extends JFrame implements OrderBookListener {
                 order.getVolume(),
                 order.isMarketOrder() ? "市價" : String.format("%.2f", order.getPrice()),
                 dateFormat.format(new java.util.Date(order.getTimestamp())),
-                "待成交" // 狀態
+                "待成交", // 狀態
+                "取消" // 操作按鈕
             };
             model.addRow(rowData);
         }
@@ -693,7 +822,7 @@ public class OrderViewer extends JFrame implements OrderBookListener {
      * 導出到CSV檔案
      */
     private void exportToCSV(JTable table, java.io.File file) throws Exception {
-        try ( java.io.PrintWriter writer = new java.io.PrintWriter(
+        try (java.io.PrintWriter writer = new java.io.PrintWriter(
                 new java.io.OutputStreamWriter(
                         new java.io.FileOutputStream(file), "UTF-8"))) {
 
