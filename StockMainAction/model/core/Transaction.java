@@ -1,33 +1,51 @@
 package StockMainAction.model.core;
 
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
+import StockMainAction.model.core.Order;
+import StockMainAction.model.core.Trader;
 
 public class Transaction {
 
-    private String buyerType;
-    private String sellerType;
-    private final double price;
-    private final int volume;
-    private String matchingMode; // 新增字段
-    private LocalDateTime timestamp;
+    private String id;
+    private Order buyOrder;
+    private Order sellOrder;
+    private double price;
+    private int volume;
+    private long timestamp;
+    private int buyOrderRemainingVolume;
+    private int sellOrderRemainingVolume;
+    private String matchingMode;
+    private boolean buyerInitiated;
 
-    public Transaction(String buyer, String seller, double price, int volume, String matchingMode) {
-        this.buyerType = buyer;
-        this.sellerType = seller;
+    // 詳細的建構函數
+    public Transaction(String id, Order buyOrder, Order sellOrder,
+            double price, int volume, long timestamp) {
+        this.id = id;
+        this.buyOrder = buyOrder;
+        this.sellOrder = sellOrder;
         this.price = price;
         this.volume = volume;
-        this.matchingMode = matchingMode;
-        this.timestamp = LocalDateTime.now();
+        this.timestamp = timestamp;
     }
 
-    // Getter 方法
-    public String getBuyerType() {
-        return buyerType;
+    // Getter 和 Setter 方法
+    public String getId() {
+        return id;
     }
 
-    public String getSellerType() {
-        return sellerType;
+    public Order getBuyOrder() {
+        return buyOrder;
+    }
+
+    public Order getSellOrder() {
+        return sellOrder;
+    }
+
+    public Trader getBuyer() {
+        return buyOrder.getTrader();
+    }
+
+    public Trader getSeller() {
+        return sellOrder.getTrader();
     }
 
     public double getPrice() {
@@ -38,36 +56,39 @@ public class Transaction {
         return volume;
     }
 
+    public long getTimestamp() {
+        return timestamp;
+    }
+
+    public int getBuyOrderRemainingVolume() {
+        return buyOrderRemainingVolume;
+    }
+
+    public void setBuyOrderRemainingVolume(int volume) {
+        this.buyOrderRemainingVolume = volume;
+    }
+
+    public int getSellOrderRemainingVolume() {
+        return sellOrderRemainingVolume;
+    }
+
+    public void setSellOrderRemainingVolume(int volume) {
+        this.sellOrderRemainingVolume = volume;
+    }
+
     public String getMatchingMode() {
         return matchingMode;
     }
 
-    public LocalDateTime getTimestamp() {
-        return timestamp;
+    public void setMatchingMode(String mode) {
+        this.matchingMode = mode;
     }
 
-    @Override
-    public String toString() {
-        return String.format("%s [%s] 買方:%s 賣方:%s 價格:%.2f 數量:%d 模式:%s",
-                timestamp.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")),
-                "交易", buyerType, sellerType, price, volume, matchingMode);
+    public boolean isBuyerInitiated() {
+        return buyerInitiated;
     }
 
-    // 獲取當前時間戳
-    private String getCurrentTimestamp() {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        return LocalDateTime.now().format(formatter);
-    }
-
-    /**
-     * 向後兼容的構造函數，默認撮合模式為 "STANDARD"
-     *
-     * @param buyer 買方類型
-     * @param seller 賣方類型
-     * @param price 成交價格
-     * @param volume 成交數量
-     */
-    public Transaction(String buyer, String seller, double price, int volume) {
-        this(buyer, seller, price, volume, "STANDARD");
+    public void setBuyerInitiated(boolean initiated) {
+        this.buyerInitiated = initiated;
     }
 }

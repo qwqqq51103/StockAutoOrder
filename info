@@ -10,6 +10,9 @@ StockMainAction/
 ├── StockMarketSimulation.java     # 模擬主類別，負責協調整體模擬流程
 ├── controller/                    # MVC 控制器元件
 │   ├── StockMarketController.java # 連接模型與視圖的控制器
+│   ├── PriceAlertManager.java     # 🆕 價格提醒業務邏輯管理器
+│   ├── QuickTradeManager.java      # 🆕 快捷交易業務邏輯管理器
+│   ├── TechnicalIndicatorsCalculator.java # 技術指標計算器
 │   └── listeners/
 │       └── OrderBookListener.java # 訂單簿更新監聽介面
 ├── model/                         # 模型元件
@@ -24,6 +27,8 @@ StockMainAction/
 │   │   ├── Order.java             # 訂單物件（買/賣）
 │   │   ├── OrderBook.java         # 撮合訂單用的訂單簿
 │   │   ├── PersonalTrader.java    # 個人交易者實作
+│   │   ├── PriceAlert.java        # 🆕 價格提醒數據模型
+│   │   ├── QuickTradeConfig.java  # 🆕 快捷交易配置數據模型
 │   │   ├── Stock.java             # 股票資料物件
 │   │   ├── Trader.java            # 所有交易者的共用介面
 │   │   └── Transaction.java       # 交易紀錄結構
@@ -35,13 +40,470 @@ StockMainAction/
 │       ├── LoggerConfig.java      # 日誌設定
 │       └── MarketLogger.java      # 自訂日誌紀錄器
 └── view/                          # 視圖元件
-    ├── ControlView.java           # 控制面板視圖
+    ├── ControlView.java           # 控制面板視圖（簡化後）
     ├── MainView.java              # 主畫面與市場圖表視圖
     ├── OrderBookView.java         # 訂單簿視圖
     ├── OrderViewer.java           # 訂單瀏覽與篩選介面
     └── components/                # 可重用的 UI 元件
         ├── NewOrderBookTable.java # 強化版訂單簿表格
-        └── OrderBookTable.java    # 標準訂單簿表格
+        ├── OrderBookTable.java    # 標準訂單簿表格
+        ├── PriceAlertPanel.java   # 🆕 價格提醒UI面板組件
+        └── QuickTradePanel.java   # 🆕 快捷交易UI面板組件
+🏗️ 架構說明
+MVC 架構模式
+本系統採用 Model-View-Controller (MVC) 設計模式，確保關注點分離和代碼的可維護性。
+📦 各模組詳細說明
+🎯 主程式入口 (Root)
+StockMarketSimulation.java
+
+作用: 應用程式的啟動點和協調中心
+職責:
+
+初始化 MVC 三層架構
+配置系統參數
+啟動模擬流程
+
+
+依賴: Controller、Model、View
+
+🎮 控制器層 (Controller)
+StockMarketController.java
+
+作用: MVC 架構的核心控制器
+職責:
+
+連接 Model 和 View
+處理用戶交互事件
+協調各種業務邏輯
+實現 ModelListener、PriceAlertPanelListener 和 QuickTradePanelListener 接口
+
+
+關鍵方法:
+
+onPriceChanged(): 處理價格變化事件
+onAddAlert(): 處理添加價格提醒
+handleLimitBuy(): 處理限價買入操作
+onQuickTradeExecute(): 處理快捷交易執行
+
+
+
+PriceAlertManager.java 🆕
+
+作用: 價格提醒功能的業務邏輯管理器
+職責:
+
+管理價格提醒的增删改查
+監控價格變化並觸發提醒
+處理音效和彈窗提醒
+
+
+關鍵功能:
+
+支援四種提醒類型（高於/低於/上漲%/下跌%）
+自動檢查提醒條件
+防止重複觸發
+
+
+
+QuickTradeManager.java 🆕
+
+作用: 快捷交易功能的業務邏輯管理器
+職責:
+
+管理快捷交易配置
+計算交易參數
+驗證交易可行性
+處理快捷鍵映射
+
+
+關鍵功能:
+
+初始化8個預設快捷交易配置
+提供交易參數計算（數量、價格、總額）
+交易前驗證（資金/持股檢查）
+配置導出功能
+
+
+依賴: QuickTradeConfig、MarketLogger
+
+TechnicalIndicatorsCalculator.java
+
+作用: 技術指標計算引擎
+職責:
+
+計算 MACD、布林帶、KDJ 等技術指標
+維護歷史價格數據
+提供指標計算結果
+
+
+
+listeners/OrderBookListener.java
+
+作用: 訂單簿變化監聽接口
+職責: 定義訂單簿事件的回調方法
+
+💾 模型層 (Model)
+核心模型
+StockMarketModel.java
+
+作用: MVC 架構中的核心數據模型
+職責:
+
+管理市場狀態和數據
+觸發各種事件通知
+協調各種市場參與者
+
+
+事件系統: 實現觀察者模式，支援多種事件類型
+
+市場分析與行為
+MarketAnalyzer.java
+
+作用: 市場趨勢與技術分析引擎
+功能:
+
+計算技術指標（RSI、波動性、WAP）
+分析市場趨勢
+提供量化分析數據
+
+
+
+MarketBehavior.java
+
+作用: 模擬整體市場行為
+功能:
+
+模擬市場流動性
+控制市場波動性
+管理市場資金流
+
+
+
+交易者 AI 系統
+MainForceStrategyWithOrderBook.java
+
+作用: 主力交易者的智能策略
+特色:
+
+基於訂單簿的交易決策
+複雜的價格操縱策略
+動態調整交易行為
+
+
+
+RetailInvestorAI.java
+
+作用: 散戶行為模擬
+特色:
+
+模擬情緒化交易
+跟風和恐慌行為
+技術分析驅動的決策
+
+
+
+PersonalAI.java
+
+作用: 個人交易者 AI
+特色: 可自定義的交易策略和行為模式
+
+核心資料結構 (core/)
+PriceAlert.java 🆕
+
+作用: 價格提醒的數據模型
+結構:
+
+AlertType: 提醒類型枚舉
+targetPrice: 目標價格或百分比
+triggered: 提醒觸發狀態
+
+
+方法: checkAlert(): 檢查提醒條件
+
+QuickTradeConfig.java 🆕
+
+作用: 快捷交易配置的數據模型
+結構:
+
+QuickTradeType: 交易類型枚舉（固定數量、資金百分比、持股百分比、全倉、智能交易）
+PriceStrategy: 價格策略枚舉（市價、當前價、溢價、折價、自定義）
+配置屬性：名稱、交易類型、價格策略、買賣方向、數量/百分比、快捷鍵
+
+
+關鍵方法:
+
+calculateQuantity(): 根據配置計算交易數量
+calculatePrice(): 根據策略計算交易價格
+isMarketOrder(): 判斷是否為市價單
+
+
+
+Order.java
+
+作用: 訂單數據結構
+屬性: 訂單類型、價格、數量、時間戳等
+
+OrderBook.java
+
+作用: 訂單簿管理器
+功能:
+
+管理買賣訂單隊列
+執行訂單撮合算法
+支援多種撮合模式
+
+
+
+Stock.java
+
+作用: 股票基本資料
+屬性: 價格、成交量、歷史數據等
+
+Transaction.java
+
+作用: 交易記錄結構
+屬性: 交易價格、數量、時間、參與者等
+
+Trader.java
+
+作用: 交易者介面定義
+方法: 定義所有交易者的共同行為
+
+PersonalTrader.java
+
+作用: 個人交易者實現
+功能: 個人用戶的交易邏輯
+
+MatchingMode.java
+
+作用: 撮合模式定義
+模式: 價格優先、時間優先、混合模式等
+
+用戶管理 (user/)
+UserAccount.java
+
+作用: 用戶帳戶管理
+功能:
+
+資金管理
+持股管理
+交易歷史記錄
+
+
+
+🖥️ 視圖層 (View)
+主要視圖
+MainView.java
+
+作用: 主界面和市場圖表顯示
+功能:
+
+價格走勢圖表
+技術指標圖表（MACD、布林帶、KDJ）
+成交量圖表
+市場信息顯示
+
+
+
+ControlView.java (簡化後)
+
+作用: 控制面板視圖
+職責:
+
+UI 佈局和組件初始化
+基本的 UI 更新
+整合各種功能面板（包括 QuickTradePanel）
+
+
+特色: 遵循單一職責原則，只負責界面組織
+
+OrderBookView.java
+
+作用: 訂單簿視覺化
+功能: 即時顯示買賣訂單深度
+
+OrderViewer.java
+
+作用: 訂單瀏覽和管理界面
+功能: 訂單篩選、排序、詳細查看
+
+可重用組件 (components/)
+PriceAlertPanel.java 🆕
+
+作用: 價格提醒功能的 UI 組件
+特色:
+
+完全可重用的組件
+事件驅動的設計
+支援監聽器模式
+
+
+功能:
+
+提醒設置界面
+提醒列表顯示
+實時價格顯示
+
+
+
+QuickTradePanel.java 🆕
+
+作用: 快捷交易功能的 UI 組件
+實現介面: QuickTradePanelListener
+主要組件:
+
+8個快捷交易按鈕（F1-F4, Ctrl+B/S/Q/W）
+當前狀態顯示（價格、資金、持股）
+交易預覽區域
+配置列表和管理按鈕
+
+
+關鍵功能:
+
+快捷鍵註冊和響應
+實時交易預覽計算
+交易可行性驗證
+配置選擇和執行
+
+
+事件:
+
+onQuickTradeExecute(): 執行快捷交易
+onConfigureQuickTrade(): 打開配置管理
+onPreviewQuickTrade(): 預覽交易詳情
+
+
+
+OrderBookTable.java
+
+作用: 標準訂單簿表格組件
+功能: 基本的訂單簿顯示
+
+NewOrderBookTable.java
+
+作用: 強化版訂單簿表格
+功能:
+
+更豐富的視覺效果
+進階的交互功能
+更好的性能
+
+
+
+🛠️ 工具層 (Util)
+日誌系統 (logging/)
+MarketLogger.java
+
+作用: 自定義日誌記錄器
+功能:
+
+分類日誌記錄
+性能監控
+錯誤追蹤
+
+
+
+LogViewerWindow.java
+
+作用: 日誌查看 GUI
+功能:
+
+即時日誌顯示
+日誌篩選和搜索
+日誌導出
+
+
+
+LoggerConfig.java
+
+作用: 日誌系統配置
+功能:
+
+日誌級別設置
+輸出格式配置
+文件路徑管理
+
+
+
+🔄 系統數據流
+價格更新流程
+StockMarketModel → onPriceChanged() → StockMarketController 
+    ↓
+├── MainView.updatePriceChart()
+├── PriceAlertManager.updatePrice()
+├── PriceAlertPanel.updateCurrentPrice()
+└── QuickTradePanel.updateCurrentPrice()
+價格提醒流程
+用戶操作 → PriceAlertPanel → PriceAlertPanelListener → StockMarketController 
+    ↓
+PriceAlertManager → 檢查條件 → 觸發提醒（音效/彈窗）
+快捷交易流程
+快捷鍵/按鈕點擊 → QuickTradePanel → QuickTradePanelListener → StockMarketController
+    ↓
+QuickTradeManager.calculateQuickTrade() → 驗證交易參數
+    ↓
+StockMarketModel → OrderBook → 執行交易 → 事件通知 → UI更新
+交易流程
+用戶點擊 → ControlView → StockMarketController → StockMarketModel 
+    ↓
+OrderBook → 撮合算法 → Transaction → 事件通知 → UI更新
+🎯 設計原則
+
+單一職責原則 (SRP)
+
+每個類別都有明確的單一職責
+ControlView 只負責 UI 佈局
+PriceAlertManager 只負責提醒邏輯
+QuickTradeManager 只負責快捷交易邏輯
+
+
+開放封閉原則 (OCP)
+
+通過接口和抽象類支援擴展
+新增功能無需修改現有代碼
+
+
+依賴注入 (DI)
+
+Controller 通過構造函數注入依賴
+降低組件間的耦合度
+
+
+觀察者模式
+
+Model 使用事件監聽機制
+支援多個 View 監聽同一個 Model
+
+
+組件化設計
+
+UI 組件高度可重用
+業務邏輯與 UI 分離
+
+
+
+🚀 系統特色
+
+完整的 MVC 架構：清晰的職責分離
+事件驅動設計：響應式的數據更新
+模組化組件：高度可重用的 UI 組件
+智能交易系統：多種 AI 交易者模擬
+即時市場分析：完整的技術指標支援
+價格提醒功能：智能的價格監控系統
+快捷交易功能：高效的一鍵交易系統
+完善的日誌系統：便於調試和監控
+靈活的撮合引擎：支援多種撮合算法
+
+快捷交易系統特色
+
+8種預設交易模式：涵蓋常見交易場景
+多種價格策略：市價、限價、溢價、折價
+智能交易計算：自動計算最優交易參數
+實時預覽驗證：交易前完整預覽和驗證
+快捷鍵支援：F1-F4 和 Ctrl 組合鍵
+靈活配置管理：支援自定義交易配置
+
+這個架構設計確保了系統的可擴展性、可維護性和高性能，同時提供了豐富的功能和良好的用戶體驗。
 
 主要元件說明
 模擬核心
