@@ -866,215 +866,381 @@ public class OrderBook {
         }
     }
 
+// 在 OrderBook.java 中替換市價單方法
     /**
-     * 市價買入方法
+     * 市價買入方法 - 增強版，集成到現有Transaction系統
      */
     public void marketBuy(Trader trader, int quantity) {
+        // 創建市價單交易記錄
+        String transactionId = String.format("MKT_%d_%04d",
+                System.currentTimeMillis(),
+                (int) (Math.random() * 10000));
+
+        double currentPrice = model.getStock().getPrice();
+        Transaction transaction = new Transaction(
+                transactionId,
+                trader.getTraderType(),
+                "MARKET_BUY",
+                quantity,
+                currentPrice, // 預估價格
+                currentPrice // 交易前價格
+        );
+
         logger.info(String.format(
-                "市價買入開始：交易者=%s, 數量=%d, 可用資金=%.2f",
-                trader.getTraderType(), quantity, trader.getAccount().getAvailableFunds()
+                "市價買入開始：交易者=%s, 數量=%d, 可用資金=%.2f, 交易ID=%s",
+                trader.getTraderType(), quantity, trader.getAccount().getAvailableFunds(),
+                transaction.getId()
         ), "MARKET_BUY");
 
         double remainingFunds = trader.getAccount().getAvailableFunds();
         int remainingQuantity = quantity;
-        double totalTxValue = 0.0;
-        int totalTxVolume = 0;
+        String failureReason = null;
 
         // 檢查可用資金
         if (remainingFunds <= 0) {
+            failureReason = "資金不足";
+            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
+
+            // 添加到模型的交易記錄中
+            model.addTransaction(transaction);
+
             logger.warn(String.format(
-                    "市價買入失敗：交易者=%s, 原因=資金不足",
-                    trader.getTraderType()
+                    "市價買入失敗：交易者=%s, 原因=%s, 交易ID=%s",
+                    trader.getTraderType(), failureReason, transaction.getId()
             ), "MARKET_BUY");
             return;
         }
 
         try {
             ListIterator<Order> it = sellOrders.listIterator();
-            while (it.hasNext() && remainingQuantity > 0) {
+            int depthLevel = 1; // 訂單簿深度層級
+
+            while (it.hasNext() && remainingQuantity > 0 && remainingFunds > 0) {
                 Order sellOrder = it.next();
                 double sellPx = sellOrder.getPrice();
-                int chunk = Math.min(sellOrder.getVolume(), remainingQuantity);
+                int availableVolume = sellOrder.getVolume();
+                int chunk = Math.min(availableVolume, remainingQuantity);
                 double cost = chunk * sellPx;
 
                 // 自成交檢查
                 if (sellOrder.getTrader() == trader) {
-                    logger.info(String.format(
-                            "市價買入跳過自成交：交易者=%s, 賣單價格=%.2f, 數量=%d",
-                            trader.getTraderType(), sellPx, chunk
+                    logger.debug(String.format(
+                            "市價買入跳過自成交：交易者=%s, 賣單價格=%.2f, 數量=%d, 深度=%d",
+                            trader.getTraderType(), sellPx, chunk, depthLevel
                     ), "MARKET_BUY");
+                    depthLevel++;
                     continue;
                 }
 
-                if (remainingFunds >= cost) {
-                    // 更新買方
+                // 資金檢查
+                if (remainingFunds < cost) {
+                    // 部分資金不足，計算能買多少
+                    int affordableQuantity = (int) Math.floor(remainingFunds / sellPx);
+                    if (affordableQuantity > 0) {
+                        chunk = affordableQuantity;
+                        cost = chunk * sellPx;
+                    } else {
+                        failureReason = remainingQuantity == quantity
+                                ? "資金完全不足" : "剩餘資金不足";
+                        break;
+                    }
+                }
+
+                // 執行交易
+                try {
+                    // 更新買方帳戶
                     trader.getAccount().decrementFunds(cost);
                     trader.getAccount().incrementStocks(chunk);
                     remainingFunds -= cost;
                     remainingQuantity -= chunk;
 
-                    // 更新賣方
+                    // 更新賣方帳戶
                     sellOrder.getTrader().updateAfterTransaction("sell", chunk, sellPx);
 
+                    // 記錄填單到Transaction
+                    transaction.addFillRecord(sellPx, chunk,
+                            sellOrder.getTrader().getTraderType(), depthLevel);
+
                     logger.info(String.format(
-                            "市價買入成交：買入 %d 股，價格=%.2f，成本=%.2f",
-                            chunk, sellPx, cost
+                            "市價買入成交：買入 %d 股@%.2f，成本=%.2f，深度=%d，對手=%s，交易ID=%s",
+                            chunk, sellPx, cost, depthLevel,
+                            sellOrder.getTrader().getTraderType(),
+                            transaction.getId()
                     ), "MARKET_BUY");
 
-                    totalTxValue += cost;
-                    totalTxVolume += chunk;
-
-                    // 更新賣單
+                    // 更新賣單數量
                     sellOrder.setVolume(sellOrder.getVolume() - chunk);
                     if (sellOrder.getVolume() <= 0) {
                         it.remove();
-                        logger.info("賣單已全部成交，從列表中移除", "MARKET_BUY");
+                        orderTimestamps.remove(sellOrder);
+                        logger.debug("賣單已全部成交，從列表中移除", "MARKET_BUY");
                     }
-                } else {
-                    logger.warn(String.format(
-                            "市價買入中斷：資金不足，剩餘資金=%.2f，需要=%.2f",
-                            remainingFunds, cost
+
+                } catch (Exception e) {
+                    logger.error(String.format(
+                            "市價買入執行交易異常：交易者=%s, 錯誤=%s, 交易ID=%s",
+                            trader.getTraderType(), e.getMessage(), transaction.getId()
                     ), "MARKET_BUY");
+                    failureReason = "交易執行異常: " + e.getMessage();
                     break;
                 }
+
+                depthLevel++;
             }
 
-            // 更新 MarketAnalyzer
-            if (totalTxVolume > 0) {
-                double avgPrice = totalTxValue / totalTxVolume;
-                model.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
-                model.getMarketAnalyzer().addPrice(avgPrice);
+            // 完成交易記錄
+            double postTradePrice = model.getStock().getPrice();
+            transaction.completeMarketOrderTransaction(postTradePrice, depthLevel - 1, failureReason);
 
-                logger.info(String.format(
-                        "市價買入總結：成交量=%d, 平均價格=%.2f, 總成交值=%.2f",
-                        totalTxVolume, avgPrice, totalTxValue
-                ), "MARKET_BUY");
+            // 設置兼容性屬性（用於現有的UI顯示）
+            if (transaction.getActualVolume() > 0) {
+                // 創建虛擬的買賣訂單用於兼容現有系統
+                Order virtualBuyOrder = new Order("buy", transaction.getAveragePrice(),
+                        transaction.getActualVolume(), trader, false, true, false);
+                transaction.setBuyOrder(virtualBuyOrder);
 
-                final int finalVolume = totalTxVolume;
-                // 更新 UI，替換原有的 simulation 調用
+                // 設置買方發起
+                transaction.setBuyerInitiated(true);
+            }
+
+            // 更新市場分析器和UI
+            if (transaction.getActualVolume() > 0) {
+                model.getMarketAnalyzer().addTransaction(
+                        transaction.getAveragePrice(),
+                        transaction.getActualVolume()
+                );
+                model.getMarketAnalyzer().addPrice(transaction.getAveragePrice());
+
+                // 更新股價為最後成交價
+                if (!transaction.getFillRecords().isEmpty()) {
+                    List<Transaction.FillRecord> fills = transaction.getFillRecords();
+                    double lastPrice = fills.get(fills.size() - 1).getPrice();
+                    model.getStock().setPrice(lastPrice);
+                }
+
+                // 通知UI更新
                 if (model != null) {
-                    model.updateVolumeChart(finalVolume);
+                    model.updateVolumeChart(transaction.getActualVolume());
                     model.updateLabels();
                     model.updateOrderBookDisplay();
-                } else {
-                    System.out.println("警告：無法更新 UI，model 為 null");
                 }
+
+                logger.info(String.format(
+                        "市價買入完成：交易ID=%s, 成交=%d/%d股, 均價=%.2f, 滑價=%.2f%%, 執行時間=%dms",
+                        transaction.getId(),
+                        transaction.getActualVolume(),
+                        transaction.getRequestedVolume(),
+                        transaction.getAveragePrice(),
+                        transaction.getSlippagePercentage(),
+                        transaction.getExecutionTimeMs()
+                ), "MARKET_BUY");
+            } else {
+                logger.warn(String.format(
+                        "市價買入無成交：交易ID=%s, 原因=%s",
+                        transaction.getId(),
+                        failureReason != null ? failureReason : "無可用賣單"
+                ), "MARKET_BUY");
             }
 
+            // 添加到模型的交易記錄中
+            model.addTransaction(transaction);
             notifyListeners();
 
         } catch (Exception e) {
             logger.error(String.format(
-                    "市價買入異常：交易者=%s, 錯誤=%s",
-                    trader.getTraderType(), e.getMessage()
+                    "市價買入整體異常：交易者=%s, 交易ID=%s, 錯誤=%s",
+                    trader.getTraderType(), transaction.getId(), e.getMessage()
             ), "MARKET_BUY");
+
+            transaction.completeMarketOrderTransaction(currentPrice, 0, "系統異常: " + e.getMessage());
+            model.addTransaction(transaction);
         }
     }
 
     /**
-     * 市價賣出方法
+     * 市價賣出方法 - 增強版，集成到現有Transaction系統
      */
     public void marketSell(Trader trader, int quantity) {
+        // 創建市價單交易記錄
+        String transactionId = String.format("MKT_%d_%04d",
+                System.currentTimeMillis(),
+                (int) (Math.random() * 10000));
+
+        double currentPrice = model.getStock().getPrice();
+        Transaction transaction = new Transaction(
+                transactionId,
+                trader.getTraderType(),
+                "MARKET_SELL",
+                quantity,
+                currentPrice, // 預估價格
+                currentPrice // 交易前價格
+        );
+
         logger.info(String.format(
-                "市價賣出開始：交易者=%s, 數量=%d, 可用持股=%d",
-                trader.getTraderType(), quantity, trader.getAccount().getStockInventory()
+                "市價賣出開始：交易者=%s, 數量=%d, 可用持股=%d, 交易ID=%s",
+                trader.getTraderType(), quantity, trader.getAccount().getStockInventory(),
+                transaction.getId()
         ), "MARKET_SELL");
 
         int remainingQty = quantity;
-        double totalTxValue = 0.0;
-        int totalTxVolume = 0;
+        String failureReason = null;
 
         // 檢查持股
         if (trader.getAccount().getStockInventory() < quantity) {
+            failureReason = String.format("持股不足，當前持股=%d, 賣出需求=%d",
+                    trader.getAccount().getStockInventory(), quantity);
+            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
+
+            // 添加到模型的交易記錄中
+            model.addTransaction(transaction);
+
             logger.warn(String.format(
-                    "市價賣出失敗：交易者=%s, 原因=持股不足, 當前持股=%d, 賣出需求=%d",
-                    trader.getTraderType(),
-                    trader.getAccount().getStockInventory(),
-                    quantity
+                    "市價賣出失敗：交易者=%s, 原因=%s, 交易ID=%s",
+                    trader.getTraderType(), failureReason, transaction.getId()
             ), "MARKET_SELL");
             return;
         }
 
         try {
             ListIterator<Order> it = buyOrders.listIterator();
+            int depthLevel = 1; // 訂單簿深度層級
+
             while (it.hasNext() && remainingQty > 0) {
                 Order buyOrder = it.next();
                 double buyPx = buyOrder.getPrice();
-                int chunk = Math.min(buyOrder.getVolume(), remainingQty);
+                int availableVolume = buyOrder.getVolume();
+                int chunk = Math.min(availableVolume, remainingQty);
 
                 // 自成交檢查
                 if (buyOrder.getTrader() == trader) {
-                    logger.info(String.format(
-                            "市價賣出跳過自成交：交易者=%s, 買單價格=%.2f, 數量=%d",
-                            trader.getTraderType(), buyPx, chunk
+                    logger.debug(String.format(
+                            "市價賣出跳過自成交：交易者=%s, 買單價格=%.2f, 數量=%d, 深度=%d",
+                            trader.getTraderType(), buyPx, chunk, depthLevel
                     ), "MARKET_SELL");
+                    depthLevel++;
                     continue;
                 }
 
-                // 檢查賣方持股
-                if (trader.getAccount().getStockInventory() >= chunk) {
+                // 檢查賣方持股（動態檢查）
+                if (trader.getAccount().getStockInventory() < chunk) {
+                    int actualAvailable = trader.getAccount().getStockInventory();
+                    if (actualAvailable > 0) {
+                        chunk = actualAvailable;
+                    } else {
+                        failureReason = "持股已用盡";
+                        break;
+                    }
+                }
+
+                // 執行交易
+                try {
                     double revenue = buyPx * chunk;
 
-                    // 更新賣方
+                    // 更新賣方帳戶
                     trader.getAccount().decrementStocks(chunk);
                     trader.getAccount().incrementFunds(revenue);
                     remainingQty -= chunk;
 
-                    // 更新買方
+                    // 更新買方帳戶
                     buyOrder.getTrader().updateAfterTransaction("buy", chunk, buyPx);
 
+                    // 記錄填單到Transaction
+                    transaction.addFillRecord(buyPx, chunk,
+                            buyOrder.getTrader().getTraderType(), depthLevel);
+
                     logger.info(String.format(
-                            "市價賣出成交：賣出 %d 股，價格=%.2f，收入=%.2f",
-                            chunk, buyPx, revenue
+                            "市價賣出成交：賣出 %d 股@%.2f，收入=%.2f，深度=%d，對手=%s，交易ID=%s",
+                            chunk, buyPx, revenue, depthLevel,
+                            buyOrder.getTrader().getTraderType(),
+                            transaction.getId()
                     ), "MARKET_SELL");
 
-                    totalTxValue += revenue;
-                    totalTxVolume += chunk;
-
-                    // 更新買單
+                    // 更新買單數量
                     buyOrder.setVolume(buyOrder.getVolume() - chunk);
                     if (buyOrder.getVolume() <= 0) {
                         it.remove();
-                        logger.info("買單已全部成交，從列表中移除", "MARKET_SELL");
+                        orderTimestamps.remove(buyOrder);
+                        logger.debug("買單已全部成交，從列表中移除", "MARKET_SELL");
                     }
-                } else {
-                    logger.warn(String.format(
-                            "市價賣出中斷：持股不足，剩餘持股=%d，需要=%d",
-                            trader.getAccount().getStockInventory(), chunk
+
+                } catch (Exception e) {
+                    logger.error(String.format(
+                            "市價賣出執行交易異常：交易者=%s, 錯誤=%s, 交易ID=%s",
+                            trader.getTraderType(), e.getMessage(), transaction.getId()
                     ), "MARKET_SELL");
+                    failureReason = "交易執行異常: " + e.getMessage();
                     break;
                 }
+
+                depthLevel++;
             }
 
-            // 更新 MarketAnalyzer
-            if (totalTxVolume > 0) {
-                double avgPrice = totalTxValue / totalTxVolume;
-                model.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
-                model.getMarketAnalyzer().addPrice(avgPrice);
+            // 完成交易記錄
+            double postTradePrice = model.getStock().getPrice();
+            transaction.completeMarketOrderTransaction(postTradePrice, depthLevel - 1, failureReason);
 
-                logger.info(String.format(
-                        "市價賣出總結：成交量=%d, 平均價格=%.2f, 總成交值=%.2f",
-                        totalTxVolume, avgPrice, totalTxValue
-                ), "MARKET_SELL");
+            // 設置兼容性屬性（用於現有的UI顯示）
+            if (transaction.getActualVolume() > 0) {
+                // 創建虛擬的買賣訂單用於兼容現有系統
+                Order virtualSellOrder = new Order("sell", transaction.getAveragePrice(),
+                        transaction.getActualVolume(), trader, false, true, false);
+                transaction.setSellOrder(virtualSellOrder);
 
-                final int finalVolume = totalTxVolume;
-                // 更新 UI，替換原有的 simulation 調用
+                // 設置賣方發起
+                transaction.setBuyerInitiated(false);
+            }
+
+            // 更新市場分析器和UI
+            if (transaction.getActualVolume() > 0) {
+                model.getMarketAnalyzer().addTransaction(
+                        transaction.getAveragePrice(),
+                        transaction.getActualVolume()
+                );
+                model.getMarketAnalyzer().addPrice(transaction.getAveragePrice());
+
+                // 更新股價為最後成交價
+                if (!transaction.getFillRecords().isEmpty()) {
+                    List<Transaction.FillRecord> fills = transaction.getFillRecords();
+                    double lastPrice = fills.get(fills.size() - 1).getPrice();
+                    model.getStock().setPrice(lastPrice);
+                }
+
+                // 通知UI更新
                 if (model != null) {
-                    model.updateVolumeChart(finalVolume);
+                    model.updateVolumeChart(transaction.getActualVolume());
                     model.updateLabels();
                     model.updateOrderBookDisplay();
-                } else {
-                    System.out.println("警告：無法更新 UI，model 為 null");
                 }
+
+                logger.info(String.format(
+                        "市價賣出完成：交易ID=%s, 成交=%d/%d股, 均價=%.2f, 滑價=%.2f%%, 執行時間=%dms",
+                        transaction.getId(),
+                        transaction.getActualVolume(),
+                        transaction.getRequestedVolume(),
+                        transaction.getAveragePrice(),
+                        transaction.getSlippagePercentage(),
+                        transaction.getExecutionTimeMs()
+                ), "MARKET_SELL");
+            } else {
+                logger.warn(String.format(
+                        "市價賣出無成交：交易ID=%s, 原因=%s",
+                        transaction.getId(),
+                        failureReason != null ? failureReason : "無可用買單"
+                ), "MARKET_SELL");
             }
 
+            // 添加到模型的交易記錄中
+            model.addTransaction(transaction);
             notifyListeners();
 
         } catch (Exception e) {
             logger.error(String.format(
-                    "市價賣出異常：交易者=%s, 錯誤=%s",
-                    trader.getTraderType(), e.getMessage()
+                    "市價賣出整體異常：交易者=%s, 交易ID=%s, 錯誤=%s",
+                    trader.getTraderType(), transaction.getId(), e.getMessage()
             ), "MARKET_SELL");
+
+            transaction.completeMarketOrderTransaction(currentPrice, 0, "系統異常: " + e.getMessage());
+            model.addTransaction(transaction);
         }
     }
 

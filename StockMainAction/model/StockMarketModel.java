@@ -40,7 +40,7 @@ public class StockMarketModel {
 
     // 配置參數
     private double initialRetailCash = 16800000, initialMainForceCash = 698000000;
-    private int initialRetails = 20;
+    private int initialRetails = 5;
     private int marketBehaviorStock = 2500000;
     private double marketBehaviorGash = 0;
 
@@ -166,7 +166,7 @@ public class StockMarketModel {
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
-        int period = 500; // 執行間隔（單位：毫秒）
+        int period = 100; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {
@@ -589,7 +589,7 @@ public class StockMarketModel {
         notifyTransactionAdded(transaction);
     }
 
-    private void notifyTransactionAdded(Transaction transaction) {
+    private void notifyTransactionAdded(Transaction transaction)    {
         // 通知所有成交監聽器
         for (TransactionListener listener : transactionListeners) {
             listener.onTransactionAdded(transaction);
