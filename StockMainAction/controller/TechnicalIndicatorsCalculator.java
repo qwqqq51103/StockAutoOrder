@@ -136,14 +136,14 @@ public class TechnicalIndicatorsCalculator {
         if (data.size() < period) {
             return 0;
         }
-
+        // 初始種子用最早 period 筆的 SMA
+        double sum = 0;
+        for (int i = 0; i < period; i++) sum += data.get(i);
+        double ema = sum / period;
         double multiplier = 2.0 / (period + 1);
-        double ema = data.get(data.size() - period); // 初始值為第一個數據點
-
-        for (int i = data.size() - period + 1; i < data.size(); i++) {
+        for (int i = period; i < data.size(); i++) {
             ema = (data.get(i) - ema) * multiplier + ema;
         }
-
         return ema;
     }
 

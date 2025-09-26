@@ -10,11 +10,9 @@ import StockMainAction.view.components.PriceAlertPanel;
 import StockMainAction.view.components.QuickTradePanel;
 import StockMainAction.view.MainView;
 import StockMainAction.view.OrderViewer;
-import javafx.util.Pair;
+import java.util.AbstractMap.SimpleEntry;
 import StockMainAction.util.logging.LogViewerWindow;
 import StockMainAction.util.logging.MarketLogger;
-import StockMainAction.controller.PersonalStatisticsManager;
-import StockMainAction.model.PersonalAI;
 import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.model.core.PersonalStatistics;
 import StockMainAction.model.core.QuickTradeConfig;
@@ -46,9 +44,9 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     private QuickTradePanel quickTradePanel;
     private QuickTradeManager quickTradeManager;  // 新增的管理器
 
-    // 初始資金配置（用於損益計算）
-    public final double initialRetailCash = 16800000;
-    private final double initialMainForceCash = 200000;
+    // 初始資金配置（用於損益計算）—統一由模型提供
+    public final double initialRetailCash;
+    private final double initialMainForceCash;
 
     /**
      * 構造函數（修正版）
@@ -60,6 +58,13 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
         //修正：只初始化一次 PriceAlertManager
         this.priceAlertManager = new PriceAlertManager();
+
+        // 初始化初始資金（改由模型提供，若模型無法提供則使用估值）
+        double retailAvgFunds = model.getAverageRetailCash();
+        this.initialRetailCash = retailAvgFunds > 0 ? retailAvgFunds : 1698000;
+        this.initialMainForceCash = model.getMainForce() != null
+                ? model.getMainForce().getAccount().getAvailableFunds()
+                : 3698000;
 
         // 初始化快捷交易功能
         this.quickTradeManager = new QuickTradeManager();
@@ -75,22 +80,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         //修正：安全地初始化個人統計管理器
         try {
             UserAccount userAccount = model.getUserInvestor().getAccount();
-            PersonalAI personalAI = null;
-
-            // 嘗試獲取PersonalAI引用（根據您的實際架構調整）
-            try {
-                // 假設 getUserInvestor() 返回的就是 PersonalAI 實例
-                // 請根據您的實際代碼結構調整這部分
-                Object userInvestor = model.getUserInvestor();
-                if (userInvestor instanceof PersonalAI) {
-                    personalAI = (PersonalAI) userInvestor;
-                }
-                // 或者如果有其他方法獲取PersonalAI，請在這裡修改
-                // 例如：personalAI = model.getPersonalAI();
-            } catch (Exception e) {
-                logger.warn("無法獲取PersonalAI引用，將使用簡化模式: " + e.getMessage(), "CONTROLLER_INIT");
-            }
-
+            // 保留未來擴充點位：如果需要拿到 PersonalAI 實例，可在此處取得
             // 初始化統計管理器（使用簡化版建構函數）
             this.personalStatsManager = new PersonalStatisticsManager(userAccount, initialRetailCash);
 
@@ -122,6 +112,26 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
         // 設置價格提醒面板的監聽器
         controlView.getPriceAlertPanel().setListener(this);
+
+        // 主力狀態：套用按鈕監聽器
+        if (controlView.getMainForceApplyButton() != null) {
+            controlView.getMainForceApplyButton().addActionListener(e -> {
+                try {
+                    String phase = (String) controlView.getMainForcePhaseCombo().getSelectedItem();
+                    boolean lock = controlView.getMainForceLockCheck().isSelected();
+                    Integer interval = controlView.getMainForceReplaceIntervalOrNull();
+                    if (model.getMainForce() != null) {
+                        model.getMainForce().setManualPhase(phase, lock);
+                        if (interval != null) {
+                            model.getMainForce().setReplaceIntervalTicks(interval);
+                        }
+                        logger.info("主力手動階段套用：phase=" + phase + ", lock=" + lock, "MAIN_FORCE_PANEL");
+                    }
+                } catch (Exception ex) {
+                    logger.error("套用主力手動階段失敗：" + ex.getMessage(), "MAIN_FORCE_PANEL");
+                }
+            });
+        }
 
         // 🔄 修正：只有在統計管理器初始化成功時才設置監聽器
         if (personalStatsManager != null) {
@@ -266,7 +276,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                     model.getOrderBook().setLiquidityFactor(liquidityFactor);
 
                     // 記錄成功的操作
-                    logger.error("成功更改撮合設置：模式=" + selectedMode
+                    logger.info("成功更改撮合設置：模式=" + selectedMode
                             + ", 隨機切換=" + (randomSwitching ? "啟用" : "禁用")
                             + ", 切換概率=" + probability
                             + ", 流動性=" + liquidityFactor, "MATCHING_ENGINE");
@@ -325,8 +335,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
             // 🔄 修正：記錄買入交易到統計系統
             double currentPrice = model.getStock().getPrice();
-            personalStatsManager.recordBuyTrade(quantity, limitPrice, currentPrice);
-            controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+            if (personalStatsManager != null) {
+                personalStatsManager.recordBuyTrade(quantity, limitPrice, currentPrice);
+                controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+            }
 
         } catch (NumberFormatException ex) {
             mainView.showErrorMessage("請輸入有效的數字。", "錯誤");
@@ -376,8 +388,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
             // 🔄 修正：記錄賣出交易到統計系統（之前錯誤地調用了 recordBuyTrade）
             double currentPrice = model.getStock().getPrice();
-            personalStatsManager.recordSellTrade(quantity, limitPrice, currentPrice);
-            controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+            if (personalStatsManager != null) {
+                personalStatsManager.recordSellTrade(quantity, limitPrice, currentPrice);
+                controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+            }
 
         } catch (NumberFormatException ex) {
             mainView.showErrorMessage("請輸入有效的數字。", "錯誤");
@@ -401,7 +415,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             }
 
             // 計算實際成交數量和成本
-            Pair<Integer, Double> result = model.calculateActualCost(
+            SimpleEntry<Integer, Double> result = model.calculateActualCost(
                     model.getOrderBook().getSellOrders(), quantity);
             int actualQuantity = result.getKey();
             double actualCost = result.getValue();
@@ -413,11 +427,13 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                 if (success) {
                     mainView.appendToInfoArea("市價買入 " + actualQuantity + " 股，實際成本：" + String.format("%.2f", actualCost));
 
-                    // 🆕 新增：記錄市價買入交易到統計系統
-                    double avgPrice = actualCost / actualQuantity;
-                    double currentPrice = model.getStock().getPrice();
-                    personalStatsManager.recordBuyTrade(actualQuantity, avgPrice, currentPrice);
-                    controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+            // 🆕 新增：記錄市價買入交易到統計系統
+            double avgPrice = actualCost / actualQuantity;
+            double currentPrice = model.getStock().getPrice();
+            if (personalStatsManager != null) {
+                personalStatsManager.recordBuyTrade(actualQuantity, avgPrice, currentPrice);
+                controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+            }
 
                     if (actualQuantity < quantity) {
                         mainView.showInfoMessage("市價買入部分成交，已完成 " + actualQuantity
@@ -455,10 +471,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             // 檢查用戶是否有足夠的持股
             if (model.getUserInvestor().getAccount().getStockInventory() >= quantity) {
                 // 計算實際成交數量和收入
-                Pair<Integer, Double> result = model.calculateActualRevenue(
+            SimpleEntry<Integer, Double> result = model.calculateActualRevenue(
                         model.getOrderBook().getBuyOrders(), quantity);
-                int actualQuantity = result.getKey();
-                double actualRevenue = result.getValue();
+            int actualQuantity = result.getKey();
+            double actualRevenue = result.getValue();
 
                 // 執行市價賣出
                 if (actualQuantity > 0) {
@@ -469,8 +485,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                         // 🆕 新增：記錄市價賣出交易到統計系統
                         double avgPrice = actualRevenue / actualQuantity;
                         double currentPrice = model.getStock().getPrice();
-                        personalStatsManager.recordSellTrade(actualQuantity, avgPrice, currentPrice);
-                        controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+                        if (personalStatsManager != null) {
+                            personalStatsManager.recordSellTrade(actualQuantity, avgPrice, currentPrice);
+                            controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+                        }
 
                         if (actualQuantity < quantity) {
                             mainView.showInfoMessage("市價賣出部分成交，已完成 " + actualQuantity
@@ -530,11 +548,13 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         }
 
         // 🆕 新增這些行
-        personalStatsManager.updateCurrentPrice(price);
-        if (model.getTimeStep() % 10 == 0) {
-            SwingUtilities.invokeLater(() -> {
-                controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
-            });
+        if (personalStatsManager != null) {
+            personalStatsManager.updateCurrentPrice(price);
+            if (model.getTimeStep() % 10 == 0) {
+                SwingUtilities.invokeLater(() -> {
+                    controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
+                });
+            }
         }
     }
 
@@ -552,6 +572,22 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                 model.getMainForce().getAccount().getStockInventory(),
                 initialMainForceCash
         );
+
+        // 同步更新：散戶資訊表與散戶損益圖
+        java.util.List<StockMainAction.model.RetailInvestorAI> investors = model.getRetailInvestors();
+        if (investors != null && !investors.isEmpty()) {
+            mainView.updateRetailInfoTable(investors, model.getStock().getPrice());
+            mainView.updateRetailProfitChart(investors, model.getStock().getPrice(), model.getInitialRetailCash());
+        }
+
+        // 新增：更新主力階段與近期趨勢顯示
+        try {
+            double recentTrend = model.getMarketAnalyzer().getRecentPriceTrend();
+            String phaseName = model.getMainForce() != null ? model.getMainForce().getPhaseName() : "-";
+            mainView.updateMainForceStatus(phaseName, recentTrend);
+            // 同步 ControlView 的只讀顯示
+            controlView.updateMainForceStatus(phaseName, recentTrend);
+        } catch (Exception ignore) {}
     }
 
     @Override
@@ -913,14 +949,15 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
             if (success) {
                 // 記錄交易到統計系統
-                if (config.isBuy()) {
-                    personalStatsManager.recordBuyTrade(result.getQuantity(), result.getPrice(), currentPrice);
-                } else {
-                    personalStatsManager.recordSellTrade(result.getQuantity(), result.getPrice(), currentPrice);
+                if (personalStatsManager != null) {
+                    if (config.isBuy()) {
+                        personalStatsManager.recordBuyTrade(result.getQuantity(), result.getPrice(), currentPrice);
+                    } else {
+                        personalStatsManager.recordSellTrade(result.getQuantity(), result.getPrice(), currentPrice);
+                    }
+                    // 更新統計面板
+                    controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
                 }
-
-                // 更新統計面板
-                controlView.getPersonalStatsPanel().updateStatistics(personalStatsManager.getStatistics());
 
                 // 顯示成功訊息
                 String tradeType = config.isBuy() ? "買入" : "賣出";

@@ -7,7 +7,8 @@ import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
 import StockMainAction.model.core.Transaction;
 import StockMainAction.util.logging.MarketLogger;
-import javafx.util.Pair;
+import StockMainAction.util.logging.LogicAudit;
+import java.util.AbstractMap.SimpleEntry;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -39,10 +40,10 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 16800000, initialMainForceCash = 698000000;
+    private double initialRetailCash = 1698000, initialMainForceCash = 3698000;
     private int initialRetails = 5;
-    private int marketBehaviorStock = 2500000;
-    private double marketBehaviorGash = 0;
+    private int marketBehaviorStock = 300000;
+    private double marketBehaviorGash = -999999990;
 
     // 🆕 成交記錄列表
     private List<Transaction> transactionHistory;
@@ -245,10 +246,11 @@ public class StockMarketModel {
         double rsi = marketAnalyzer.getRSI();
         double wap = marketAnalyzer.getWeightedAveragePrice();
 
-        // 更新技術指標計算器的價格數據
-        // 注意：這裡假設high和low與當前價格相同，實際應用中可能需要真實的高低價數據
-        double high = price; // 如果有真實的高價數據，請替換
-        double low = price;  // 如果有真實的低價數據，請替換
+        // 更新技術指標計算器的價格數據（改為使用近期高低價，避免KDJ失真）
+        double high = marketAnalyzer.getRecentHigh(technicalCalculator != null ? 20 : 20);
+        double low = marketAnalyzer.getRecentLow(technicalCalculator != null ? 20 : 20);
+        if (Double.isNaN(high)) high = price;
+        if (Double.isNaN(low)) low = price;
         technicalCalculator.updatePriceData(price, high, low);
 
         // 計算新的技術指標
@@ -359,9 +361,13 @@ public class StockMarketModel {
         int calculatedInventory = calculateMarketInventory();
         int initialInventory = marketBehaviorStock;
         if (calculatedInventory != initialInventory) {
-            logger.error("初始化市場庫存檢查: 設定值=" + marketBehaviorStock
+            String msg = "初始化市場庫存檢查: 設定值=" + marketBehaviorStock
                     + "，市場行為持股=" + marketBehavior.getStockInventory()
-                    + "，總計算庫存=" + calculateMarketInventory(), "MODEL_INIT");
+                    + "，總計算庫存=" + calculatedInventory;
+            logger.error(msg, "MODEL_INIT");
+            LogicAudit.warn("INVENTORY_CHECK", msg);
+        } else {
+            LogicAudit.info("INVENTORY_CHECK", "ok total=" + calculatedInventory);
         }
     }
 
@@ -371,35 +377,45 @@ public class StockMarketModel {
     public int calculateMarketInventory() {
         int totalInventory = 0;
 
-        // 1. 計算主力的股票持有量
-        totalInventory += mainForce.getAccount().getStockInventory();
+        // 以帳戶帳本為準：可用 + 凍結
+        int mainForceAvail = mainForce.getAccount().getStockInventory();
+        int mainForceFrozen = mainForce.getAccount().getFrozenStocks();
+        totalInventory += mainForceAvail + mainForceFrozen;
 
-        // 2. 計算散戶的股票持有量
+        int sumRetailAvail = 0;
+        int sumRetailFrozen = 0;
         for (RetailInvestorAI investor : retailInvestors) {
-            totalInventory += investor.getAccount().getStockInventory();
+            sumRetailAvail += investor.getAccount().getStockInventory();
+            sumRetailFrozen += investor.getAccount().getFrozenStocks();
         }
+        totalInventory += sumRetailAvail + sumRetailFrozen;
 
-        // 3. 計算用戶投資者的股票持有量
         if (userInvestor != null) {
             totalInventory += userInvestor.getAccount().getStockInventory();
+            totalInventory += userInvestor.getAccount().getFrozenStocks();
         }
 
-        // 4. 計算市場訂單中未成交的賣單總量
-        for (Order sellOrder : orderBook.getSellOrders()) {
-            totalInventory += sellOrder.getVolume();
-        }
+        // 市場行為帳戶
+        int marketAvail = marketBehavior.getStockInventory();
+        int marketFrozen = marketBehavior.getAccount().getFrozenStocks();
+        totalInventory += marketAvail + marketFrozen;
 
-        // 5. 計算市場行為中保留的庫存
-        totalInventory += marketBehavior.getStockInventory();
+        // 稽核分解
+        LogicAudit.info("INVENTORY_BREAKDOWN", String.format(
+                "main(avail=%d,frozen=%d) retail(avail=%d,frozen=%d) user(a=%d,f=%d) market(a=%d,f=%d)",
+                mainForceAvail, mainForceFrozen,
+                sumRetailAvail, sumRetailFrozen,
+                userInvestor != null ? userInvestor.getAccount().getStockInventory() : 0,
+                userInvestor != null ? userInvestor.getAccount().getFrozenStocks() : 0,
+                marketAvail, marketFrozen));
 
-        // 6. 返回市場總庫存量
         return totalInventory;
     }
 
     /**
      * 計算市價買入的實際成交數量和成本
      */
-    public Pair<Integer, Double> calculateActualCost(List<Order> sellOrders, int quantity) {
+    public SimpleEntry<Integer, Double> calculateActualCost(List<Order> sellOrders, int quantity) {
         double actualCost = 0.0;
         int actualQuantity = 0;
         int remainingQuantity = quantity;
@@ -414,13 +430,13 @@ public class StockMarketModel {
             remainingQuantity -= transactionVolume;
         }
 
-        return new Pair<>(actualQuantity, actualCost);
+        return new SimpleEntry<>(actualQuantity, actualCost);
     }
 
     /**
      * 計算市價賣出的實際收入
      */
-    public Pair<Integer, Double> calculateActualRevenue(List<Order> buyOrders, int quantity) {
+    public SimpleEntry<Integer, Double> calculateActualRevenue(List<Order> buyOrders, int quantity) {
         double actualRevenue = 0.0;
         int actualQuantity = 0;
         int remainingQuantity = quantity;
@@ -435,7 +451,7 @@ public class StockMarketModel {
             remainingQuantity -= transactionVolume;
         }
 
-        return new Pair<>(actualQuantity, actualRevenue);
+        return new SimpleEntry<>(actualQuantity, actualRevenue);
     }
 
     /**
@@ -647,6 +663,20 @@ public class StockMarketModel {
 
     public PersonalAI getUserInvestor() {
         return userInvestor;
+    }
+
+    // 新增：取得散戶清單（唯讀快照）
+    public List<RetailInvestorAI> getRetailInvestors() {
+        return new ArrayList<>(retailInvestors);
+    }
+
+    // 新增：取得初始資金設定
+    public double getInitialRetailCash() {
+        return initialRetailCash;
+    }
+
+    public double getInitialMainForceCash() {
+        return initialMainForceCash;
     }
 
     public boolean isRunning() {

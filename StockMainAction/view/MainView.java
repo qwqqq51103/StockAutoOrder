@@ -9,6 +9,7 @@ import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
 import org.jfree.chart.axis.CategoryAxis;
 import org.jfree.chart.axis.NumberAxis;
+import org.jfree.chart.axis.DateAxis;
 import org.jfree.chart.axis.ValueAxis;
 import org.jfree.chart.plot.CategoryPlot;
 import org.jfree.chart.plot.PlotOrientation;
@@ -19,32 +20,36 @@ import org.jfree.chart.renderer.category.StandardBarPainter;
 import org.jfree.data.category.DefaultCategoryDataset;
 import org.jfree.data.xy.XYSeries;
 import org.jfree.data.xy.XYSeriesCollection;
-
-import javax.swing.*;
-import java.awt.*;
-import java.awt.event.WindowAdapter;
-import java.awt.event.WindowEvent;
-import java.awt.geom.Point2D;
-import java.awt.geom.Rectangle2D;
-import java.text.SimpleDateFormat;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import org.jfree.chart.ChartMouseEvent;
-import org.jfree.chart.ChartMouseListener;
-import org.jfree.chart.plot.Plot;
-import org.jfree.chart.renderer.category.CategoryItemRenderer;
+import org.jfree.data.time.Minute;
+import org.jfree.data.time.RegularTimePeriod;
+import org.jfree.data.time.ohlc.OHLCSeries;
+import org.jfree.data.time.ohlc.OHLCSeriesCollection;
+import org.jfree.chart.renderer.xy.CandlestickRenderer;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.chart.ui.RectangleAnchor;
 import org.jfree.chart.ui.TextAnchor;
 import org.jfree.data.category.CategoryDataset;
 import org.jfree.data.xy.XYDataset;
-import java.awt.event.*;
-import org.jfree.chart.ChartPanel;
-import java.util.ArrayList;
-import javax.swing.event.ChangeListener;
+import org.jfree.chart.ChartMouseEvent;
+import org.jfree.chart.ChartMouseListener;
+import org.jfree.chart.plot.Plot;
+import org.jfree.chart.renderer.category.CategoryItemRenderer;
 import org.jfree.chart.renderer.xy.XYBarRenderer;
 import org.jfree.data.Range;
+import org.jfree.data.time.ohlc.OHLCItem;
+import org.jfree.data.time.Second;
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.Point2D;
+import java.awt.geom.Rectangle2D;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Map;
+import java.util.HashMap;
+import javax.swing.event.ChangeListener;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
 /**
  * 主視圖類別 - 負責顯示圖表和數據 作為MVC架構中的View組件
@@ -53,6 +58,7 @@ public class MainView extends JFrame {
 
     // 圖表
     private JFreeChart priceChart;
+    private JFreeChart candleChart;
     private JFreeChart volatilityChart;
     private JFreeChart rsiChart;
     private JFreeChart volumeChart;
@@ -75,23 +81,48 @@ public class MainView extends JFrame {
     private XYSeries kSeries;
     private XYSeries dSeries;
     private XYSeries jSeries;
+    // K線疊加指標系列
+    private XYSeries sma5Series;
+    private XYSeries sma10Series;
+    private XYSeries sma20Series;
+    private XYSeries ema12Series;
+    private XYSeries ema26Series;
+    private XYSeries bollUSeries;
+    private XYSeries bollMSeries;
+    private XYSeries bollLSeries;
 
     // 圖表數據
     private XYSeries priceSeries;
+    private OHLCSeries ohlcSeries;
     private XYSeries smaSeries;
     private XYSeries volatilitySeries;
     private XYSeries rsiSeries;
     private XYSeries wapSeries;
     private DefaultCategoryDataset volumeDataset;
+    private DefaultCategoryDataset volumeMADataset; // 成交量均線
+    // K線多週期管理（新增 10秒、30秒 以秒為單位以 0.x 表示，內部會換算）
+    private final int[] klineMinutes = new int[]{1, 5, 10, 30, 60};
+    private final int[] klineSeconds = new int[]{10, 30};
+    private final Map<Integer, OHLCSeries> minuteToSeries = new HashMap<>();
+    private final Map<Integer, OHLCSeriesCollection> minuteToCollection = new HashMap<>();
+    private int currentKlineMinutes = 1;
+    private JComboBox<String> klineIntervalCombo;
+    private JCheckBox cbSMA5, cbSMA10, cbSMA20, cbEMA12, cbEMA26, cbBOLL, cbSwapColor;
+    private Color upColor = new Color(220, 20, 60);
+    private Color downColor = new Color(34, 139, 34);
     private List<Color> colorList = new ArrayList<>();
 
     // UI組件
     private JLabel stockPriceLabel, retailCashLabel, retailStocksLabel, mainForceCashLabel, mainForceStocksLabel,
             targetPriceLabel, averageCostPriceLabel, fundsLabel, inventoryLabel, weightedAveragePriceLabel,
             chartValueLabel; //用於顯示光標位置的數值
+    private JLabel mainForcePhaseLabel, recentTrendLabel; // 新增：顯示主力階段與近期趨勢
     private JTextArea infoTextArea;
     private OrderBookView orderBookView;
     private JTabbedPane tabbedPane;
+    // 散戶資訊表
+    private JTable retailInfoTable;
+    private javax.swing.table.DefaultTableModel retailInfoTableModel;
 
     // 儲存最後一次更新的時間步長
     private int lastTimeStep = -1;
@@ -158,11 +189,48 @@ public class MainView extends JFrame {
 
         // 創建主分頁
         JPanel mainPanel = createMainPanel();
+        // 在市場圖表分頁加入 K線週期切換下拉
+        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        topBar.add(new JLabel("K線週期:"));
+        klineIntervalCombo = new JComboBox<>(new String[]{"10秒","30秒","1分","5分","10分","30分","60分"});
+        klineIntervalCombo.setSelectedIndex(0);
+        klineIntervalCombo.addActionListener(e -> switchKlineInterval());
+        topBar.add(klineIntervalCombo);
+
+        // 指標勾選
+        cbSMA5 = new JCheckBox("SMA5", true);
+        cbSMA10 = new JCheckBox("SMA10", false);
+        cbSMA20 = new JCheckBox("SMA20", false);
+        cbEMA12 = new JCheckBox("EMA12", false);
+        cbEMA26 = new JCheckBox("EMA26", false);
+        cbBOLL = new JCheckBox("BOLL", false);
+        cbSwapColor = new JCheckBox("漲跌顏色互換", false);
+        ActionListener toggleIndicators = e -> refreshOverlayIndicators();
+        cbSMA5.addActionListener(toggleIndicators);
+        cbSMA10.addActionListener(toggleIndicators);
+        cbSMA20.addActionListener(toggleIndicators);
+        cbEMA12.addActionListener(toggleIndicators);
+        cbEMA26.addActionListener(toggleIndicators);
+        cbBOLL.addActionListener(toggleIndicators);
+        cbSwapColor.addActionListener(ev -> swapUpDownColors());
+
+        topBar.add(cbSMA5);
+        topBar.add(cbSMA10);
+        topBar.add(cbSMA20);
+        topBar.add(cbEMA12);
+        topBar.add(cbEMA26);
+        topBar.add(cbBOLL);
+        topBar.add(cbSwapColor);
+        mainPanel.add(topBar, BorderLayout.NORTH);
         tabbedPane.addTab("市場圖表", mainPanel);
 
         // 創建損益表分頁
         JPanel profitPanel = createProfitPanel();
         tabbedPane.addTab("損益表", profitPanel);
+
+        // 新增：散戶資訊分頁
+        JPanel retailPanel = createRetailInfoPanel();
+        tabbedPane.addTab("散戶資訊", retailPanel);
 
         // 創建技術指標分頁
         JPanel indicatorsPanel = createIndicatorsPanel();
@@ -391,6 +459,38 @@ public class MainView extends JFrame {
         profitPanel.add(mainForceChartPanel);
 
         return profitPanel;
+    }
+
+    // 新增：散戶資訊分頁（表格）
+    private JPanel createRetailInfoPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        String[] columns = new String[]{"ID", "現金", "持股", "損益"};
+        retailInfoTableModel = new javax.swing.table.DefaultTableModel(columns, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                switch (columnIndex) {
+                    case 1:
+                        return Double.class;
+                    case 2:
+                        return Integer.class;
+                    case 3:
+                        return Double.class;
+                    default:
+                        return String.class;
+                }
+            }
+        };
+        retailInfoTable = new JTable(retailInfoTableModel);
+        retailInfoTable.setRowHeight(28);
+        retailInfoTable.getTableHeader().setReorderingAllowed(false);
+        JScrollPane sp = new JScrollPane(retailInfoTable);
+        panel.add(sp, BorderLayout.CENTER);
+        return panel;
     }
 
     /**
@@ -1137,6 +1237,8 @@ public class MainView extends JFrame {
         mainForceStocksLabel = new JLabel("主力持有籌碼: 0");
         targetPriceLabel = new JLabel("主力目標價位: 0.00");
         averageCostPriceLabel = new JLabel("主力平均成本: 0.00");
+        mainForcePhaseLabel = new JLabel("主力階段: IDLE");
+        recentTrendLabel = new JLabel("近期趨勢: 0.0000");
         fundsLabel = new JLabel("市場可用資金: 0.00");
         inventoryLabel = new JLabel("市場庫存: 0");
         weightedAveragePriceLabel = new JLabel("加權平均價格: 0.00");
@@ -1215,6 +1317,8 @@ public class MainView extends JFrame {
         addAlignedLabel(mainForcePanel, mainForceStocksLabel);
         addAlignedLabel(mainForcePanel, targetPriceLabel);
         addAlignedLabel(mainForcePanel, averageCostPriceLabel);
+        addAlignedLabel(mainForcePanel, mainForcePhaseLabel);
+        addAlignedLabel(mainForcePanel, recentTrendLabel);
 
         // 添加等量間隔，確保三列均分寬度
         threeColumnPanel.add(marketPanel);
@@ -1243,38 +1347,74 @@ public class MainView extends JFrame {
      * 創建所有圖表
      */
     private void createCharts() {
-        // 創建股價圖
-        XYSeriesCollection priceDataset = new XYSeriesCollection();
-        priceDataset.addSeries(priceSeries);
-        priceDataset.addSeries(smaSeries);
-        priceChart = createXYChart("股價走勢", "時間", "價格", priceDataset);
+        // 建立多週期 K 線系列與集合（秒級 + 分級）
+        for (int s : klineSeconds) {
+            OHLCSeries srs = new OHLCSeries("K線(" + s + "秒)");
+            minuteToSeries.put(-s, srs); // 以負值 key 表示秒
+            OHLCSeriesCollection c = new OHLCSeriesCollection();
+            c.addSeries(srs);
+            minuteToCollection.put(-s, c);
+        }
+        for (int m : klineMinutes) {
+            OHLCSeries s = new OHLCSeries("K線(" + m + "分)");
+            minuteToSeries.put(m, s);
+            OHLCSeriesCollection c = new OHLCSeriesCollection();
+            c.addSeries(s);
+            minuteToCollection.put(m, c);
+        }
+        // 預設使用 10 秒 K 線
+        currentKlineMinutes = -10;
+        ohlcSeries = minuteToSeries.get(currentKlineMinutes);
+        OHLCSeriesCollection ohlcCollection = minuteToCollection.get(currentKlineMinutes);
+        candleChart = ChartFactory.createCandlestickChart("K線走勢", "時間", "價格", ohlcCollection, true);
 
-        // 增強價格圖表顯示
-        XYPlot pricePlot = priceChart.getXYPlot();
+        XYPlot candlePlot = candleChart.getXYPlot();
+        CandlestickRenderer candleRenderer = new CandlestickRenderer();
+        candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_SMALLEST);
+        candleRenderer.setUpPaint(new Color(220, 20, 60));   // 上漲
+        candleRenderer.setDownPaint(new Color(34, 139, 34)); // 下跌
+        candlePlot.setRenderer(candleRenderer);
 
-        // 自定義價格線渲染
-        XYLineAndShapeRenderer priceRenderer = new XYLineAndShapeRenderer(true, false);
-        priceRenderer.setSeriesPaint(0, new Color(0, 102, 204)); // 價格線顏色
-        priceRenderer.setSeriesStroke(0, new BasicStroke(2.0f)); // 價格線粗細
-        priceRenderer.setSeriesPaint(1, new Color(204, 0, 0));  // SMA 線顏色
-        priceRenderer.setSeriesStroke(1, new BasicStroke(1.5f, BasicStroke.CAP_BUTT,
-                BasicStroke.JOIN_ROUND, 0, new float[]{5.0f, 5.0f}, 0)); // SMA 虛線效果
-        pricePlot.setRenderer(priceRenderer);
+        DateAxis dateAxis = new DateAxis("時間");
+        dateAxis.setDateFormatOverride(new java.text.SimpleDateFormat("HH:mm:ss"));
+        candlePlot.setDomainAxis(dateAxis);
 
-        // 設置背景色漸變
-        pricePlot.setBackgroundPaint(new GradientPaint(
-                0, 0, new Color(240, 240, 255),
-                0, 1000, new Color(255, 255, 255)));
+        // 疊加 SMA 折線
+        XYSeriesCollection smaDataset = new XYSeriesCollection();
+        smaDataset.addSeries(smaSeries);
+        candlePlot.setDataset(1, smaDataset);
+        XYLineAndShapeRenderer smaRenderer = new XYLineAndShapeRenderer(true, false);
+        smaRenderer.setSeriesPaint(0, new Color(204, 0, 0));
+        smaRenderer.setSeriesStroke(0, new BasicStroke(1.5f, BasicStroke.CAP_BUTT,
+                BasicStroke.JOIN_ROUND, 0, new float[]{5.0f, 5.0f}, 0));
+        candlePlot.setRenderer(1, smaRenderer);
 
-        // 網格線設置
-        pricePlot.setDomainGridlinePaint(new Color(220, 220, 220));
-        pricePlot.setRangeGridlinePaint(new Color(220, 220, 220));
+        // 準備其他疊加系列容器（先建立空系列，按勾選顯示/隱藏）
+        sma5Series = new XYSeries("SMA5");
+        sma10Series = new XYSeries("SMA10");
+        sma20Series = new XYSeries("SMA20");
+        ema12Series = new XYSeries("EMA12");
+        ema26Series = new XYSeries("EMA26");
+        bollUSeries = new XYSeries("BOLL_U");
+        bollMSeries = new XYSeries("BOLL_M");
+        bollLSeries = new XYSeries("BOLL_L");
 
-        // 優化範圍軸，避免過度壓縮價格顯示
-        NumberAxis rangeAxis = (NumberAxis) pricePlot.getRangeAxis();
+        // Dataset 索引：2..N 由 refreshOverlayIndicators 動態填入
+
+        // 背景與網格
+        candlePlot.setBackgroundPaint(new GradientPaint(0, 0, new Color(240, 240, 255), 0, 1000, Color.WHITE));
+        candlePlot.setDomainGridlinePaint(new Color(220, 220, 220));
+        candlePlot.setRangeGridlinePaint(new Color(220, 220, 220));
+
+        NumberAxis rangeAxis = (NumberAxis) candlePlot.getRangeAxis();
         rangeAxis.setAutoRangeIncludesZero(false);
         rangeAxis.setAutoRangeStickyZero(false);
 
+        // 與既有流程相容：把價格圖參考指向 K 線圖
+        priceChart = candleChart;
+
+        // 與既有流程相容：把價格圖參考指向 K 線圖
+        // 保持 priceChart 指向折線圖
         // 創建MACD圖表
         XYSeriesCollection macdDataset = new XYSeriesCollection();
         macdDataset.addSeries(macdLineSeries);
@@ -1459,6 +1599,50 @@ public class MainView extends JFrame {
         return chart;
     }
 
+    // 新增：更新散戶資訊表
+    public void updateRetailInfoTable(java.util.List<StockMainAction.model.RetailInvestorAI> investors, double stockPrice) {
+        SwingUtilities.invokeLater(() -> {
+            // 清空
+            while (retailInfoTableModel.getRowCount() > 0) {
+                retailInfoTableModel.removeRow(0);
+            }
+
+            for (StockMainAction.model.RetailInvestorAI inv : investors) {
+                String id = inv.getTraderID();
+                double cash = inv.getCash();
+                int stocks = inv.getAccumulatedStocks();
+                double profit = cash + stocks * stockPrice - inv.getInitialCash();
+                retailInfoTableModel.addRow(new Object[]{id, cash, stocks, profit});
+            }
+        });
+    }
+
+    // 新增：更新散戶損益圖（將所有散戶匯入到同一個分類圖）
+    public void updateRetailProfitChart(java.util.List<StockMainAction.model.RetailInvestorAI> investors, double stockPrice, double defaultInitial) {
+        SwingUtilities.invokeLater(() -> {
+            DefaultCategoryDataset retailDataset = (DefaultCategoryDataset) retailProfitChart.getCategoryPlot().getDataset();
+            // 先清理舊的列鍵
+            @SuppressWarnings("unchecked")
+            java.util.List<Comparable> colKeys = new java.util.ArrayList<>(retailDataset.getColumnKeys());
+            for (Comparable k : colKeys) {
+                retailDataset.removeColumn(k);
+            }
+
+            // 逐一加入散戶
+            for (int i = 0; i < investors.size(); i++) {
+                StockMainAction.model.RetailInvestorAI inv = investors.get(i);
+                String col = inv.getTraderID();
+                double cash = inv.getCash();
+                int stocks = inv.getAccumulatedStocks();
+                double init = inv.getInitialCash() > 0 ? inv.getInitialCash() : defaultInitial;
+                double profit = cash + stocks * stockPrice - init;
+                retailDataset.addValue(cash, "現金", col);
+                retailDataset.addValue(stocks, "持股", col);
+                retailDataset.addValue(profit, "損益", col);
+            }
+        });
+    }
+
     /**
      * 設置圖表字體
      */
@@ -1494,65 +1678,261 @@ public class MainView extends JFrame {
     public void updatePriceChart(int timeStep, double price, double sma) {
         SwingUtilities.invokeLater(() -> {
             if (!Double.isNaN(price)) {
-                // 獲取上一個價格點
-                double previousPrice = 0;
-                if (priceSeries.getItemCount() > 0) {
-                    previousPrice = priceSeries.getY(priceSeries.getItemCount() - 1).doubleValue();
-                }
-
-                // 添加新價格點
+                // 更新折線供其他功能使用
                 priceSeries.add(timeStep, price);
                 keepSeriesWithinLimit(priceSeries, 100);
 
-                // 以替代方式添加價格變動標記
-                XYPlot plot = priceChart.getXYPlot();
-
-                // 清除舊的標記 - 使用通用的方式
-                plot.clearRangeMarkers();
-
-                // 添加新的價格線標記
-                float lineWidth = 1.0f;
-                Color lineColor;
-                String priceChangeText = "";
-
-                // 決定顏色和標籤內容
-                if (previousPrice > 0) {
-                    double change = price - previousPrice;
-                    double percentChange = change / previousPrice * 100;
-                    priceChangeText = String.format(" (%.2f%%)", percentChange);
-
-                    if (change > 0) {
-                        lineColor = new Color(0, 150, 0);
-                        priceChangeText = "↑" + priceChangeText;
-                    } else if (change < 0) {
-                        lineColor = new Color(200, 0, 0);
-                        priceChangeText = "↓" + priceChangeText;
-                    } else {
-                        lineColor = new Color(100, 100, 100);
-                    }
+                // 以所選秒/分鐘窗聚合 K 線（對齊到桶）
+                long now = System.currentTimeMillis();
+                long aligned;
+                RegularTimePeriod period;
+                if (currentKlineMinutes < 0) {
+                    int s = -currentKlineMinutes; // 秒
+                    long bucketMs = 1000L * s;
+                    aligned = now - (now % bucketMs);
+                    period = new Second(new java.util.Date(aligned));
                 } else {
-                    lineColor = new Color(100, 100, 100);
+                    int m = currentKlineMinutes;  // 分
+                    long bucketMs = 60_000L * m;
+                    aligned = now - (now % bucketMs);
+                    period = new Minute(new java.util.Date(aligned));
                 }
-
-                // 創建價格線
-                ValueMarker currentPriceMarker = new ValueMarker(price, lineColor, new BasicStroke(lineWidth));
-
-                // 設置標籤（簡化方式，無需 RectangleInsets）
-                String labelText = "價格: " + String.format("%.2f", price) + priceChangeText;
-                currentPriceMarker.setLabel(labelText);
-                currentPriceMarker.setLabelFont(new Font("SansSerif", Font.BOLD, 11));
-                currentPriceMarker.setLabelAnchor(RectangleAnchor.TOP_RIGHT);
-                currentPriceMarker.setLabelTextAnchor(TextAnchor.BOTTOM_RIGHT);
-
-                // 添加標記
-                plot.addRangeMarker(currentPriceMarker);
+                try {
+                    OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+                    if (series.getItemCount() == 0) {
+                        series.add(period, price, price, price, price);
+                    } else {
+                        int last = series.getItemCount() - 1;
+                        // 先取出最後一根
+                        OHLCItem lastItem = (OHLCItem) series.getDataItem(last);
+                        // 用 item 取得 O/H/L
+                        double open = lastItem.getOpenValue();
+                        double high = Math.max(lastItem.getHighValue(), price);
+                        double low = Math.min(lastItem.getLowValue(), price);
+                        // 判斷是否同一桶
+                        if (lastItem.getPeriod().equals(period)) {
+                            series.remove(lastItem.getPeriod());
+                            series.add(period, open, high, low, price);
+                        } else {
+                            double prevClose = lastItem.getCloseValue();
+                            double newOpen = prevClose;
+                            double newHigh = Math.max(newOpen, price);
+                            double newLow = Math.min(newOpen, price);
+                            series.add(period, newOpen, newHigh, newLow, price);
+                        }
+                    }
+                } catch (Exception ignore) {
+                }
             }
 
+            // 依最新 K 線即時重算覆蓋指標，確保完全對齊目前時間窗
+            recomputeOverlayFromOHLC();
+
             if (!Double.isNaN(sma)) {
-                smaSeries.add(timeStep, sma);
+                // 與 K 線共用 DateAxis：使用 epoch 毫秒作為 X
+                long now = System.currentTimeMillis();
+                smaSeries.add((double) now, sma);
                 keepSeriesWithinLimit(smaSeries, 100);
             }
         });
+    }
+
+    // 切換 K 線週期
+    private void switchKlineInterval() {
+        int idx = klineIntervalCombo.getSelectedIndex();
+        // 對應下拉鍵：10秒、30秒、1分、5分、10分、30分、60分
+        int[] opts = new int[]{-10,-30,1,5,10,30,60};
+        currentKlineMinutes = opts[idx];
+        // 切換 dataset 到對應集合
+        XYPlot candlePlot = candleChart.getXYPlot();
+        candlePlot.setDataset(0, minuteToCollection.get(currentKlineMinutes));
+        candlePlot.datasetChanged(null);
+        // 以當前 K 線序列重算覆蓋指標，確保時間座標完全對齊
+        recomputeOverlayFromOHLC();
+        refreshOverlayIndicators();
+    }
+
+    // 重新整理疊加指標的顯示與資料集配置
+    private void refreshOverlayIndicators() {
+        try {
+            XYPlot candlePlot = candleChart.getXYPlot();
+
+            int datasetIndex = 1; // 0 是 K 線，1 之後留給疊加
+
+            // 先清空 1 之後的 dataset（保留 index 1 的 SMA 主線）
+            while (candlePlot.getDatasetCount() > 1) {
+                candlePlot.setDataset(candlePlot.getDatasetCount() - 1, null);
+            }
+
+            // 重新掛上 SMA 主線（保持 index 1）
+            XYSeriesCollection smaDs = new XYSeriesCollection();
+            smaDs.addSeries(smaSeries);
+            candlePlot.setDataset(datasetIndex, smaDs);
+            XYLineAndShapeRenderer smaR = new XYLineAndShapeRenderer(true, false);
+            smaR.setSeriesPaint(0, new Color(204, 0, 0));
+            candlePlot.setRenderer(datasetIndex, smaR);
+
+            // 勾選額外 SMA
+            if (cbSMA5.isSelected()) {
+                datasetIndex++;
+                XYSeriesCollection ds = new XYSeriesCollection();
+                ds.addSeries(sma5Series);
+                candlePlot.setDataset(datasetIndex, ds);
+                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
+                r.setSeriesPaint(0, new Color(255, 165, 0));
+                candlePlot.setRenderer(datasetIndex, r);
+            }
+            if (cbSMA10.isSelected()) {
+                datasetIndex++;
+                XYSeriesCollection ds = new XYSeriesCollection();
+                ds.addSeries(sma10Series);
+                candlePlot.setDataset(datasetIndex, ds);
+                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
+                r.setSeriesPaint(0, new Color(0, 128, 255));
+                candlePlot.setRenderer(datasetIndex, r);
+            }
+            if (cbSMA20.isSelected()) {
+                datasetIndex++;
+                XYSeriesCollection ds = new XYSeriesCollection();
+                ds.addSeries(sma20Series);
+                candlePlot.setDataset(datasetIndex, ds);
+                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
+                r.setSeriesPaint(0, new Color(128, 0, 128));
+                candlePlot.setRenderer(datasetIndex, r);
+            }
+            if (cbEMA12.isSelected()) {
+                datasetIndex++;
+                XYSeriesCollection ds = new XYSeriesCollection();
+                ds.addSeries(ema12Series);
+                candlePlot.setDataset(datasetIndex, ds);
+                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
+                r.setSeriesPaint(0, new Color(0, 180, 180));
+                candlePlot.setRenderer(datasetIndex, r);
+            }
+            if (cbEMA26.isSelected()) {
+                datasetIndex++;
+                XYSeriesCollection ds = new XYSeriesCollection();
+                ds.addSeries(ema26Series);
+                candlePlot.setDataset(datasetIndex, ds);
+                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
+                r.setSeriesPaint(0, new Color(180, 120, 0));
+                candlePlot.setRenderer(datasetIndex, r);
+            }
+            if (cbBOLL.isSelected()) {
+                datasetIndex++;
+                XYSeriesCollection ds = new XYSeriesCollection();
+                ds.addSeries(bollUSeries);
+                ds.addSeries(bollMSeries);
+                ds.addSeries(bollLSeries);
+                candlePlot.setDataset(datasetIndex, ds);
+                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
+                r.setSeriesPaint(0, Color.GRAY);
+                r.setSeriesPaint(1, Color.DARK_GRAY);
+                r.setSeriesPaint(2, Color.GRAY);
+                candlePlot.setRenderer(datasetIndex, r);
+            }
+
+            candlePlot.datasetChanged(null);
+        } catch (Exception ignore) {}
+    }
+
+    // 基於當前 K 線序列（OHLCSeries）的 close 值重算 SMA/EMA/BOLL 並以 K 線 period 時間作為 X 軸
+    private void recomputeOverlayFromOHLC() {
+        try {
+            OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+            if (series == null) return;
+
+            // 先清空既有資料
+            sma5Series.clear();
+            sma10Series.clear();
+            sma20Series.clear();
+            ema12Series.clear();
+            ema26Series.clear();
+            bollUSeries.clear();
+            bollMSeries.clear();
+            bollLSeries.clear();
+
+            int n = series.getItemCount();
+            if (n == 0) return;
+
+            // 取 close 與對應時間（毫秒）
+            java.util.List<Double> closes = new java.util.ArrayList<>(n);
+            java.util.List<Long> times = new java.util.ArrayList<>(n);
+            java.util.GregorianCalendar cal = new java.util.GregorianCalendar();
+            for (int i = 0; i < n; i++) {
+                org.jfree.data.time.ohlc.OHLCItem it = (org.jfree.data.time.ohlc.OHLCItem) series.getDataItem(i);
+                closes.add(it.getCloseValue());
+                long t = it.getPeriod().getMiddleMillisecond(cal);
+                times.add(t);
+            }
+
+            // 工具：移動平均
+            java.util.function.BiConsumer<Integer, org.jfree.data.xy.XYSeries> smaFill = (period, out) -> {
+                if (n < period) return;
+                double sum = 0;
+                for (int i = 0; i < n; i++) {
+                    sum += closes.get(i);
+                    if (i >= period) sum -= closes.get(i - period);
+                    if (i >= period - 1) {
+                        out.add(times.get(i), sum / period);
+                    }
+                }
+            };
+
+            // 工具：EMA
+            java.util.function.BiConsumer<Integer, org.jfree.data.xy.XYSeries> emaFill = (period, out) -> {
+                if (n == 0) return;
+                double k = 2.0 / (period + 1);
+                double ema = closes.get(0);
+                for (int i = 0; i < n; i++) {
+                    if (i == 0) {
+                        ema = closes.get(0);
+                    } else {
+                        ema = (closes.get(i) - ema) * k + ema;
+                    }
+                    if (i >= period - 1) out.add(times.get(i), ema);
+                }
+            };
+
+            // 工具：BOLL(period=20)
+            java.util.function.Consumer<Integer> bollFill = (Integer period) -> {
+                if (n < period) return;
+                double sum = 0, sumSq = 0;
+                for (int i = 0; i < n; i++) {
+                    double c = closes.get(i);
+                    sum += c; sumSq += c * c;
+                    if (i >= period) {
+                        double old = closes.get(i - period);
+                        sum -= old; sumSq -= old * old;
+                    }
+                    if (i >= period - 1) {
+                        double mean = sum / period;
+                        double var = (sumSq / period) - (mean * mean);
+                        if (var < 0) var = 0;
+                        double sd = Math.sqrt(var);
+                        bollMSeries.add(times.get(i), mean);
+                        bollUSeries.add(times.get(i), mean + 2 * sd);
+                        bollLSeries.add(times.get(i), mean - 2 * sd);
+                    }
+                }
+            };
+
+            // 實際填入
+            smaFill.accept(5, sma5Series);
+            smaFill.accept(10, sma10Series);
+            smaFill.accept(20, sma20Series);
+            emaFill.accept(12, ema12Series);
+            emaFill.accept(26, ema26Series);
+            bollFill.accept(20);
+
+        } catch (Exception ignore) {}
+    }
+
+    // 交換上漲/下跌顏色，並套用到成交量與 K 線
+    private void swapUpDownColors() {
+        Color tmp = upColor;
+        upColor = downColor;
+        downColor = tmp;
     }
 
     /**
@@ -1574,6 +1954,7 @@ public class MainView extends JFrame {
                 wapSeries.add(timeStep, wap);
                 keepSeriesWithinLimit(wapSeries, 100);
             }
+            // 同步更新量能均線等可在此處理（若有對應數據）
         });
     }
 
@@ -1582,50 +1963,53 @@ public class MainView extends JFrame {
      */
     public void updateVolumeChart(int timeStep, int volume) {
         SwingUtilities.invokeLater(() -> {
-            // 只在時間步長變化時添加新的數據點
-            if (timeStep > lastTimeStep) {
-                // 移除舊數據，保持最多30個數據點
+            // 以 K 線相同的桶（秒/分）聚合成交量，並以時間字串為列鍵
+            long now = System.currentTimeMillis();
+            long aligned;
+            RegularTimePeriod period;
+            String key;
+            if (currentKlineMinutes < 0) {
+                int s = -currentKlineMinutes; // 秒
+                long bucketMs = 1000L * s;
+                aligned = now - (now % bucketMs);
+                period = new Second(new java.util.Date(aligned));
+                key = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(aligned));
+            } else {
+                int m = currentKlineMinutes;  // 分
+                long bucketMs = 60_000L * m;
+                aligned = now - (now % bucketMs);
+                period = new Minute(new java.util.Date(aligned));
+                key = new java.text.SimpleDateFormat("HH:mm").format(new java.util.Date(aligned));
+            }
+
+            // 若已存在該時間桶則累加，否則新增（限制最多 30 根）
+            @SuppressWarnings("unchecked")
+            java.util.List<Comparable> keys = volumeDataset.getColumnKeys();
+            if (!keys.contains(key)) {
                 while (volumeDataset.getColumnCount() >= 30) {
                     String firstKey = (String) volumeDataset.getColumnKeys().get(0);
                     volumeDataset.removeColumn(firstKey);
-                    if (!colorList.isEmpty()) {
-                        colorList.remove(0);
+                    if (!colorList.isEmpty()) colorList.remove(0);
+                }
+                volumeDataset.addValue(volume, "Volume", key);
+
+                // 以對應 K 線方向決定顏色
+                Color color = upColor;
+                try {
+                    OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+                    if (series != null) {
+                        int idx = series.indexOf(period);
+                        if (idx >= 0) {
+                            OHLCItem ki = (OHLCItem) series.getDataItem(idx);
+                            color = (ki.getCloseValue() >= ki.getOpenValue()) ? upColor : downColor;
+                        }
                     }
-                }
-
-                // 添加新數據
-                volumeDataset.addValue(volume, "Volume", String.valueOf(timeStep));
-
-                // 獲取價格變化來決定顏色
-                double currentPrice = 0;
-                double previousPrice = 0;
-
-                if (priceSeries.getItemCount() > 0) {
-                    currentPrice = priceSeries.getY(priceSeries.getItemCount() - 1).doubleValue();
-                }
-
-                if (priceSeries.getItemCount() > 1) {
-                    previousPrice = priceSeries.getY(priceSeries.getItemCount() - 2).doubleValue();
-                }
-
-                // 根據價格變動確定顏色
-                Color color = Color.BLUE; // 預設為藍色
-                if (currentPrice > previousPrice) {
-                    color = Color.GREEN; // 價格上漲 → 綠色
-                } else if (currentPrice < previousPrice) {
-                    color = Color.RED; // 價格下跌 → 紅色
-                }
-
+                } catch (Exception ignore) {}
                 colorList.add(color);
-                lastTimeStep = timeStep;
             } else {
-                // 更新現有數據
-                String columnKey = String.valueOf(timeStep);
-                if (volumeDataset.getColumnKeys().contains(columnKey)) {
-                    Number existingValue = volumeDataset.getValue("Volume", columnKey);
-                    int newValue = existingValue != null ? existingValue.intValue() + volume : volume;
-                    volumeDataset.setValue(newValue, "Volume", columnKey);
-                }
+                Number existingValue = volumeDataset.getValue("Volume", key);
+                int newValue = (existingValue != null ? existingValue.intValue() : 0) + volume;
+                volumeDataset.setValue(newValue, "Volume", key);
             }
         });
     }
@@ -1674,6 +2058,18 @@ public class MainView extends JFrame {
             fundsLabel.setText("市場可用資金: " + String.format("%.2f", funds));
             inventoryLabel.setText("市場庫存: " + inventory);
             weightedAveragePriceLabel.setText("加權平均價格: " + String.format("%.2f", wap));
+        });
+    }
+
+    // 新增：更新主力狀態與趨勢
+    public void updateMainForceStatus(String phase, double recentTrend) {
+        SwingUtilities.invokeLater(() -> {
+            if (mainForcePhaseLabel != null) {
+                mainForcePhaseLabel.setText("主力階段: " + phase);
+            }
+            if (recentTrendLabel != null) {
+                recentTrendLabel.setText("近期趨勢: " + String.format("%.4f", recentTrend));
+            }
         });
     }
 
@@ -1821,24 +2217,25 @@ public class MainView extends JFrame {
         plot.setDomainCrosshairPaint(new Color(0, 0, 0, 80));
         plot.setRangeCrosshairPaint(new Color(0, 0, 0, 80));
 
-        // 獲取或創建渲染器
-        XYLineAndShapeRenderer renderer;
-        if (plot.getRenderer() instanceof XYLineAndShapeRenderer) {
-            renderer = (XYLineAndShapeRenderer) plot.getRenderer();
+        // 針對不同渲染器類型設置互動：
+        // 1) 若是 K 線（CandlestickRenderer），避免把渲染器改成折線
+        if (plot.getRenderer() instanceof org.jfree.chart.renderer.xy.CandlestickRenderer) {
+            // 可選：設定提示（顯示 O/H/L/C）
+            // 保持現有渲染器以確保蠟燭為直立形態
         } else {
-            renderer = new XYLineAndShapeRenderer();
-            plot.setRenderer(renderer);
+            // 2) 其他 XY 圖（折線等）設定提示
+            if (!(plot.getRenderer() instanceof XYLineAndShapeRenderer)) {
+                plot.setRenderer(new XYLineAndShapeRenderer());
         }
-
-        // 添加工具提示生成器
+            XYLineAndShapeRenderer renderer = (XYLineAndShapeRenderer) plot.getRenderer();
         renderer.setDefaultToolTipGenerator((dataset, series, item) -> {
             XYDataset xyDataset = (XYDataset) dataset;
             double x = xyDataset.getXValue(series, item);
             double y = xyDataset.getYValue(series, item);
             String seriesName = xyDataset.getSeriesKey(series).toString();
-
             return String.format("%s - 時間: %.0f, 值: %.2f", seriesName, x, y);
         });
+        }
 
         // 添加鼠標監聽器
         chartPanel.addChartMouseListener(new ChartMouseListener() {

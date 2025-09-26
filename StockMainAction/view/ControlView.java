@@ -23,6 +23,13 @@ public class ControlView extends JFrame {
     private PersonalStatsPanel personalStatsPanel;
     private QuickTradePanel quickTradePanel;
 
+    // 主力狀態面板元件
+    private JLabel mainForcePhaseLabel;
+    private JLabel mainForceTrendLabel;
+    private JComboBox<String> mainForcePhaseCombo;
+    private JCheckBox mainForceLockCheck;
+    private JButton mainForceApplyButton;
+
     // 分頁面板
     private JTabbedPane tabbedPane;
 
@@ -55,6 +62,7 @@ public class ControlView extends JFrame {
         addPriceAlertTab();     // 價格提醒分頁
         addPersonalStatsTab();  // 個人統計分頁
         addMatchingEngineTab(); // 撮合引擎分頁
+        addMainForceStatusTab(); // 主力狀態分頁
 
         // 設置分頁圖標（可選）
         setTabIcons();
@@ -234,6 +242,63 @@ public class ControlView extends JFrame {
     }
 
     /**
+     * 添加主力狀態分頁（只讀顯示 + 手動干預）
+     */
+    private void addMainForceStatusTab() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
+
+        // 顯示區
+        JPanel infoPanel = new JPanel(new GridLayout(2, 2, 10, 10));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("主力狀態（只讀）"));
+        infoPanel.add(new JLabel("當前階段:"));
+        mainForcePhaseLabel = new JLabel("IDLE");
+        infoPanel.add(mainForcePhaseLabel);
+        infoPanel.add(new JLabel("近期趨勢:"));
+        mainForceTrendLabel = new JLabel("0.0000");
+        infoPanel.add(mainForceTrendLabel);
+
+        // 控制區
+        JPanel ctrlPanel = new JPanel(new GridBagLayout());
+        ctrlPanel.setBorder(BorderFactory.createTitledBorder("手動干預"));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(8, 8, 8, 8);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        gbc.gridx = 0; gbc.gridy = 0;
+        ctrlPanel.add(new JLabel("切換階段:"), gbc);
+        gbc.gridx = 1;
+        mainForcePhaseCombo = new JComboBox<>(new String[]{
+                "IDLE", "ACCUMULATE", "MARKUP", "DISTRIBUTE", "WASH"
+        });
+        ctrlPanel.add(mainForcePhaseCombo, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1;
+        ctrlPanel.add(new JLabel("鎖定手動階段:"), gbc);
+        gbc.gridx = 1;
+        mainForceLockCheck = new JCheckBox("鎖定");
+        ctrlPanel.add(mainForceLockCheck, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2;
+        ctrlPanel.add(new JLabel("撤換間隔(ticks):"), gbc);
+        gbc.gridx = 1;
+        JSpinner replaceSpinner = new JSpinner(new SpinnerNumberModel(10, 1, 200, 1));
+        ctrlPanel.add(replaceSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
+        mainForceApplyButton = new JButton("套用");
+        ctrlPanel.add(mainForceApplyButton, gbc);
+
+        panel.add(infoPanel, BorderLayout.NORTH);
+        panel.add(ctrlPanel, BorderLayout.CENTER);
+        tabbedPane.addTab("主力狀態", panel);
+
+        // 透過客製屬性暫存 spinner 以供控制器讀取
+        panel.putClientProperty("replaceSpinner", replaceSpinner);
+    }
+
+    /**
      * 創建統一風格的交易按鈕
      */
     private JButton createTradeButton(String text, Color color) {
@@ -358,5 +423,38 @@ public class ControlView extends JFrame {
 
     public JButton getTransactionHistoryButton() {
         return transactionHistoryButton;
+    }
+
+    // 主力狀態面板：更新 & 控制器取用
+    public void updateMainForceStatus(String phase, double recentTrend) {
+        SwingUtilities.invokeLater(() -> {
+            if (mainForcePhaseLabel != null) mainForcePhaseLabel.setText(phase);
+            if (mainForceTrendLabel != null) mainForceTrendLabel.setText(String.format("%.4f", recentTrend));
+        });
+    }
+
+    public JButton getMainForceApplyButton() {
+        return mainForceApplyButton;
+    }
+
+    public JComboBox<String> getMainForcePhaseCombo() {
+        return mainForcePhaseCombo;
+    }
+
+    public JCheckBox getMainForceLockCheck() {
+        return mainForceLockCheck;
+    }
+
+    public Integer getMainForceReplaceIntervalOrNull() {
+        try {
+            Component comp = getTabbedPane().getComponentAt(getTabbedPane().getTabCount() - 1);
+            if (comp instanceof JPanel) {
+                Object v = ((JPanel) comp).getClientProperty("replaceSpinner");
+                if (v instanceof JSpinner) {
+                    return (Integer) ((JSpinner) v).getValue();
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 }

@@ -259,4 +259,44 @@ public class PersonalAI extends RetailInvestorAI {
         // 更新 UI 標籤
         model.updateLabels();
     }
+
+    @Override
+    public void updateAverageCostPrice(String type, int volume, double price) {
+        double transactionAmount = price * volume;
+
+        if ("buy".equals(type)) {
+            // 扣款並增加持股
+            getAccount().decrementFunds(transactionAmount);
+            getAccount().incrementStocks(volume);
+
+            // 更新個人平均成本
+            int totalStocks = getAccount().getStockInventory();
+            if (totalStocks > 0) {
+                personalAverageCost = ((personalAverageCost * (totalStocks - volume)) + transactionAmount) / totalStocks;
+            }
+
+            // 設定止盈價 (例如 +10%)
+            personalTakeProfitPrice = personalAverageCost * 1.1;
+
+            System.out.println(String.format("[個人AI] 市價買入 %d 股，成交價 %.2f，更新後均價 %.2f，目標止盈價 %.2f",
+                    volume, price, personalAverageCost, personalTakeProfitPrice));
+
+        } else if ("sell".equals(type)) {
+            // 扣股並增加可用資金
+            getAccount().decrementStocks(volume);
+            getAccount().incrementFunds(transactionAmount);
+
+            // 若全部賣掉，重置均價
+            if (getAccount().getStockInventory() == 0) {
+                personalAverageCost = 0.0;
+                personalTakeProfitPrice = null;
+            }
+
+            System.out.println(String.format("[個人AI] 市價賣出 %d 股，成交價 %.2f，剩餘持股 %d 股，更新後均價 %.2f",
+                    volume, price, getAccount().getStockInventory(), personalAverageCost));
+        }
+
+        // 更新 UI 標籤
+        model.updateLabels();
+    }
 }

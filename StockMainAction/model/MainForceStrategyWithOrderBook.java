@@ -9,8 +9,11 @@ import StockMainAction.model.core.Stock;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.Queue;
+import java.util.List;
+import java.util.ArrayList;
 import java.util.Random;
 import StockMainAction.util.logging.MarketLogger;
+import StockMainAction.util.logging.LogicAudit;
 import java.util.Arrays;
 
 /**
@@ -47,6 +50,69 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private double maxOffsetRatio = 0.10;   // 最多 ±10 %
 
     private static final MarketLogger logger = MarketLogger.getInstance();
+
+    // ===== 主力狀態機（更像主力的操作） =====
+    private enum Phase { 待機, 吸籌, 拉抬, 出貨, 洗盤 }
+    private Phase phase = Phase.待機;
+    private int phaseTicks = 0;          // 當前階段已持續的時間步
+    private int cooldownTicks = 0;       // 行動冷卻，避免每步都大量出手
+
+    // 每階段最短/最長持續時間（以 time step 計）
+    private static final int ACCUMULATE_MIN = 50, ACCUMULATE_MAX = 400;
+    private static final int MARKUP_MIN = 20, MARKUP_MAX = 150;
+    private static final int DISTRIBUTE_MIN = 30, DISTRIBUTE_MAX = 300;
+    private static final int WASH_MIN = 10, WASH_MAX = 100;
+
+    // 撤單統計與參數化的撤換間隔
+    private int replaceIntervalTicks = 10;
+    private int totalCanceledOrders = 0;
+    private int tickCanceledOrders = 0;
+
+    private int getMinTicksForPhase(Phase p) {
+        switch (p) {
+            case 吸籌: return ACCUMULATE_MIN;
+            case 拉抬: return MARKUP_MIN;
+            case 出貨: return DISTRIBUTE_MIN;
+            case 洗盤: return WASH_MIN;
+            default: return 0;
+        }
+    }
+
+    private int getMaxTicksForPhase(Phase p) {
+        switch (p) {
+            case 吸籌: return ACCUMULATE_MAX;
+            case 拉抬: return MARKUP_MAX;
+            case 出貨: return DISTRIBUTE_MAX;
+            case 洗盤: return WASH_MAX;
+            default: return Integer.MAX_VALUE;
+        }
+    }
+
+    public String getPhaseName() {
+        return phase.name();
+    }
+
+    public int getReplaceIntervalTicks() { return replaceIntervalTicks; }
+    public void setReplaceIntervalTicks(int v) { replaceIntervalTicks = Math.max(1, Math.min(200, v)); }
+    public int getTotalCanceledOrders() { return totalCanceledOrders; }
+    public int getTickCanceledOrders() { return tickCanceledOrders; }
+
+    // 手動干預
+    private boolean manualLock = false;
+    private Phase manualPhase = Phase.待機;
+
+    public void setManualPhase(String phaseName, boolean lock) {
+        try {
+            Phase p = Phase.valueOf(phaseName.toUpperCase());
+            this.manualPhase = p;
+            this.manualLock = lock;
+            if (lock) {
+                this.phase = p;
+                this.phaseTicks = 0;
+                LogicAudit.info("MAIN_FORCE_PHASE", "manual lock -> " + p.name());
+            }
+        } catch (Exception ignored) {}
+    }
 
     /**
      * 構造函數
@@ -144,27 +210,30 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double transactionAmount = price * volume;
 
         if ("buy".equals(type)) {
-            // 更新平均成本價
+            // 扣款並加股
+            account.decrementFunds(transactionAmount);
+            account.incrementStocks(volume);
+
+            // 更新平均成本
             double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
             averageCostPrice = totalInvestment / getAccumulatedStocks();
 
-            // 更新目標價
             calculateTargetPrice();
-
             System.out.println(String.format("【市價買入後更新】主力買入 %d 股，成交價 %.2f，更新後平均成本價 %.2f",
                     volume, price, averageCostPrice));
 
         } else if ("sell".equals(type)) {
-            // 若持股為零，重置平均成本價
+            // 扣股並加款
+            account.decrementStocks(volume);
+            account.incrementFunds(transactionAmount);
+
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
             }
-
             System.out.println(String.format("【市價賣出後更新】主力賣出 %d 股，成交價 %.2f，更新後持股 %d 股",
                     volume, price, getAccumulatedStocks()));
         }
 
-        // 更新界面上的標籤
         if (model != null) {
             model.updateLabels();
         } else {
@@ -210,7 +279,195 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 double actionProbability = random.nextDouble();
                 StringBuilder decisionLog = new StringBuilder();
 
-                // 1. 動量交易策略（追漲買入）
+                // ====== 主力階段轉移邏輯 ======
+                if (cooldownTicks > 0) {
+                    cooldownTicks--;
+                }
+                phaseTicks++;
+
+                // 若啟用手動鎖定，僅維持手動階段，不自動轉移
+                if (manualLock) {
+                    phase = manualPhase;
+                } else {
+
+                // 根據價格與均線關係、波動與風險因子決定階段
+                switch (phase) {
+            case 待機:
+                        if (priceDifferenceRatio < -0.03 && riskFactor < 0.7) {
+                            phase = Phase.吸籌; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "待機 -> 吸籌");
+                            decisionLog.append("【切換階段】待機 -> 吸籌\n");
+                        } else if (priceDifferenceRatio > 0.04 && getAccumulatedStocks() > 0) {
+                            phase = Phase.出貨; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "待機 -> 出貨");
+                            decisionLog.append("【切換階段】待機 -> 出貨\n");
+                        }
+                        break;
+                    case 吸籌:
+                        if (phaseTicks >= getMinTicksForPhase(Phase.吸籌)
+                                && getAccumulatedStocks() > 500 && recentTrend > 0.02) {
+                            phase = Phase.拉抬; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "吸籌 -> 拉抬");
+                            decisionLog.append("【切換階段】吸籌 -> 拉抬\n");
+                        } else if (phaseTicks > getMaxTicksForPhase(Phase.吸籌)) {
+                            phase = Phase.待機; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "吸籌 -> 待機(timeout)");
+                        }
+                        break;
+                    case 拉抬:
+                        if (phaseTicks >= getMinTicksForPhase(Phase.拉抬)
+                                && currentPrice > calculateTargetPrice() * 0.95) {
+                            phase = Phase.出貨; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "拉抬 -> 出貨");
+                            decisionLog.append("【切換階段】拉抬 -> 出貨\n");
+                        } else if (phaseTicks > getMaxTicksForPhase(Phase.拉抬)) {
+                            phase = Phase.待機; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "拉抬 -> 待機(timeout)");
+                        }
+                        break;
+                    case 出貨:
+                        if (phaseTicks >= getMinTicksForPhase(Phase.出貨)
+                                && getAccumulatedStocks() < 200) {
+                            phase = Phase.待機; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "出貨 -> 待機");
+                            decisionLog.append("【切換階段】出貨 -> 待機\n");
+                        } else if (recentTrend < -0.03 && phaseTicks >= 10) {
+                            phase = Phase.洗盤; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "出貨 -> 洗盤");
+                            decisionLog.append("【切換階段】出貨 -> 洗盤\n");
+                        }
+                        break;
+                    case 洗盤:
+                        if (phaseTicks >= getMinTicksForPhase(Phase.洗盤)
+                                && (phaseTicks > getMaxTicksForPhase(Phase.洗盤) || priceDifferenceRatio < -0.02)) {
+                            phase = Phase.吸籌; phaseTicks = 0;
+                            LogicAudit.info("MAIN_FORCE_PHASE", "洗盤 -> 吸籌");
+                            decisionLog.append("【切換階段】洗盤 -> 吸籌\n");
+                        }
+                        break;
+                }
+                }
+
+                // ====== 主力階段行為 ======
+                if (cooldownTicks == 0) {
+                    switch (phase) {
+                        case 吸籌: {
+                            int vol = Math.max(50, (int)(calculateValueBuyVolume() * 0.2));
+                            // 分層掛單：在現價下方多層吸籌
+                            int placed = 0;
+                            for (int i = 1; i <= 3; i++) {
+                                double px = computeBuyLimitPrice(currentPrice * (1 - i * 0.005), sma, rsi, volatility);
+                                Order o = Order.createLimitBuyOrder(px, Math.max(10, vol / 3), this);
+                                orderBook.submitBuyOrder(o, px);
+                                placed += o.getVolume();
+                                LogicAudit.info("MAIN_FORCE_ORDER", String.format("ACCUM buy %d @ %.4f", o.getVolume(), px));
+                            }
+                            // 定期撤換遠離現價的本方買單（保持靠近現價）
+                            try {
+                                if (phaseTicks % Math.max(1, replaceIntervalTicks) == 0) {
+                                    java.util.List<Order> buys = orderBook.getBuyOrders();
+                                    int maxCancel = Math.min(5, buys.size());
+                                    tickCanceledOrders = 0;
+                                    for (int i = buys.size() - 1; i >= 0 && maxCancel > 0; i--) {
+                                        Order bo = buys.get(i);
+                                        if (bo.getTrader() == this && bo.getPrice() < currentPrice * 0.98) {
+                                            if (orderBook.cancelOrder(bo.getId())) {
+                                                maxCancel--;
+                                                tickCanceledOrders++;
+                                                totalCanceledOrders++;
+                                                LogicAudit.info("MAIN_FORCE_CANCEL", String.format("buy id=%s px=%.4f", bo.getId(), bo.getPrice()));
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (Exception ignore) {}
+                            decisionLog.append(String.format("【ACCUMULATE】分層吸籌下單共 %d 股\n", placed));
+                            cooldownTicks = 2;
+                            break;
+                        }
+                        case 拉抬: {
+                            // 市價拉抬 + 撤掉掛在買一上方的賣單
+                            int vol = Math.max(50, calculateLiftVolume());
+                            拉抬操作(vol);
+                            decisionLog.append(String.format("【MARKUP】市價拉抬 %d 股\n", vol));
+                            // 撤掉靠近買一之上的賣單（減少上方阻力）
+                            try {
+                                if (!orderBook.getSellOrders().isEmpty()) {
+                                    // 找到最靠近現價的前幾筆賣單撤掉
+                                    int maxCancel = Math.min(3, orderBook.getSellOrders().size());
+                                    for (int i = 0; i < maxCancel; i++) {
+                                        Order so = orderBook.getSellOrders().get(i);
+                                        if (so != null && so.getPrice() <= currentPrice * 1.01) {
+                                            boolean ok = orderBook.cancelOrder(so.getId());
+                                            if (ok) {
+                                                decisionLog.append(String.format("【MARKUP】撤銷賣單ID=%s 價格=%.2f 量=%d\n", so.getId(), so.getPrice(), so.getVolume()));
+                                                LogicAudit.info("MAIN_FORCE_CANCEL", String.format("sell id=%s px=%.4f", so.getId(), so.getPrice()));
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch (Exception ignore) { }
+                            cooldownTicks = 1;
+                            break;
+                        }
+                        case 出貨: {
+                            // 分批出貨：在現價上方多層掛賣
+                            int hold = getAccumulatedStocks();
+                            if (hold > 0) {
+                                int chunk = Math.max(20, hold / 5);
+                                int placed = 0;
+                                for (int i = 1; i <= 3 && placed < hold; i++) {
+                                    double px = computeSellLimitPrice(currentPrice * (1 + i * 0.005), sma, rsi, volatility);
+                                    int size = Math.min(chunk, hold - placed);
+                                    Order o = Order.createLimitSellOrder(px, size, this);
+                                    orderBook.submitSellOrder(o, px);
+                                    placed += size;
+                                    LogicAudit.info("MAIN_FORCE_ORDER", String.format("DIST sell %d @ %.4f", size, px));
+                                }
+                                // 定期撤換遠離現價的本方賣單（保持靠近現價）
+                                try {
+                                    if (phaseTicks % Math.max(1, replaceIntervalTicks) == 0) {
+                                        java.util.List<Order> sells = orderBook.getSellOrders();
+                                        int maxCancel = Math.min(5, sells.size());
+                                        tickCanceledOrders = 0;
+                                        for (int i = sells.size() - 1; i >= 0 && maxCancel > 0; i--) {
+                                            Order so = sells.get(i);
+                                            if (so.getTrader() == this && so.getPrice() > currentPrice * 1.02) {
+                                                if (orderBook.cancelOrder(so.getId())) {
+                                                    maxCancel--;
+                                                    tickCanceledOrders++;
+                                                    totalCanceledOrders++;
+                                                    LogicAudit.info("MAIN_FORCE_CANCEL", String.format("sell id=%s px=%.4f", so.getId(), so.getPrice()));
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch (Exception ignore) {}
+                                decisionLog.append(String.format("【DISTRIBUTE】分層出貨下單共 %d 股\n", placed));
+                                cooldownTicks = 2;
+                            }
+                            break;
+                        }
+                        case 洗盤: {
+                            int wash = calculateWashVolume(volatility);
+                            洗盤操作(wash);
+                            decisionLog.append(String.format("【WASH】洗盤賣出 %d 股\n", wash));
+                            cooldownTicks = 2;
+                            break;
+                        }
+                        case 待機:
+                        default:
+                            // 保持少量偵測性單，避免完全沒有存在感
+                            if (random.nextDouble() < 0.1 && availableFunds > currentPrice * 50) {
+                                吸籌操作(30);
+                                decisionLog.append("【IDLE】偵測性吸籌 30 股\n");
+                                cooldownTicks = 3;
+                            }
+                            break;
+                    }
+                }
+
+                // 1. 動量交易策略（追漲買入） — 保留：與階段行為並存但影響較小
                 if (actionProbability < 0.1 && currentPrice > sma && volatility > 0.02) {
                     int momentumVolume = calculateMomentumVolume(volatility);
 

@@ -11,7 +11,6 @@ import java.util.LinkedList;
 import java.util.Queue;
 import javax.swing.JOptionPane;
 import java.text.DecimalFormat;
-import jdk.nashorn.internal.runtime.regexp.joni.Config;
 import StockMainAction.util.logging.MarketLogger;
 import java.io.PrintWriter;
 import java.io.StringWriter;
@@ -23,11 +22,13 @@ public class RetailInvestorAI implements Trader {
 
     private StockMarketSimulation simulation;
     private static final Random random = new Random();
+    private final Random randProfile; // 每位散戶專屬隨機源（由 traderID 決定）
     private double buyThreshold = 0.95; // 調低門檻以增加買入機會
     private double sellThreshold = 3.5; // 調低門檻以增加賣出機會
     private boolean ignoreThreshold = false;
     private Queue<Double> priceHistory; // 儲存最近價格數據，用於分析趨勢
     private String traderID; // 散戶的唯一標識符
+    private final double initialCash; // 新增：每位散戶的初始資金
     private UserAccount account;
     private OrderBook orderBook; // 亦可在 makeDecision 時指定
     private Stock stock;  // 股票實例
@@ -35,6 +36,13 @@ public class RetailInvestorAI implements Trader {
     private DecimalFormat decimalFormat = new DecimalFormat("#,##0.00"); // 格式化價格顯示
     private static final MarketLogger logger = MarketLogger.getInstance();
     private StockMarketModel model;
+
+    // 每位散戶的策略型別與風格參數
+    private enum StrategyProfile { MOMENTUM, CONTRARIAN, VALUE, SCALPER }
+    private final StrategyProfile profile;
+    private final double riskFactor;          // 0.5 ~ 1.8，放大/縮小下單量（略強化）
+    private final double marketOrderBias;     // 0.0 ~ 1.0，偏好市價單比率
+    private final double fokBias;             // 0.0 ~ 0.4，偏好 FOK 的少量概率（略強化）
 
     // 停損和止盈價格
     private Double stopLossPrice = null;
@@ -65,21 +73,71 @@ public class RetailInvestorAI implements Trader {
     public RetailInvestorAI(double initialCash, String traderID, StockMarketModel model) {
         this.traderID = traderID;
         this.model = model;
+        this.randProfile = new Random(traderID.hashCode());
+        this.initialCash = initialCash;
 
         // 初始化價格歷史
         this.priceHistory = new LinkedList<>();
 
         // 設置隨機的買入和賣出門檻
-        this.buyThreshold = 0.01 + random.nextDouble() * 0.05; // 1% 到 6%
-        this.sellThreshold = 0.03 + random.nextDouble() * 0.09; // 3% 到 12%
+        this.buyThreshold = 0.01 + randProfile.nextDouble() * 0.05; // 1% 到 6%
+        this.sellThreshold = 0.03 + randProfile.nextDouble() * 0.09; // 3% 到 12%
 
         // 隨機決定該散戶是否忽略門檻，30% 機率
-        this.ignoreThreshold = random.nextDouble() < 0.3;
+        this.ignoreThreshold = randProfile.nextDouble() < 0.3;
 
         // 初始化帳戶
         this.account = new UserAccount(initialCash, 0);
 
         logger.info("【散戶AI】建立成功，ID: " + traderID + "，初始資金: " + initialCash, "RETAIL_INVESTOR_INIT");
+
+        // === 指派策略型別與風格參數（每位散戶不同且可重現） ===
+        this.profile = pickProfileByHash(traderID);
+        // 風格：風險、下單偏好因策略不同而異
+        switch (this.profile) {
+            case MOMENTUM:
+                this.riskFactor = 1.35;
+                this.marketOrderBias = 0.75;
+                this.fokBias = 0.08;
+                // 偏重動能：SMA/RSI/波動權重
+                this.smaWeight = 0.30; this.rsiWeight = 0.30; this.volatilityWeight = 0.40;
+                this.maxOffsetRatio = 0.06;
+                break;
+            case CONTRARIAN:
+                this.riskFactor = 1.05;
+                this.marketOrderBias = 0.35;
+                this.fokBias = 0.12;
+                // 逆向：更信任均線/RSI
+                this.smaWeight = 0.55; this.rsiWeight = 0.35; this.volatilityWeight = 0.10;
+                this.maxOffsetRatio = 0.10;
+                break;
+            case VALUE:
+                this.riskFactor = 0.95;
+                this.marketOrderBias = 0.25;
+                this.fokBias = 0.18;
+                // 價值：更看重均線
+                this.smaWeight = 0.60; this.rsiWeight = 0.20; this.volatilityWeight = 0.20;
+                this.maxOffsetRatio = 0.12;
+                break;
+            case SCALPER:
+            default:
+                this.riskFactor = 1.6;
+                this.marketOrderBias = 0.85;
+                this.fokBias = 0.02;
+                // 剝頭皮：重視波動
+                this.smaWeight = 0.20; this.rsiWeight = 0.20; this.volatilityWeight = 0.60;
+                this.maxOffsetRatio = 0.04;
+                break;
+        }
+    }
+
+    private StrategyProfile pickProfileByHash(String id) {
+        int h = Math.abs(id.hashCode());
+        int mod = h % 100;
+        if (mod < 25) return StrategyProfile.MOMENTUM;
+        if (mod < 50) return StrategyProfile.CONTRARIAN;
+        if (mod < 75) return StrategyProfile.VALUE;
+        return StrategyProfile.SCALPER;
     }
 
     // ========== Trader 介面實作 ==========
@@ -115,15 +173,18 @@ public class RetailInvestorAI implements Trader {
 
     @Override
     public void updateAverageCostPrice(String type, int volume, double price) {
-        // 市價單更新，若需更進階的平均成本處理，可在此加上
         double transactionAmount = price * volume;
 
         if ("buy".equals(type)) {
-            logger.info(String.format("【散戶-市價買入更新】散戶 %s 買入 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
+            // 扣款並加股
+            account.decrementFunds(transactionAmount);
             account.incrementStocks(volume);
+            logger.info(String.format("【散戶-市價買入更新】散戶 %s 買入 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
         } else if ("sell".equals(type)) {
-            logger.info(String.format("【散戶-市價賣出更新】散戶 %s 賣出 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
+            // 扣股並加款
+            account.decrementStocks(volume);
             account.incrementFunds(transactionAmount);
+            logger.info(String.format("【散戶-市價賣出更新】散戶 %s 賣出 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
         }
 
         // 通過 model 更新 UI
@@ -203,6 +264,18 @@ public class RetailInvestorAI implements Trader {
                         "散戶%s 市場分析：SMA=%.2f, 價格差異比率=%.4f, 執行概率=%.4f, RSI=%.2f, 波動性=%.4f",
                         traderID, sma, priceDifferenceRatio, actionProbability, rsi, volatility
                 ), "RETAIL_INVESTOR_DECISION");
+
+                // 先嘗試依個人策略型別執行一次行為，若已下單則跳過通用邏輯
+                boolean acted = actByProfile(currentPrice, sma, rsi, volatility,
+                        actionProbability, availableFunds, decisionReason, stock);
+                if (acted) {
+                    if (model != null) model.sendInfoMessage(decisionReason.toString());
+                    logger.debug(String.format(
+                            "散戶%s 以個人策略完成決策：%s",
+                            traderID, decisionReason.toString()
+                    ), "RETAIL_INVESTOR_DECISION");
+                    return;
+                }
 
                 // 停損 / 止盈
                 logger.debug(String.format(
@@ -421,7 +494,7 @@ public class RetailInvestorAI implements Trader {
                                         "散戶%s 遵循門檻限價賣出成功：賣出 %d 股，價格=%.2f",
                                         traderID, actualSell, sellLimitPrice
                                 ), "RETAIL_INVESTOR_SELL");
-                                decisionReason.append("【成功】限價賣出 " + actualSell + " 股，價格 " + decimalFormat.format(sellLimitPrice) + "。\n");
+                                decisionReason.append("【成功】限價賣出 ").append(actualSell).append(" 股，價格 " + decimalFormat.format(sellLimitPrice) + "。\n");
                             } else {
                                 logger.warn(String.format(
                                         "散戶%s 遵循門檻限價賣出失敗：賣出量 %d，限價=%.2f",
@@ -1349,7 +1422,9 @@ public class RetailInvestorAI implements Trader {
     private int calculateTransactionVolume(double availableFunds, double currentPrice, double volatility) {
         // 波動性高 -> 減少頭寸
         double positionSize = (availableFunds / currentPrice) * (1 / (1 + volatility));
-        positionSize = positionSize * riskPerTrade;
+        // 略強化：提高基本投入比例，讓散戶更有對打能力
+        double base = riskPerTrade * 1.25; // 原 0.2 → 0.25
+        positionSize = positionSize * base * this.riskFactor;
         int result = (int) Math.max(1, positionSize);
 
         logger.debug(String.format(
@@ -1364,7 +1439,7 @@ public class RetailInvestorAI implements Trader {
      * 計算賣出量，根據波動性調整頭寸大小
      */
     private int calculateSellVolume(double priceDifferenceRatio, double volatility) {
-        double positionSize = getAccumulatedStocks() * (0.1 + 0.4 * random.nextDouble()) * (1 / (1 + volatility));
+        double positionSize = getAccumulatedStocks() * (0.15 + 0.45 * random.nextDouble()) * (1 / (1 + volatility));
         int result = (int) Math.max(1, positionSize);
 
         logger.debug(String.format(
@@ -1419,6 +1494,13 @@ public class RetailInvestorAI implements Trader {
     }
 
     /**
+     * 初始資金（用於個別損益計算）
+     */
+    public double getInitialCash() {
+        return initialCash;
+    }
+
+    /**
      * 買入門檻
      */
     public double getBuyThreshold() {
@@ -1437,5 +1519,120 @@ public class RetailInvestorAI implements Trader {
      */
     private int calculateMomentumVolume(double volatility) {
         return (int) (500 * volatility * (0.8 + random.nextDouble() * 0.4));
+    }
+
+    private boolean actByProfile(double currentPrice, double sma, double rsi, double volatility,
+                                 double actionProbability, double availableFunds,
+                                 StringBuilder decisionReason, Stock stock) {
+        try {
+            // 個人化下單量倍率
+            double riskAdj = Math.max(0.5, Math.min(this.riskFactor, 1.5));
+
+            switch (this.profile) {
+                case MOMENTUM: {
+                    // 趨勢向上且波動偏高 → 偏好市價追價小量買入
+                    if (sma > 0 && currentPrice > sma && volatility > 0.02 && actionProbability < 0.35) {
+                        int buyAmount = (int) Math.max(1, calculateTransactionVolume(availableFunds, currentPrice, volatility) * 0.5 * riskAdj);
+                        if (buyAmount > 0) {
+                            if (random.nextDouble() < marketOrderBias) {
+                                int done = 市價買入操作(buyAmount);
+                                if (done > 0) {
+                                    decisionReason.append("[MOMENTUM] 市價追漲 ").append(done).append(" 股\n");
+                                    setStopLossAndTakeProfit(currentPrice, volatility);
+                                    return true;
+                                }
+                            } else {
+                                double px = computeBuyLimitPrice(currentPrice, sma, rsi, volatility * 0.8);
+                                int done = 限價買入操作(buyAmount, px);
+                                if (done > 0) {
+                                    decisionReason.append("[MOMENTUM] 限價跟隨 ").append(done).append(" 股 @").append(px).append("\n");
+                                    setStopLossAndTakeProfit(currentPrice, volatility);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                case CONTRARIAN: {
+                    // 當前價顯著偏離 SMA 就反向操作
+                    if (sma > 0) {
+                        double diff = (currentPrice - sma) / sma;
+                        if (diff < -0.04 && availableFunds >= currentPrice && actionProbability < 0.5) {
+                            // 低於均線 → 逆向買入
+                            int buyAmount = (int) Math.max(1, calculateTransactionVolume(availableFunds, currentPrice, volatility) * 0.7 * riskAdj);
+                            double px = computeBuyLimitPrice(currentPrice, sma, rsi, volatility);
+                            int done = 限價買入操作(buyAmount, px);
+                            if (done > 0) {
+                                decisionReason.append("[CONTRARIAN] 逆向抄底 ").append(done).append(" 股 @").append(px).append("\n");
+                                setStopLossAndTakeProfit(currentPrice, volatility);
+                                return true;
+                            }
+                        } else if (diff > 0.06 && getAccumulatedStocks() > 0 && actionProbability < 0.5) {
+                            // 高於均線 → 逆向獲利了結
+                            int sellAmount = (int) Math.max(1, calculateSellVolume(diff, volatility) * 0.6 * riskAdj);
+                            double px = computeSellLimitPrice(currentPrice, sma, rsi, volatility);
+                            int done = 限價賣出操作(sellAmount, px);
+                            if (done > 0) {
+                                decisionReason.append("[CONTRARIAN] 逆向了結 ").append(done).append(" 股 @").append(px).append("\n");
+                                return true;
+                            }
+                        }
+                    }
+                    break;
+                }
+                case VALUE: {
+                    // 低估（價格低於 SMA 一定幅度）才分批買入，偏好多用 FOK 小筆成交
+                    if (sma > 0) {
+                        double diff = (currentPrice - sma) / sma;
+                        if (diff < -0.08 && actionProbability < 0.4) {
+                            int buyAmount = (int) Math.max(1, calculateTransactionVolume(availableFunds, currentPrice, volatility) * 0.4 * riskAdj);
+                            double px = computeBuyLimitPrice(currentPrice, sma, rsi, volatility * 1.2);
+                            if (random.nextDouble() < fokBias) {
+                                boolean ok = orderBook.submitFokBuyOrder(px, buyAmount, this);
+                                if (ok) {
+                                    decisionReason.append("[VALUE] FOK 價值買入 ").append(buyAmount).append(" 股 @").append(px).append("\n");
+                                    setStopLossAndTakeProfit(currentPrice, volatility);
+                                    return true;
+                                }
+                            } else {
+                                int done = 限價買入操作(buyAmount, px);
+                                if (done > 0) {
+                                    decisionReason.append("[VALUE] 限價價值買入 ").append(done).append(" 股 @").append(px).append("\n");
+                                    setStopLossAndTakeProfit(currentPrice, volatility);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+                case SCALPER: {
+                    // 高波動/微利快進快出：小量市價單
+                    if (volatility > 0.03) {
+                        if (actionProbability < 0.3 && availableFunds >= currentPrice) {
+                            int buyAmount = Math.max(1, (int) (5 * riskAdj));
+                            int done = 市價買入操作(buyAmount);
+                            if (done > 0) {
+                                decisionReason.append("[SCALPER] 市價快進 ").append(done).append(" 股\n");
+                                setStopLossAndTakeProfit(currentPrice, volatility);
+                                return true;
+                            }
+                        } else if (actionProbability > 0.7 && getAccumulatedStocks() > 0) {
+                            int sellAmount = Math.max(1, (int) (5 * riskAdj));
+                            int done = 市價賣出操作(sellAmount);
+                            if (done > 0) {
+                                decisionReason.append("[SCALPER] 市價快出 ").append(done).append(" 股\n");
+                                return true;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("actByProfile 異常：" + e.getMessage(), "RETAIL_INVESTOR_DECISION");
+        }
+        return false;
     }
 }

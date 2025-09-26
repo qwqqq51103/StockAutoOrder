@@ -7,6 +7,7 @@ public class UserAccount {
 
     private double availableFunds;
     private int stockInventory;
+    private int frozenStocks;
 
     /**
      * 構造函數
@@ -17,6 +18,7 @@ public class UserAccount {
     public UserAccount(double initialFunds, int initialStocks) {
         this.availableFunds = initialFunds;
         this.stockInventory = initialStocks; // 初始化可用股票餘額
+        this.frozenStocks = 0;
     }
 
     // 凍結資金
@@ -30,8 +32,12 @@ public class UserAccount {
 
     // 凍結股票
     public boolean freezeStocks(int quantity) {
+        if (quantity <= 0) {
+            return false;
+        }
         if (stockInventory >= quantity) {
-            stockInventory -= quantity;  // 扣除股票，視為凍結
+            stockInventory -= quantity;  // 從可用轉為凍結
+            frozenStocks += quantity;
             return true;
         }
         return false;
@@ -53,6 +59,13 @@ public class UserAccount {
      */
     public int getStockInventory() {
         return stockInventory;
+    }
+
+    /**
+     * 取得凍結中的股票數量（尚未成交或撤單）
+     */
+    public int getFrozenStocks() {
+        return frozenStocks;
     }
 
     /**
@@ -100,4 +113,32 @@ public class UserAccount {
     }
 
     // 其他方法，如解凍資金和股票等
+
+    /**
+     * 撤單時解凍股票：從凍結轉回可用
+     */
+    public void unfreezeStocks(int quantity) {
+        if (quantity <= 0) return;
+        if (quantity > frozenStocks) {
+            throw new IllegalArgumentException("凍結股票不足，無法解凍指定數量。");
+        }
+        frozenStocks -= quantity;
+        stockInventory += quantity;
+    }
+
+    /**
+     * 成交時消耗凍結股票；若凍結不足，餘額自可用庫存扣除（保險處理）。
+     */
+    public void consumeFrozenStocks(int quantity) {
+        if (quantity <= 0) return;
+        int useFrozen = Math.min(quantity, frozenStocks);
+        frozenStocks -= useFrozen;
+        int remain = quantity - useFrozen;
+        if (remain > 0) {
+            if (remain > stockInventory) {
+                throw new IllegalArgumentException("可用與凍結股票合計不足，無法消耗指定數量。");
+            }
+            stockInventory -= remain;
+        }
+    }
 }

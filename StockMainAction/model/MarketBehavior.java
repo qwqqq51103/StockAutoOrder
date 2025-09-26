@@ -9,6 +9,7 @@ import StockMainAction.model.user.UserAccount;
 import java.util.List;
 import java.util.Random;
 import StockMainAction.util.logging.MarketLogger;
+import StockMainAction.util.logging.LogicAudit;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
@@ -117,6 +118,9 @@ public class MarketBehavior implements Trader {
     public void marketFluctuation(Stock stock, OrderBook orderBook, double volatility, int recentVolume) {
         try {
             timeStep++;
+
+            LogicAudit.info("MARKET_BEHAVIOR", String.format("start t=%d price=%.4f vol=%.4f recentVol=%d",
+                    timeStep, stock.getPrice(), volatility, recentVolume));
 
             logger.debug(String.format(
                     "市場波動開始：時間步=%d, 當前價格=%.2f, 波動率=%.4f, 近期成交量=%d",
@@ -302,74 +306,102 @@ public class MarketBehavior implements Trader {
 
             // 只有在通過防抖檢查後才執行下單操作
             if (shouldPlaceOrder) {
-                if (sentimentScore >= bullishThreshold) {
-                    // -------- 看多：掛買單 --------
-                    double customBuyPrice = currentPrice * (1 + buyPriceOffsetRatio);
-                    customBuyPrice = orderBook.adjustPriceToUnit(customBuyPrice);
+                List<Order> bestBids = orderBook.getTopBuyOrders(1);
+                List<Order> bestAsks = orderBook.getTopSellOrders(1);
 
-                    logger.info(String.format(
-                            "市場情緒看多：分數=%.4f, 多頭閾值=%.4f, 準備掛買單, 價格=%.2f",
-                            sentimentScore, bullishThreshold, customBuyPrice
-                    ), "MARKET_BEHAVIOR_BUY");
+                double bestBid = bestBids.isEmpty() ? 0 : bestBids.get(0).getPrice();
+                double bestAsk = bestAsks.isEmpty() ? 0 : bestAsks.get(0).getPrice();
 
-                    // 檢查資金是否足夠
-                    double requiredFunds = customBuyPrice * orderVolume;
-                    if (account.getAvailableFunds() >= requiredFunds) {
-                        // 使用改進的下單方法
-                        Order buyOrder = Order.createLimitBuyOrder(customBuyPrice, orderVolume, this);
-                        orderBook.submitBuyOrder(buyOrder, customBuyPrice);
-
-                        // 記錄此次下單時間
-                        lastOrderTime = currentTime;
-
-                        logger.info(String.format(
-                                "市場波動 - 看多下單成功：掛買單 %d 股 @ %.2f, 預計資金=%.2f",
-                                orderVolume, customBuyPrice, requiredFunds
-                        ), "MARKET_BEHAVIOR_BUY");
-                    } else {
-                        logger.warn(String.format(
-                                "市場波動 - 看多下單失敗：資金不足, 需要=%.2f, 可用=%.2f",
-                                requiredFunds, account.getAvailableFunds()
-                        ), "MARKET_BEHAVIOR_BUY");
-                    }
-                } else if (sentimentScore <= bearishThreshold) {
-                    // -------- 看空：掛賣單 --------
-                    double customSellPrice = currentPrice * (1 + sellPriceOffsetRatio);
-                    customSellPrice = orderBook.adjustPriceToUnit(customSellPrice);
-
-                    logger.info(String.format(
-                            "市場情緒看空：分數=%.4f, 空頭閾值=%.4f, 準備掛賣單, 價格=%.2f",
-                            sentimentScore, bearishThreshold, customSellPrice
-                    ), "MARKET_BEHAVIOR_SELL");
-
-                    int availableStocks = account.getStockInventory();
-                    int sellVolume = Math.min(orderVolume, availableStocks);
-
-                    if (sellVolume > 0) {
-                        // 使用改進的下單方法
-                        Order sellOrder = Order.createLimitSellOrder(customSellPrice, sellVolume, this);
-                        orderBook.submitSellOrder(sellOrder, customSellPrice);
-
-                        // 記錄此次下單時間
-                        lastOrderTime = currentTime;
-
-                        logger.info(String.format(
-                                "市場波動 - 看空下單成功：掛賣單 %d 股 @ %.2f",
-                                sellVolume, customSellPrice
-                        ), "MARKET_BEHAVIOR_SELL");
-                    } else {
-                        logger.warn(String.format(
-                                "市場波動 - 看空下單失敗：持股不足, 需要=%d, 可用=%d",
-                                orderVolume, availableStocks
-                        ), "MARKET_BEHAVIOR_SELL");
-                    }
+                double mid;
+                if (bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk) {
+                    mid = (bestBid + bestAsk) / 2.0;
                 } else {
-                    // -------- 中性：不掛單或掛小量探盤 --------
-                    logger.debug(String.format(
-                            "市場情緒中性：分數=%.4f, 在多頭閾值%.4f和空頭閾值%.4f之間, 不掛單",
-                            sentimentScore, bullishThreshold, bearishThreshold
-                    ), "MARKET_BEHAVIOR");
+                    mid = currentPrice;
                 }
+
+                double spreadRatio = (bestBid > 0 && bestAsk > 0 && mid > 0)
+                        ? (bestAsk - bestBid) / mid : 0.01;
+
+                double makerOffset = Math.max(0.001, Math.min(0.02, 0.25 * spreadRatio + 0.3 * Math.abs(volatility)));
+
+                double rawBuyPrice = mid * (1 - makerOffset);
+                double rawSellPrice = mid * (1 + makerOffset);
+
+                double buyPrice = orderBook.adjustPriceToUnit(rawBuyPrice);
+                double sellPrice = orderBook.adjustPriceToUnit(rawSellPrice);
+
+                if (bestBid > 0) buyPrice = Math.min(buyPrice, bestBid);
+                if (bestAsk > 0) sellPrice = Math.max(sellPrice, bestAsk);
+
+                double buyBias = sentimentScore >= bullishThreshold ? 1.5 : (sentimentScore <= bearishThreshold ? 0.5 : 1.0);
+                double sellBias = sentimentScore <= bearishThreshold ? 1.5 : (sentimentScore >= bullishThreshold ? 0.5 : 1.0);
+
+                int maxBuyVolume = (int) Math.floor(account.getAvailableFunds() / Math.max(0.01, buyPrice));
+                int maxSellVolume = account.getStockInventory();
+
+                int baseVol = Math.max(100, (int) (orderVolume * 0.5));
+                int buyVolume = (int) Math.min(maxBuyVolume, Math.ceil(baseVol * buyBias));
+                int sellVolume = (int) Math.min(maxSellVolume, Math.ceil(baseVol * sellBias));
+
+                boolean placed = false;
+
+                if (buyVolume > 0 && buyPrice > 0) {
+                    Order buyOrder = Order.createLimitBuyOrder(buyPrice, buyVolume, this);
+                    orderBook.submitBuyOrder(buyOrder, buyPrice);
+                    placed = true;
+                    logger.info(String.format("做市掛買：%d 股 @ %.2f (mid=%.2f, spread=%.3f%%)",
+                            buyVolume, buyPrice, mid, spreadRatio * 100), "MARKET_BEHAVIOR_MM");
+                }
+
+                if (sellVolume > 0 && sellPrice > 0) {
+                    Order sellOrder = Order.createLimitSellOrder(sellPrice, sellVolume, this);
+                    orderBook.submitSellOrder(sellOrder, sellPrice);
+                    placed = true;
+                    logger.info(String.format("做市掛賣：%d 股 @ %.2f (mid=%.2f, spread=%.3f%%)",
+                            sellVolume, sellPrice, mid, spreadRatio * 100), "MARKET_BEHAVIOR_MM");
+                }
+
+                if (!placed) {
+                    logger.debug("做市：因資金/持股限制，本步未下單", "MARKET_BEHAVIOR_MM");
+                } else {
+                    lastOrderTime = currentTime;
+                }
+
+                // 做市撤單：移除遠離中間價的自家掛單，保持五檔緊跟報價
+                try {
+                    List<Order> myBuys = orderBook.getBuyOrdersByTraderType(getTraderType());
+                    List<Order> mySells = orderBook.getSellOrdersByTraderType(getTraderType());
+
+                    double replaceThreshold = makerOffset * 2.0 + 0.002; // 超出此比率則撤單重掛
+
+                    for (Order ob : myBuys) {
+                        if (ob != null && ob.getPrice() > 0 && mid > 0) {
+                            double diff = (mid - ob.getPrice()) / mid; // 買單價低於 mid 太多
+                            if (diff > replaceThreshold) {
+                                boolean ok = orderBook.cancelOrder(ob.getId());
+                                if (ok) {
+                                    LogicAudit.info("MM_CANCEL", String.format("buy id=%s px=%.4f mid=%.4f diff=%.4f",
+                                            ob.getId(), ob.getPrice(), mid, diff));
+                                    logger.debug(String.format("撤買單以貼近mid：%.2f -> mid=%.2f (diff=%.3f)", ob.getPrice(), mid, diff), "MARKET_BEHAVIOR_MM");
+                                }
+                            }
+                        }
+                    }
+
+                    for (Order os : mySells) {
+                        if (os != null && os.getPrice() > 0 && mid > 0) {
+                            double diff = (os.getPrice() - mid) / mid; // 賣單價高於 mid 太多
+                            if (diff > replaceThreshold) {
+                                boolean ok = orderBook.cancelOrder(os.getId());
+                                if (ok) {
+                                    LogicAudit.info("MM_CANCEL", String.format("sell id=%s px=%.4f mid=%.4f diff=%.4f",
+                                            os.getId(), os.getPrice(), mid, diff));
+                                    logger.debug(String.format("撤賣單以貼近mid：%.2f -> mid=%.2f (diff=%.3f)", os.getPrice(), mid, diff), "MARKET_BEHAVIOR_MM");
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignore) {}
             }
 
             // 更新長期平均價格
@@ -391,17 +423,34 @@ public class MarketBehavior implements Trader {
                     oldMarketTrend, marketTrend
             ), "MARKET_BEHAVIOR");
 
-            // 最後更新 Stock 的價格
-            double oldPrice = stock.getPrice();
-            stock.setPrice(newOrderPrice);
+            // 以「受限漂移」更新參考價格：模擬報價微動，避免大幅飄移
+            double lastPrice = stock.getPrice();
+            double targetPrice = newOrderPrice;
+
+            // 每步允許最大漂移（預設 0.2%），同時提供最小步長避免卡住
+            double maxDriftRatioPerStep = 0.002; // 0.2%
+            double minStep = 0.005;             // 最小 0.5 分（視 tick）
+            double maxStep = Math.max(minStep, lastPrice * maxDriftRatioPerStep);
+
+            double delta = targetPrice - lastPrice;
+            double clampedDelta = Math.max(-maxStep, Math.min(maxStep, delta));
+            double newPrice = lastPrice + clampedDelta;
+
+            // 寫回受限的新價格（屬於報價驅動的細微變動，而非成交）
+            double oldPrice = lastPrice;
+            stock.setPrice(newPrice);
 
             logger.info(String.format(
-                    "市場價格更新：舊價格=%.2f, 新價格=%.2f, 變動=%.2f%%",
-                    oldPrice, newOrderPrice, (newOrderPrice - oldPrice) / oldPrice * 100
+                    "市場報價微動：舊=%.3f -> 新=%.3f (Δ=%.3f, %.3f%%)",
+                    oldPrice, newPrice, newPrice - oldPrice,
+                    oldPrice > 0 ? (newPrice - oldPrice) / oldPrice * 100 : 0
             ), "MARKET_BEHAVIOR");
 
-            // 傳遞到 MarketAnalyzer
-            model.getMarketAnalyzer().addPrice(newOrderPrice);
+            LogicAudit.checkPriceJump("QUOTE_DRIFT", oldPrice, newPrice, 0.02);
+            LogicAudit.info("QUOTE_DRIFT", String.format("old=%.4f new=%.4f", oldPrice, newPrice));
+
+            // 推進價格序列供指標與策略判斷使用（非成交量驅動）
+            model.getMarketAnalyzer().addPrice(newPrice);
 
             logger.debug(String.format(
                     "市場波動結束：時間步=%d",

@@ -850,15 +850,22 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
         }
 
         try {
+            boolean isMkt = isTransactionMarketOrder(trans);
+
             // 成交類型判斷（基於實際成交數據）
             String transactionType = determineTransactionType(trans);
 
             // 發起方和對手方（基於實際成交）
-            String initiator = getTransactionInitiator(trans);
-            String counterparty = getTransactionCounterparty(trans);
+            String initiator = getTransactionInitiatorFixed(trans);
+            String counterparty = getTransactionCounterpartyFixed(trans);
 
-            // 成交相關計算
-            double fillRate = calculateActualFillRate(trans);
+            // 成交相關計算（市價單使用實際均價與實際量）
+            double price = isMkt ? trans.getAveragePrice() : trans.getPrice();
+            int actualVol = isMkt ? trans.getActualVolume() : trans.getVolume();
+            int requestedVol = isMkt ? (trans.getRequestedVolume() > 0 ? trans.getRequestedVolume() : actualVol) : trans.getVolume();
+
+            double amount = price * actualVol;
+            double fillRate = isMkt ? (requestedVol > 0 ? (double) actualVol / requestedVol * 100.0 : 100.0) : 100.0;
             String slippage = calculateActualSlippage(trans);
             String executionTime = getActualExecutionTime(trans);
             String remark = generateTransactionRemark(trans);
@@ -869,10 +876,10 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
                 dateFormat.format(new Date(trans.getTimestamp())),
                 initiator,
                 counterparty,
-                trans.getPrice(),
-                trans.getVolume(),
-                trans.getPrice() * trans.getVolume(), // 實際成交金額
-                trans.getVolume(), // 對於已成交記錄，請求量=成交量
+                price,
+                actualVol,
+                amount,
+                requestedVol,
                 fillRate,
                 slippage,
                 executionTime,
@@ -884,6 +891,42 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
                 "ERROR", "錯誤", "--", "錯誤", "錯誤",
                 0.0, 0, 0.0, 0, 0.0, "N/A", "N/A", "數據錯誤: " + e.getMessage()
             };
+        }
+    }
+
+    // 修正：對市價單使用 initiatingTrader / fillRecords 推導發起與對手
+    private String getTransactionInitiatorFixed(Transaction trans) {
+        try {
+            if (isTransactionMarketOrder(trans)) {
+                String t = trans.getInitiatingTraderType();
+                if (t != null && !t.isEmpty()) return getTraderDisplay(t);
+                return trans.isBuyerInitiated() ? "買方" : "賣方";
+            }
+            return getTransactionInitiator(trans);
+        } catch (Exception e) {
+            return "未知";
+        }
+    }
+
+    private String getTransactionCounterpartyFixed(Transaction trans) {
+        try {
+            if (isTransactionMarketOrder(trans)) {
+                List<Transaction.FillRecord> fills = trans.getFillRecords();
+                if (fills != null && !fills.isEmpty()) {
+                    String cp = fills.get(fills.size() - 1).getCounterpartyType();
+                    if (cp != null && !cp.isEmpty()) return getTraderDisplay(cp);
+                }
+                // 回退到買賣方另一側
+                if (trans.isBuyerInitiated() && trans.getSeller() != null) {
+                    return getTraderDisplay(trans.getSeller().getTraderType());
+                } else if (!trans.isBuyerInitiated() && trans.getBuyer() != null) {
+                    return getTraderDisplay(trans.getBuyer().getTraderType());
+                }
+                return "對手不明";
+            }
+            return getTransactionCounterparty(trans);
+        } catch (Exception e) {
+            return "未知";
         }
     }
 
