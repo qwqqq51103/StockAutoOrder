@@ -90,6 +90,14 @@ public class MainView extends JFrame {
     private XYSeries bollUSeries;
     private XYSeries bollMSeries;
     private XYSeries bollLSeries;
+    // 自適應效能控制與指標點數上限
+    private volatile long kOverlayLastRecomputeMs = 0L;
+    private volatile int kOverlayMinIntervalMs = 120; // 50~300ms 動態調整
+    private int indicatorMaxPoints = 600;
+    // 副軸（同一張 K 線圖上顯示 MACD/KDJ）
+    private NumberAxis macdAxis;
+    private NumberAxis kdjAxis;
+    private JComboBox<String> perfModeCombo;
 
     // 圖表數據
     private XYSeries priceSeries;
@@ -136,6 +144,8 @@ public class MainView extends JFrame {
     public MainView() {
         initializeChartData();
         initializeUI();
+        // 啟動自動效能偵測（3秒內估算最佳參數）
+        autoTunePerformance();
     }
 
     /**
@@ -205,7 +215,11 @@ public class MainView extends JFrame {
         cbEMA26 = new JCheckBox("EMA26", false);
         cbBOLL = new JCheckBox("BOLL", false);
         cbSwapColor = new JCheckBox("漲跌顏色互換", false);
-        ActionListener toggleIndicators = e -> refreshOverlayIndicators();
+        ActionListener toggleIndicators = e -> {
+            // 先重算（避免資料空或不同步），再刷新掛載
+            recomputeOverlayFromOHLC();
+            refreshOverlayIndicators();
+        };
         cbSMA5.addActionListener(toggleIndicators);
         cbSMA10.addActionListener(toggleIndicators);
         cbSMA20.addActionListener(toggleIndicators);
@@ -221,6 +235,13 @@ public class MainView extends JFrame {
         topBar.add(cbEMA26);
         topBar.add(cbBOLL);
         topBar.add(cbSwapColor);
+
+        // 效能模式（節能/一般/效能）
+        topBar.add(new JLabel("效能模式:"));
+        perfModeCombo = new JComboBox<>(new String[]{"節能","一般","效能"});
+        perfModeCombo.setSelectedIndex(1);
+        perfModeCombo.addActionListener(e -> applyPerfMode((String) perfModeCombo.getSelectedItem()));
+        topBar.add(perfModeCombo);
         mainPanel.add(topBar, BorderLayout.NORTH);
         tabbedPane.addTab("市場圖表", mainPanel);
 
@@ -298,24 +319,19 @@ public class MainView extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
         // 創建圖表面板
-        JPanel chartPanel = new JPanel(new GridLayout(2, 2));
+        // 放大 K 線圖，波動性與 RSI 改移到「技術指標」分頁
+        JPanel chartPanel = new JPanel(new GridLayout(1, 2));
 
         // 創建各個圖表面板
         ChartPanel priceChartPanel = new ChartPanel(priceChart);
-        ChartPanel volatilityChartPanel = new ChartPanel(volatilityChart);
-        ChartPanel rsiChartPanel = new ChartPanel(rsiChart);
         ChartPanel volumeChartPanel = new ChartPanel(volumeChart);
 
         // 設置圖表交互性
         setupChartInteraction(priceChartPanel, "股價");
-        setupChartInteraction(volatilityChartPanel, "波動性");
-        setupChartInteraction(rsiChartPanel, "RSI");
         setupChartInteraction(volumeChartPanel, "成交量");
 
         // 添加到圖表面板 - 只添加一次
         chartPanel.add(priceChartPanel);
-        chartPanel.add(volatilityChartPanel);
-        chartPanel.add(rsiChartPanel);
         chartPanel.add(volumeChartPanel);
 
         // 創建標籤面板
@@ -1744,12 +1760,16 @@ public class MainView extends JFrame {
         int[] opts = new int[]{-10,-30,1,5,10,30,60};
         currentKlineMinutes = opts[idx];
         // 切換 dataset 到對應集合
-        XYPlot candlePlot = candleChart.getXYPlot();
-        candlePlot.setDataset(0, minuteToCollection.get(currentKlineMinutes));
-        candlePlot.datasetChanged(null);
-        // 以當前 K 線序列重算覆蓋指標，確保時間座標完全對齊
-        recomputeOverlayFromOHLC();
-        refreshOverlayIndicators();
+        SwingUtilities.invokeLater(() -> {
+            try {
+                XYPlot candlePlot = candleChart.getXYPlot();
+                candlePlot.setDataset(0, minuteToCollection.get(currentKlineMinutes));
+                candlePlot.datasetChanged(null);
+                // 以當前 K 線序列重算覆蓋指標，確保時間座標完全對齊
+                recomputeOverlayFromOHLC();
+                refreshOverlayIndicators();
+            } catch (Exception ignore) {}
+        });
     }
 
     // 重新整理疊加指標的顯示與資料集配置
@@ -1832,6 +1852,46 @@ public class MainView extends JFrame {
                 candlePlot.setRenderer(datasetIndex, r);
             }
 
+            // 將 MACD 疊加到同一張 K 線圖（副軸 #1）
+            datasetIndex++;
+            XYSeriesCollection macdDs = new XYSeriesCollection();
+            macdDs.addSeries(macdLineSeries);
+            macdDs.addSeries(macdSignalSeries);
+            candlePlot.setDataset(datasetIndex, macdDs);
+            XYLineAndShapeRenderer macdR = new XYLineAndShapeRenderer(true, false);
+            macdR.setSeriesPaint(0, new Color(200, 80, 0));
+            macdR.setSeriesPaint(1, new Color(0, 180, 0));
+            candlePlot.setRenderer(datasetIndex, macdR);
+            if (macdAxis == null) {
+                macdAxis = new NumberAxis("MACD");
+                macdAxis.setAutoRangeIncludesZero(true);
+                macdAxis.setLabelPaint(new Color(120,120,120));
+                macdAxis.setTickLabelPaint(new Color(120,120,120));
+                candlePlot.setRangeAxis(1, macdAxis);
+            }
+            candlePlot.mapDatasetToRangeAxis(datasetIndex, 1);
+
+            // 將 KDJ 疊加到同一張 K 線圖（副軸 #2，0-100）
+            datasetIndex++;
+            XYSeriesCollection kdjDs = new XYSeriesCollection();
+            kdjDs.addSeries(kSeries);
+            kdjDs.addSeries(dSeries);
+            kdjDs.addSeries(jSeries);
+            candlePlot.setDataset(datasetIndex, kdjDs);
+            XYLineAndShapeRenderer kdjR = new XYLineAndShapeRenderer(true, false);
+            kdjR.setSeriesPaint(0, new Color(0, 120, 255));
+            kdjR.setSeriesPaint(1, new Color(255, 0, 120));
+            kdjR.setSeriesPaint(2, new Color(120, 120, 0));
+            candlePlot.setRenderer(datasetIndex, kdjR);
+            if (kdjAxis == null) {
+                kdjAxis = new NumberAxis("KDJ");
+                kdjAxis.setRange(0, 100);
+                kdjAxis.setLabelPaint(new Color(80,80,80));
+                kdjAxis.setTickLabelPaint(new Color(80,80,80));
+                candlePlot.setRangeAxis(2, kdjAxis);
+            }
+            candlePlot.mapDatasetToRangeAxis(datasetIndex, 2);
+
             candlePlot.datasetChanged(null);
         } catch (Exception ignore) {}
     }
@@ -1842,15 +1902,21 @@ public class MainView extends JFrame {
             OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
             if (series == null) return;
 
-            // 先清空既有資料
-            sma5Series.clear();
-            sma10Series.clear();
-            sma20Series.clear();
-            ema12Series.clear();
-            ema26Series.clear();
-            bollUSeries.clear();
-            bollMSeries.clear();
-            bollLSeries.clear();
+            // 先清空既有資料（避免巨大資料導致重繪卡頓）
+            if (sma5Series.getItemCount() > 0) sma5Series.clear();
+            if (sma10Series.getItemCount() > 0) sma10Series.clear();
+            if (sma20Series.getItemCount() > 0) sma20Series.clear();
+            if (ema12Series.getItemCount() > 0) ema12Series.clear();
+            if (ema26Series.getItemCount() > 0) ema26Series.clear();
+            if (bollUSeries.getItemCount() > 0) bollUSeries.clear();
+            if (bollMSeries.getItemCount() > 0) bollMSeries.clear();
+            if (bollLSeries.getItemCount() > 0) bollLSeries.clear();
+            if (macdLineSeries != null && macdLineSeries.getItemCount() > 0) macdLineSeries.clear();
+            if (macdSignalSeries != null && macdSignalSeries.getItemCount() > 0) macdSignalSeries.clear();
+            if (macdHistogramSeries != null && macdHistogramSeries.getItemCount() > 0) macdHistogramSeries.clear();
+            if (kSeries != null && kSeries.getItemCount() > 0) kSeries.clear();
+            if (dSeries != null && dSeries.getItemCount() > 0) dSeries.clear();
+            if (jSeries != null && jSeries.getItemCount() > 0) jSeries.clear();
 
             int n = series.getItemCount();
             if (n == 0) return;
@@ -1866,7 +1932,7 @@ public class MainView extends JFrame {
                 times.add(t);
             }
 
-            // 工具：移動平均
+            // 工具：移動平均（避免觸發事件：先暫停通知）
             java.util.function.BiConsumer<Integer, org.jfree.data.xy.XYSeries> smaFill = (period, out) -> {
                 if (n < period) return;
                 double sum = 0;
@@ -1917,15 +1983,157 @@ public class MainView extends JFrame {
                 }
             };
 
-            // 實際填入
-            smaFill.accept(5, sma5Series);
-            smaFill.accept(10, sma10Series);
-            smaFill.accept(20, sma20Series);
-            emaFill.accept(12, ema12Series);
-            emaFill.accept(26, ema26Series);
-            bollFill.accept(20);
+            // ===== 準備 MACD 與 KDJ 的數據（以 K 線 close 與高低計算） =====
+            final int macdShort = 12, macdLong = 26, macdSignal = 9;
+            final int kdjN = 9, kdjK = 3, kdjD = 3;
+
+            // 預先計算 MACD 所需 EMA
+            double[] emaShort = new double[n];
+            double[] emaLong = new double[n];
+            double multShort = 2.0 / (macdShort + 1);
+            double multLong = 2.0 / (macdLong + 1);
+            // 初始化為首點
+            emaShort[0] = closes.get(0);
+            emaLong[0] = closes.get(0);
+            for (int i = 1; i < n; i++) {
+                double c = closes.get(i);
+                emaShort[i] = (c - emaShort[i-1]) * multShort + emaShort[i-1];
+                emaLong[i]  = (c - emaLong[i-1])  * multLong  + emaLong[i-1];
+            }
+            double[] macdLine = new double[n];
+            for (int i = 0; i < n; i++) macdLine[i] = emaShort[i] - emaLong[i];
+            // 訊號線 EMA
+            double[] macdSignalArr = new double[n];
+            double multSig = 2.0 / (macdSignal + 1);
+            macdSignalArr[0] = macdLine[0];
+            for (int i = 1; i < n; i++) macdSignalArr[i] = (macdLine[i] - macdSignalArr[i-1]) * multSig + macdSignalArr[i-1];
+            double[] macdHist = new double[n];
+            for (int i = 0; i < n; i++) macdHist[i] = macdLine[i] - macdSignalArr[i];
+
+            // KDJ：計算每點 n 期最高/最低與 RSV，平滑 K、D
+            double[] rsvArr = new double[n];
+            for (int i = 0; i < n; i++) {
+                int start = Math.max(0, i - kdjN + 1);
+                double hh = Double.NEGATIVE_INFINITY, ll = Double.POSITIVE_INFINITY;
+                for (int j = start; j <= i; j++) {
+                    org.jfree.data.time.ohlc.OHLCItem it = (org.jfree.data.time.ohlc.OHLCItem) series.getDataItem(j);
+                    hh = Math.max(hh, it.getHighValue());
+                    ll = Math.min(ll, it.getLowValue());
+                }
+                double c = closes.get(i);
+                if (hh == ll) rsvArr[i] = 50.0; else rsvArr[i] = (c - ll) / (hh - ll) * 100.0;
+            }
+            double[] kArr = new double[n];
+            double[] dArr = new double[n];
+            double[] jArr = new double[n];
+            kArr[0] = 50.0; dArr[0] = 50.0; jArr[0] = 50.0;
+            for (int i = 1; i < n; i++) {
+                kArr[i] = (kArr[i-1] * (kdjK - 1) + rsvArr[i]) / kdjK;
+                dArr[i] = (dArr[i-1] * (kdjD - 1) + kArr[i]) / kdjD;
+                jArr[i] = 3 * kArr[i] - 2 * dArr[i];
+                if (jArr[i] < 0) jArr[i] = 0; if (jArr[i] > 100) jArr[i] = 100;
+            }
+
+            // ===== 自適應：限制重算頻率，避免在較慢機器卡頓 =====
+            long nowTick = System.currentTimeMillis();
+            if (nowTick - kOverlayLastRecomputeMs < kOverlayMinIntervalMs) return;
+            kOverlayLastRecomputeMs = nowTick;
+
+            // 實際填入（在 EDT 中執行，避免 UI 卡住）
+            SwingUtilities.invokeLater(() -> {
+                try {
+                    smaFill.accept(5, sma5Series);
+                    smaFill.accept(10, sma10Series);
+                    smaFill.accept(20, sma20Series);
+                    emaFill.accept(12, ema12Series);
+                    emaFill.accept(26, ema26Series);
+                    bollFill.accept(20);
+                    // MACD/KDJ 對齊 K 線 period（時間座標取 K 線時刻）
+                    for (int i = 0; i < n; i++) {
+                        double x = times.get(i).doubleValue();
+                        macdLineSeries.add(x, macdLine[i]);
+                        macdSignalSeries.add(x, macdSignalArr[i]);
+                        macdHistogramSeries.add(x, macdHist[i]);
+                        kSeries.add(x, kArr[i]);
+                        dSeries.add(x, dArr[i]);
+                        jSeries.add(x, jArr[i]);
+                    }
+
+                    // 控制最大點數，避免資料無上限導致重繪卡頓
+                    limitSeriesDataPoints(sma5Series, indicatorMaxPoints);
+                    limitSeriesDataPoints(sma10Series, indicatorMaxPoints);
+                    limitSeriesDataPoints(sma20Series, indicatorMaxPoints);
+                    limitSeriesDataPoints(ema12Series, indicatorMaxPoints);
+                    limitSeriesDataPoints(ema26Series, indicatorMaxPoints);
+                    limitSeriesDataPoints(bollUSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(bollMSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(bollLSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(macdLineSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(macdSignalSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(macdHistogramSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(kSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(dSeries, indicatorMaxPoints);
+                    limitSeriesDataPoints(jSeries, indicatorMaxPoints);
+                } catch (Exception ignore) {}
+            });
 
         } catch (Exception ignore) {}
+    }
+
+    // 根據模式套用自適應參數
+    private void applyPerfMode(String mode) {
+        if (mode == null) return;
+        switch (mode) {
+            case "節能":
+                kOverlayMinIntervalMs = 220;
+                indicatorMaxPoints = 300;
+                break;
+            case "效能":
+                kOverlayMinIntervalMs = 80;
+                indicatorMaxPoints = 800;
+                break;
+            default: // 一般
+                kOverlayMinIntervalMs = 120;
+                indicatorMaxPoints = 600;
+        }
+    }
+
+    // 啟動後前幾秒自動偵測重算耗時並調整參數
+    private void autoTunePerformance() {
+        new Thread(() -> {
+            try {
+                long start = System.currentTimeMillis();
+                int samples = 0;
+                long sum = 0;
+                while (System.currentTimeMillis() - start < 3000) { // 3 秒內抽樣
+                    long t0 = System.nanoTime();
+                    // 嘗試只做一次輕量重算（不進 EDT 寫入）
+                    try { recomputeOverlayFromOHLC(); } catch (Exception ignore) {}
+                    long t1 = System.nanoTime();
+                    long costMs = (t1 - t0) / 1_000_000;
+                    sum += Math.max(1, costMs);
+                    samples++;
+                    Thread.sleep(60);
+                }
+                if (samples > 0) {
+                    long avg = sum / samples;
+                    // 根據平均耗時設定 min interval 和點數上限
+                    if (avg <= 12) { // 很快
+                        kOverlayMinIntervalMs = 80;
+                        indicatorMaxPoints = 900;
+                    } else if (avg <= 25) {
+                        kOverlayMinIntervalMs = 120;
+                        indicatorMaxPoints = 700;
+                    } else if (avg <= 40) {
+                        kOverlayMinIntervalMs = 160;
+                        indicatorMaxPoints = 600;
+                    } else {
+                        kOverlayMinIntervalMs = 220;
+                        indicatorMaxPoints = 400;
+                    }
+                }
+            } catch (InterruptedException ignore) {}
+        }, "AutoTune-Indicators").start();
     }
 
     // 交換上漲/下跌顏色，並套用到成交量與 K 線
