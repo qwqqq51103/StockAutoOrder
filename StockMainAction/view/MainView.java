@@ -1874,7 +1874,7 @@ public class MainView extends JFrame {
                     sum += closes.get(i);
                     if (i >= period) sum -= closes.get(i - period);
                     if (i >= period - 1) {
-                        out.add(times.get(i), sum / period);
+                        out.add(times.get(i).doubleValue(), sum / period);
                     }
                 }
             };
@@ -1890,7 +1890,7 @@ public class MainView extends JFrame {
                     } else {
                         ema = (closes.get(i) - ema) * k + ema;
                     }
-                    if (i >= period - 1) out.add(times.get(i), ema);
+                    if (i >= period - 1) out.add(times.get(i).doubleValue(), ema);
                 }
             };
 
@@ -1910,9 +1910,9 @@ public class MainView extends JFrame {
                         double var = (sumSq / period) - (mean * mean);
                         if (var < 0) var = 0;
                         double sd = Math.sqrt(var);
-                        bollMSeries.add(times.get(i), mean);
-                        bollUSeries.add(times.get(i), mean + 2 * sd);
-                        bollLSeries.add(times.get(i), mean - 2 * sd);
+                        bollMSeries.add(times.get(i).doubleValue(), mean);
+                        bollUSeries.add(times.get(i).doubleValue(), mean + 2 * sd);
+                        bollLSeries.add(times.get(i).doubleValue(), mean - 2 * sd);
                     }
                 }
             };
