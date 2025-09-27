@@ -90,6 +90,9 @@ public class MainView extends JFrame {
     private XYSeries bollUSeries;
     private XYSeries bollMSeries;
     private XYSeries bollLSeries;
+    // 主圖成交量覆蓋
+    private XYSeries volumeOverlaySeries;
+    private NumberAxis volumeAxis;
     // 自適應效能控制與指標點數上限
     private volatile long kOverlayLastRecomputeMs = 0L;
     private volatile int kOverlayMinIntervalMs = 120; // 50~300ms 動態調整
@@ -319,20 +322,22 @@ public class MainView extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
         // 創建圖表面板
-        // 放大 K 線圖，波動性與 RSI 改移到「技術指標」分頁
-        JPanel chartPanel = new JPanel(new GridLayout(1, 2));
+        // 放大 K 線圖，MACD/KDJ 改為子圖並存在主分頁下方；波動性與 RSI 改移到「技術指標」分頁
+        JPanel chartPanel = new JPanel(new BorderLayout());
 
         // 創建各個圖表面板
         ChartPanel priceChartPanel = new ChartPanel(priceChart);
         ChartPanel volumeChartPanel = new ChartPanel(volumeChart);
+        ChartPanel macdPanel = new ChartPanel(macdChart);
+        ChartPanel kdjPanel = new ChartPanel(kdjChart);
 
         // 設置圖表交互性
         setupChartInteraction(priceChartPanel, "股價");
         setupChartInteraction(volumeChartPanel, "成交量");
 
         // 添加到圖表面板 - 只添加一次
-        chartPanel.add(priceChartPanel);
-        chartPanel.add(volumeChartPanel);
+        // 單張主圖：只顯示 K 線圖面板
+        chartPanel.add(priceChartPanel, BorderLayout.CENTER);
 
         // 創建標籤面板
         JPanel labelPanel = new JPanel();
@@ -1414,6 +1419,7 @@ public class MainView extends JFrame {
         bollUSeries = new XYSeries("BOLL_U");
         bollMSeries = new XYSeries("BOLL_M");
         bollLSeries = new XYSeries("BOLL_L");
+        volumeOverlaySeries = new XYSeries("VOL");
 
         // Dataset 索引：2..N 由 refreshOverlayIndicators 動態填入
 
@@ -1428,6 +1434,9 @@ public class MainView extends JFrame {
 
         // 與既有流程相容：把價格圖參考指向 K 線圖
         priceChart = candleChart;
+
+        // 初始就填一次覆蓋資料，避免啟動時只有 K 線
+        try { recomputeOverlayFromOHLC(); refreshOverlayIndicators(); } catch (Exception ignore) {}
 
         // 與既有流程相容：把價格圖參考指向 K 線圖
         // 保持 priceChart 指向折線圖
@@ -1763,11 +1772,12 @@ public class MainView extends JFrame {
         SwingUtilities.invokeLater(() -> {
             try {
                 XYPlot candlePlot = candleChart.getXYPlot();
+                candlePlot.setNotify(false);
                 candlePlot.setDataset(0, minuteToCollection.get(currentKlineMinutes));
-                candlePlot.datasetChanged(null);
                 // 以當前 K 線序列重算覆蓋指標，確保時間座標完全對齊
                 recomputeOverlayFromOHLC();
                 refreshOverlayIndicators();
+                candlePlot.setNotify(true);
             } catch (Exception ignore) {}
         });
     }
@@ -1776,123 +1786,109 @@ public class MainView extends JFrame {
     private void refreshOverlayIndicators() {
         try {
             XYPlot candlePlot = candleChart.getXYPlot();
+            candlePlot.setNotify(false);
 
-            int datasetIndex = 1; // 0 是 K 線，1 之後留給疊加
+            candlePlot.setNotify(false);
 
-            // 先清空 1 之後的 dataset（保留 index 1 的 SMA 主線）
-            while (candlePlot.getDatasetCount() > 1) {
-                candlePlot.setDataset(candlePlot.getDatasetCount() - 1, null);
-            }
-
-            // 重新掛上 SMA 主線（保持 index 1）
+            // 0:K線，1:SMA主線
             XYSeriesCollection smaDs = new XYSeriesCollection();
             smaDs.addSeries(smaSeries);
-            candlePlot.setDataset(datasetIndex, smaDs);
+            candlePlot.setDataset(1, smaDs);
             XYLineAndShapeRenderer smaR = new XYLineAndShapeRenderer(true, false);
             smaR.setSeriesPaint(0, new Color(204, 0, 0));
-            candlePlot.setRenderer(datasetIndex, smaR);
+            candlePlot.setRenderer(1, smaR);
 
             // 勾選額外 SMA
             if (cbSMA5.isSelected()) {
-                datasetIndex++;
                 XYSeriesCollection ds = new XYSeriesCollection();
                 ds.addSeries(sma5Series);
-                candlePlot.setDataset(datasetIndex, ds);
+                candlePlot.setDataset(2, ds);
                 XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
                 r.setSeriesPaint(0, new Color(255, 165, 0));
-                candlePlot.setRenderer(datasetIndex, r);
+                candlePlot.setRenderer(2, r);
             }
             if (cbSMA10.isSelected()) {
-                datasetIndex++;
                 XYSeriesCollection ds = new XYSeriesCollection();
                 ds.addSeries(sma10Series);
-                candlePlot.setDataset(datasetIndex, ds);
+                candlePlot.setDataset(3, ds);
                 XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
                 r.setSeriesPaint(0, new Color(0, 128, 255));
-                candlePlot.setRenderer(datasetIndex, r);
+                candlePlot.setRenderer(3, r);
             }
             if (cbSMA20.isSelected()) {
-                datasetIndex++;
                 XYSeriesCollection ds = new XYSeriesCollection();
                 ds.addSeries(sma20Series);
-                candlePlot.setDataset(datasetIndex, ds);
+                candlePlot.setDataset(4, ds);
                 XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
                 r.setSeriesPaint(0, new Color(128, 0, 128));
-                candlePlot.setRenderer(datasetIndex, r);
+                candlePlot.setRenderer(4, r);
             }
             if (cbEMA12.isSelected()) {
-                datasetIndex++;
                 XYSeriesCollection ds = new XYSeriesCollection();
                 ds.addSeries(ema12Series);
-                candlePlot.setDataset(datasetIndex, ds);
+                candlePlot.setDataset(5, ds);
                 XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
                 r.setSeriesPaint(0, new Color(0, 180, 180));
-                candlePlot.setRenderer(datasetIndex, r);
+                candlePlot.setRenderer(5, r);
             }
             if (cbEMA26.isSelected()) {
-                datasetIndex++;
                 XYSeriesCollection ds = new XYSeriesCollection();
                 ds.addSeries(ema26Series);
-                candlePlot.setDataset(datasetIndex, ds);
+                candlePlot.setDataset(6, ds);
                 XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
                 r.setSeriesPaint(0, new Color(180, 120, 0));
-                candlePlot.setRenderer(datasetIndex, r);
+                candlePlot.setRenderer(6, r);
             }
             if (cbBOLL.isSelected()) {
-                datasetIndex++;
                 XYSeriesCollection ds = new XYSeriesCollection();
                 ds.addSeries(bollUSeries);
                 ds.addSeries(bollMSeries);
                 ds.addSeries(bollLSeries);
-                candlePlot.setDataset(datasetIndex, ds);
+                candlePlot.setDataset(7, ds);
                 XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
                 r.setSeriesPaint(0, Color.GRAY);
                 r.setSeriesPaint(1, Color.DARK_GRAY);
                 r.setSeriesPaint(2, Color.GRAY);
-                candlePlot.setRenderer(datasetIndex, r);
+                candlePlot.setRenderer(7, r);
             }
 
-            // 將 MACD 疊加到同一張 K 線圖（副軸 #1）
-            datasetIndex++;
+            // 成交量覆蓋（副軸 #1）
+            XYSeriesCollection volDs = new XYSeriesCollection();
+            volDs.addSeries(volumeOverlaySeries);
+            candlePlot.setDataset(8, volDs);
+            XYBarRenderer volR = new XYBarRenderer(0.8);
+            volR.setShadowVisible(false);
+            volR.setBarPainter(new org.jfree.chart.renderer.xy.StandardXYBarPainter());
+            volR.setSeriesPaint(0, new Color(120,120,180,140));
+            candlePlot.setRenderer(8, volR);
+            if (volumeAxis == null) {
+                volumeAxis = new NumberAxis("VOL");
+                volumeAxis.setAutoRangeIncludesZero(true);
+                volumeAxis.setLabelPaint(new Color(100,100,140));
+                volumeAxis.setTickLabelPaint(new Color(100,100,140));
+                candlePlot.setRangeAxis(1, volumeAxis);
+            }
+            candlePlot.mapDatasetToRangeAxis(8, 1);
+
+            // MACD 疊加（副軸 #2）
             XYSeriesCollection macdDs = new XYSeriesCollection();
             macdDs.addSeries(macdLineSeries);
             macdDs.addSeries(macdSignalSeries);
-            candlePlot.setDataset(datasetIndex, macdDs);
+            candlePlot.setDataset(9, macdDs);
             XYLineAndShapeRenderer macdR = new XYLineAndShapeRenderer(true, false);
             macdR.setSeriesPaint(0, new Color(200, 80, 0));
             macdR.setSeriesPaint(1, new Color(0, 180, 0));
-            candlePlot.setRenderer(datasetIndex, macdR);
+            candlePlot.setRenderer(9, macdR);
             if (macdAxis == null) {
                 macdAxis = new NumberAxis("MACD");
                 macdAxis.setAutoRangeIncludesZero(true);
                 macdAxis.setLabelPaint(new Color(120,120,120));
                 macdAxis.setTickLabelPaint(new Color(120,120,120));
-                candlePlot.setRangeAxis(1, macdAxis);
+                candlePlot.setRangeAxis(2, macdAxis);
             }
-            candlePlot.mapDatasetToRangeAxis(datasetIndex, 1);
+            candlePlot.mapDatasetToRangeAxis(9, 2);
 
-            // 將 KDJ 疊加到同一張 K 線圖（副軸 #2，0-100）
-            datasetIndex++;
-            XYSeriesCollection kdjDs = new XYSeriesCollection();
-            kdjDs.addSeries(kSeries);
-            kdjDs.addSeries(dSeries);
-            kdjDs.addSeries(jSeries);
-            candlePlot.setDataset(datasetIndex, kdjDs);
-            XYLineAndShapeRenderer kdjR = new XYLineAndShapeRenderer(true, false);
-            kdjR.setSeriesPaint(0, new Color(0, 120, 255));
-            kdjR.setSeriesPaint(1, new Color(255, 0, 120));
-            kdjR.setSeriesPaint(2, new Color(120, 120, 0));
-            candlePlot.setRenderer(datasetIndex, kdjR);
-            if (kdjAxis == null) {
-                kdjAxis = new NumberAxis("KDJ");
-                kdjAxis.setRange(0, 100);
-                kdjAxis.setLabelPaint(new Color(80,80,80));
-                kdjAxis.setTickLabelPaint(new Color(80,80,80));
-                candlePlot.setRangeAxis(2, kdjAxis);
-            }
-            candlePlot.mapDatasetToRangeAxis(datasetIndex, 2);
-
-            candlePlot.datasetChanged(null);
+            candlePlot.setNotify(true);
         } catch (Exception ignore) {}
     }
 
@@ -1903,6 +1899,7 @@ public class MainView extends JFrame {
             if (series == null) return;
 
             // 先清空既有資料（避免巨大資料導致重繪卡頓）
+            toggleOverlayNotify(false);
             if (sma5Series.getItemCount() > 0) sma5Series.clear();
             if (sma10Series.getItemCount() > 0) sma10Series.clear();
             if (sma20Series.getItemCount() > 0) sma20Series.clear();
@@ -1930,6 +1927,28 @@ public class MainView extends JFrame {
                 closes.add(it.getCloseValue());
                 long t = it.getPeriod().getMiddleMillisecond(cal);
                 times.add(t);
+            }
+
+            // 同步把 Volume 聚合映射為 overlaySeries（用量表達）
+            volumeOverlaySeries.clear();
+            @SuppressWarnings("unchecked")
+            java.util.List<Comparable> cols = volumeDataset.getColumnKeys();
+            for (int i = 0; i < n; i++) {
+                double x = times.get(i).doubleValue();
+                // 量資料以類別柱狀儲存，這裡用近似：若同時間鍵存在則取值，否則為 0
+                double vol = 0;
+                try {
+                    String keySec = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(times.get(i)));
+                    String keyMin = new java.text.SimpleDateFormat("HH:mm").format(new java.util.Date(times.get(i)));
+                    if (cols.contains(keySec)) {
+                        Number v = volumeDataset.getValue("Volume", keySec);
+                        vol = v != null ? v.doubleValue() : 0;
+                    } else if (cols.contains(keyMin)) {
+                        Number v = volumeDataset.getValue("Volume", keyMin);
+                        vol = v != null ? v.doubleValue() : 0;
+                    }
+                } catch (Exception ignore) {}
+                volumeOverlaySeries.add(x, vol);
             }
 
             // 工具：移動平均（避免觸發事件：先暫停通知）
@@ -2075,8 +2094,25 @@ public class MainView extends JFrame {
                     limitSeriesDataPoints(dSeries, indicatorMaxPoints);
                     limitSeriesDataPoints(jSeries, indicatorMaxPoints);
                 } catch (Exception ignore) {}
+                finally { toggleOverlayNotify(true); }
             });
 
+        } catch (Exception ignore) {}
+    }
+
+    // 暫停/恢復所有覆蓋序列的通知，減少重繪閃爍
+    private void toggleOverlayNotify(boolean on) {
+        try {
+            smaSeries.setNotify(on);
+            sma5Series.setNotify(on); sma10Series.setNotify(on); sma20Series.setNotify(on);
+            ema12Series.setNotify(on); ema26Series.setNotify(on);
+            bollUSeries.setNotify(on); bollMSeries.setNotify(on); bollLSeries.setNotify(on);
+            volumeOverlaySeries.setNotify(on);
+            macdLineSeries.setNotify(on); macdSignalSeries.setNotify(on);
+            if (macdHistogramSeries != null) macdHistogramSeries.setNotify(on);
+            if (kSeries != null) kSeries.setNotify(on);
+            if (dSeries != null) dSeries.setNotify(on);
+            if (jSeries != null) jSeries.setNotify(on);
         } catch (Exception ignore) {}
     }
 
@@ -2219,6 +2255,19 @@ public class MainView extends JFrame {
                 int newValue = (existingValue != null ? existingValue.intValue() : 0) + volume;
                 volumeDataset.setValue(newValue, "Volume", key);
             }
+
+            // 同步更新主圖的成交量覆蓋（使用同一對齊時間）
+            try {
+                Double x = (double) aligned;
+                int idx = volumeOverlaySeries.indexOf(x);
+                if (idx >= 0) {
+                    Number old = volumeOverlaySeries.getY(idx);
+                    double nv = (old != null ? old.doubleValue() : 0) + volume;
+                    volumeOverlaySeries.update(x, nv);
+                } else {
+                    volumeOverlaySeries.add(x.doubleValue(), (double) volume);
+                }
+            } catch (Exception ignore) {}
         });
     }
 
