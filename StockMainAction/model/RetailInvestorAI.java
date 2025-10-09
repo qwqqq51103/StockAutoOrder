@@ -12,6 +12,8 @@ import java.util.Queue;
 import javax.swing.JOptionPane;
 import java.text.DecimalFormat;
 import StockMainAction.util.logging.MarketLogger;
+import StockMainAction.util.logging.DecisionFactorLogger;
+import StockMainAction.model.core.Transaction;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 
@@ -946,6 +948,21 @@ public class RetailInvestorAI implements Trader {
             return 0;
         }
 
+        // 市價單門檻化：僅在強趨勢與高速度時允許
+        try {
+            double tps = model != null ? model.getRecentTPS(40) : 0.0;
+            double imb = model != null ? model.getRecentTickImbalance(40) : 0.0;
+            boolean strongFlow = (tps >= 2.0) && (imb > 0.15); // 可調參
+            if (!strongFlow) {
+                // 降級為限價單：靠近最優賣一
+                double px = stock.getPrice() * 1.001; // 小幅抬價
+                px = orderBook.adjustPriceToUnit(px);
+                Order buyOrder = Order.createLimitBuyOrder(px, buyAmount, this);
+                orderBook.submitBuyOrder(buyOrder, px);
+                return buyAmount;
+            }
+        } catch (Exception ignore) {}
+
         // 使用新的市價買單API
         orderBook.marketBuy(this, buyAmount);
         return buyAmount;
@@ -960,6 +977,21 @@ public class RetailInvestorAI implements Trader {
             // 持股不足
             return 0;
         }
+
+        // 市價單門檻化：僅在強趨勢與高速度時允許
+        try {
+            double tps = model != null ? model.getRecentTPS(40) : 0.0;
+            double imb = model != null ? model.getRecentTickImbalance(40) : 0.0;
+            boolean strongFlow = (tps >= 2.0) && (imb < -0.15); // 可調參
+            if (!strongFlow) {
+                // 降級為限價單：靠近最優買一
+                double px = stock.getPrice() * 0.999; // 小幅讓價
+                px = orderBook.adjustPriceToUnit(px);
+                Order sellOrder = Order.createLimitSellOrder(px, sellAmount, this);
+                orderBook.submitSellOrder(sellOrder, px);
+                return sellAmount;
+            }
+        } catch (Exception ignore) {}
 
         // 使用新的市價賣單API
         orderBook.marketSell(this, sellAmount);
@@ -1424,7 +1456,21 @@ public class RetailInvestorAI implements Trader {
         double positionSize = (availableFunds / currentPrice) * (1 / (1 + volatility));
         // 略強化：提高基本投入比例，讓散戶更有對打能力
         double base = riskPerTrade * 1.25; // 原 0.2 → 0.25
-        positionSize = positionSize * base * this.riskFactor;
+        double eventScale = 1.0;
+        try { if (model != null) eventScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+        // 指標倉位縮放：MACD 多頭偏 >0 放大、空頭 <0 縮小；K>80 減倉，K<20 放大
+        double techScale = 1.0;
+        try {
+            double macdHist = model.getLastMacdHist();
+            double k = model.getLastK();
+            if (!Double.isNaN(macdHist)) {
+                techScale *= (1.0 + Math.max(-0.2, Math.min(0.2, macdHist * 0.5))); // ±20%
+            }
+            if (!Double.isNaN(k)) {
+                if (k > 80) techScale *= 0.85; else if (k < 20) techScale *= 1.15;
+            }
+        } catch (Exception ignore) {}
+        positionSize = positionSize * base * this.riskFactor * eventScale * techScale;
         int result = (int) Math.max(1, positionSize);
 
         logger.debug(String.format(
@@ -1439,7 +1485,9 @@ public class RetailInvestorAI implements Trader {
      * 計算賣出量，根據波動性調整頭寸大小
      */
     private int calculateSellVolume(double priceDifferenceRatio, double volatility) {
-        double positionSize = getAccumulatedStocks() * (0.15 + 0.45 * random.nextDouble()) * (1 / (1 + volatility));
+        double eventScale = 1.0;
+        try { if (model != null) eventScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+        double positionSize = getAccumulatedStocks() * (0.15 + 0.45 * random.nextDouble()) * (1 / (1 + volatility)) * eventScale;
         int result = (int) Math.max(1, positionSize);
 
         logger.debug(String.format(

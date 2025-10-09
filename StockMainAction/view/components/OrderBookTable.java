@@ -1,195 +1,369 @@
 package StockMainAction.view.components;
 
 import javax.swing.*;
+import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
-import javax.swing.table.DefaultTableModel;
+import javax.swing.table.TableRowSorter;
 import java.awt.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * 訂單簿表格 - 增強版，支持顯示訂單類型和撮合模式
+ * 訂單簿表格 - AbstractTableModel + RowSorter + 批次新增與上限
  */
 public class OrderBookTable {
 
-    private JTable table;
-    private JScrollPane scrollPane;
-    private DefaultTableModel tableModel;
+    // [UI] 表格列名
+    private static final String[] COLUMNS = {
+            "買單數量", "買單價格", "買單類型", "賣單價格", "賣單數量", "賣單類型"
+    };
 
-    /**
-     * 構造函數
-     */
+    // [PERF] 最大顯示列數（資料行數上限，不含標題行）
+    private static final int MAX_ROWS = 200;
+
+    // [UI]
+    private final JTable table;
+    private final JScrollPane scrollPane;
+
+    // [PERF] 自訂資料模型（更快的批次插入）
+    private final OrderBookTableModel model;
+
     public OrderBookTable() {
-        // 定義列名，增加到 6 列，包含訂單類型
-        String[] columnNames = {"買單數量", "買單價格", "買單類型", "賣單價格", "賣單數量", "賣單類型"};
+        this.model = new OrderBookTableModel();
+        this.table = new JTable(model);
 
-        // 創建空的初始數據
-        Object[][] initialData = new Object[12][6]; // 12行 6列，含標題和撮合模式行
-
-        // 使用 DefaultTableModel 來管理表格數據
-        tableModel = new DefaultTableModel(initialData, columnNames) {
-            // 防止用戶編輯表格
-            @Override
-            public boolean isCellEditable(int row, int column) {
-                return false;
-            }
-        };
-
-        table = new JTable(tableModel);
-
-        // 設置自定義渲染器
-        table.setDefaultRenderer(Object.class, new EnhancedTableCellRenderer());
-
-        // 設置表格的一些基本屬性
+        // [UI] 行高、視覺
+        table.setRowHeight(26); // [UI] rowHeight=26
         table.setFillsViewportHeight(true);
-        table.setRowHeight(25); // 根據需要調整行高
+        table.setShowGrid(false);
+        table.setIntercellSpacing(new Dimension(0, 0));
 
-        // 設置列寬
-        table.getColumnModel().getColumn(0).setPreferredWidth(80); // 買單數量
-        table.getColumnModel().getColumn(1).setPreferredWidth(80); // 買單價格
-        table.getColumnModel().getColumn(2).setPreferredWidth(70); // 買單類型
-        table.getColumnModel().getColumn(3).setPreferredWidth(80); // 賣單價格
-        table.getColumnModel().getColumn(4).setPreferredWidth(80); // 賣單數量
-        table.getColumnModel().getColumn(5).setPreferredWidth(70); // 賣單類型
+        // [UX] 自動排序器
+        table.setAutoCreateRowSorter(true);
+        TableRowSorter<OrderBookTableModel> sorter = new TableRowSorter<>(model);
+        table.setRowSorter(sorter);
 
-        scrollPane = new JScrollPane(table);
+        // [UI] 對齊與顏色（注意數量欄是 Integer 類型，需要綁定 Integer 渲染器）
+        EnhancedCellRenderer renderer = new EnhancedCellRenderer();
+        table.setDefaultRenderer(Object.class, renderer);
+        table.setDefaultRenderer(String.class, renderer);
+        table.setDefaultRenderer(Integer.class, renderer);
+
+        this.scrollPane = new JScrollPane(table);
     }
 
-    /**
-     * 獲取滾動面板
-     */
     public JScrollPane getScrollPane() {
         return scrollPane;
     }
 
     /**
-     * 增強版表格渲染器，支持訂單類型和撮合模式的顯示
+     * [UX] 與既有呼叫相容：以二維陣列整批設定資料
+     * - 內部會進行批次更新，避免多次 fire 造成卡頓
+     * - 自動裁切到上限
      */
-    class EnhancedTableCellRenderer extends DefaultTableCellRenderer {
-
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value,
-                boolean isSelected, boolean hasFocus,
-                int row, int column) {
-
-            // 先使用基本渲染組件
-            Component cell = super.getTableCellRendererComponent(
-                    table, value, isSelected, hasFocus, row, column);
-
-            // 處理空值
-            if (value == null || value.toString().isEmpty()) {
-                setText("");
-                return cell;
-            }
-
-            // 設置撮合模式行的樣式（第一行）
-            if (row == 0) {
-                setFont(getFont().deriveFont(Font.BOLD));
-                setBackground(new Color(230, 230, 230)); // 淺灰色
-                setHorizontalAlignment(JLabel.LEFT);
-                return cell;
-            }
-
-            // 設置標題行的樣式（第二行）
-            if (row == 1) {
-                setFont(getFont().deriveFont(Font.BOLD));
-                setBackground(new Color(240, 240, 240)); // 更淺的灰色
-                setHorizontalAlignment(JLabel.CENTER);
-                return cell;
-            }
-
-            // 數據行的樣式（從第三行開始）
-            setFont(getFont().deriveFont(Font.PLAIN));
-
-            // 處理買量和賣量的進度條顯示
-            if ((column == 0 || column == 4) && !value.toString().isEmpty()) {
-                try {
-                    int volume = Integer.parseInt(value.toString());
-                    if (volume > 0) {
-                        JProgressBar progressBar = new JProgressBar(0, 1000); // 調整最大值
-                        progressBar.setValue(volume);
-                        progressBar.setString(String.valueOf(volume));
-                        progressBar.setStringPainted(true);
-
-                        if (column == 0) { // 買單數量
-                            progressBar.setForeground(new Color(255, 100, 100)); // 紅色
-                        } else { // 賣單數量
-                            progressBar.setForeground(new Color(100, 255, 100)); // 綠色
-                        }
-
-                        return progressBar;
-                    }
-                } catch (NumberFormatException e) {
-                    // 非數字值，使用普通文本顯示
-                }
-            }
-
-            // 根據列設置不同的對齊方式和顏色
-            if (column == 1) { // 買單價格
-                setHorizontalAlignment(JLabel.RIGHT);
-                setForeground(Color.RED);
-            } else if (column == 3) { // 賣單價格
-                setHorizontalAlignment(JLabel.RIGHT);
-                setForeground(Color.GREEN);
-            } else if (column == 2) { // 買單類型
-                setHorizontalAlignment(JLabel.CENTER);
-                setOrderTypeStyle(value.toString());
-            } else if (column == 5) { // 賣單類型
-                setHorizontalAlignment(JLabel.CENTER);
-                setOrderTypeStyle(value.toString());
-            } else {
-                setHorizontalAlignment(JLabel.RIGHT);
-                setForeground(Color.BLACK);
-            }
-
-            // 買單和賣單區域的背景顏色
-            if (column < 3) { // 買單區域
-                setBackground(new Color(253, 245, 245)); // 非常淺的紅色
-            } else { // 賣單區域
-                setBackground(new Color(245, 255, 245)); // 非常淺的綠色
-            }
-
-            return cell;
+    public void updateData(Object[][] newData) {
+        if (newData == null) {
+            model.setData(new ArrayList<>());
+            return;
         }
-
-        /**
-         * 設置訂單類型的樣式
-         */
-        private void setOrderTypeStyle(String orderType) {
-            if ("市價單".equals(orderType)) {
-                setForeground(Color.BLUE);
-                setFont(getFont().deriveFont(Font.BOLD));
-            } else if ("FOK單".equals(orderType)) {
-                setForeground(new Color(128, 0, 128)); // 紫色
-                setFont(getFont().deriveFont(Font.BOLD));
-            } else {
-                setForeground(Color.BLACK);
-            }
+        List<Object[]> rows = new ArrayList<>(newData.length);
+        for (Object[] r : newData) {
+            // 防守：每列固定 6 欄
+            Object[] row = new Object[6];
+            int len = Math.min(6, r.length);
+            System.arraycopy(r, 0, row, 0, len);
+            rows.add(row);
         }
+        model.setData(rows);
     }
 
     /**
-     * 更新表格數據
-     *
-     * @param newData 新的表格數據
+     * [PERF] 批次新增列（提供更快插入與上限裁切）
      */
-    public void updateData(Object[][] newData) {
-        // 確保表格模型有足夠的行
-        while (tableModel.getRowCount() < newData.length) {
-            tableModel.addRow(new Object[tableModel.getColumnCount()]);
+    public void addRowsBatch(List<Object[]> rowsToAdd) {
+        if (rowsToAdd == null || rowsToAdd.isEmpty()) return;
+        model.addRowsBatch(rowsToAdd);
+    }
+
+    /**
+     * [PERF] 清空
+     */
+    public void clear() {
+        model.setData(new ArrayList<>());
+    }
+
+    // [PERF][UX] 計算目前顯示的買/賣量總和（跳過前兩行標題）
+    public int[] getBuySellSums() {
+        int buy = 0, sell = 0;
+        try {
+            for (int i = 2; i < model.getRowCount(); i++) {
+                buy += safeInt(model.getValueAt(i, 0));
+                sell += safeInt(model.getValueAt(i, 4));
+            }
+        } catch (Exception ignore) {}
+        return new int[]{buy, sell};
+    }
+
+    private static int safeInt(Object v) {
+        try { return Integer.parseInt(String.valueOf(v)); } catch (Exception e) { return 0; }
+    }
+
+    // ===================== Model =====================
+
+    private static class OrderBookTableModel extends AbstractTableModel {
+        private final List<Object[]> rows = new ArrayList<>();
+        private int maxBuyVolume = 1;  // 用於0欄位的最大值
+        private int maxSellVolume = 1; // 用於4欄位的最大值
+
+        @Override
+        public int getRowCount() {
+            return rows.size();
         }
 
-        // 更新單元格數據
-        for (int i = 0; i < newData.length; i++) {
-            for (int j = 0; j < newData[i].length; j++) {
-                tableModel.setValueAt(newData[i][j], i, j);
+        @Override
+        public int getColumnCount() {
+            return COLUMNS.length;
+        }
+
+        @Override
+        public String getColumnName(int column) {
+            return COLUMNS[column];
+        }
+
+        @Override
+        public Class<?> getColumnClass(int columnIndex) {
+            switch (columnIndex) {
+                case 0:
+                case 4:
+                    return Integer.class; // 數量
+                default:
+                    return String.class;
             }
         }
 
-        // 如果有多餘的行，移除它們
-        while (tableModel.getRowCount() > newData.length) {
-            tableModel.removeRow(tableModel.getRowCount() - 1);
+        @Override
+        public boolean isCellEditable(int rowIndex, int columnIndex) {
+            return false;
         }
 
-        // 觸發表格更新
-        tableModel.fireTableDataChanged();
+        @Override
+        public Object getValueAt(int rowIndex, int columnIndex) {
+            if (rowIndex < 0 || rowIndex >= rows.size()) return null;
+            Object[] row = rows.get(rowIndex);
+            return (columnIndex >= 0 && columnIndex < row.length) ? row[columnIndex] : null;
+        }
+
+        // [PERF] 批次設定完整資料（一次 fireTableDataChanged）
+        public void setData(List<Object[]> newData) {
+            int size = Math.min(MAX_ROWS, newData.size());
+            rows.clear();
+            if (size > 0) {
+                rows.addAll(newData.subList(0, size));
+            }
+            recomputeMax();
+            fireTableDataChanged();
+        }
+
+        // [PERF] 批次新增（僅一次 fire）
+        public void addRowsBatch(List<Object[]> toAdd) {
+            if (toAdd == null || toAdd.isEmpty()) return;
+
+            int before = rows.size();
+            // 先加入
+            rows.addAll(toAdd);
+
+            // 上限裁切（保留最新 MAX_ROWS）
+            if (rows.size() > MAX_ROWS) {
+                int from = Math.max(0, rows.size() - MAX_ROWS);
+                List<Object[]> latest = new ArrayList<>(rows.subList(from, rows.size()));
+                rows.clear();
+                rows.addAll(latest);
+                recomputeMax();
+                fireTableDataChanged(); // 範圍不易計算，以全量重繪
+            } else {
+                int added = rows.size() - before;
+                if (added > 0) {
+                    recomputeMax();
+                    fireTableRowsInserted(before, rows.size() - 1);
+                }
+            }
+        }
+
+        private void recomputeMax() {
+            int mb = 1, ms = 1;
+            for (Object[] r : rows) {
+                try {
+                    if (r[0] != null) mb = Math.max(mb, Integer.parseInt(String.valueOf(r[0])));
+                } catch (Exception ignore) {}
+                try {
+                    if (r[4] != null) ms = Math.max(ms, Integer.parseInt(String.valueOf(r[4])));
+                } catch (Exception ignore) {}
+            }
+            maxBuyVolume = Math.max(1, mb);
+            maxSellVolume = Math.max(1, ms);
+        }
+
+        public int getMaxBuyVolume() { return maxBuyVolume; }
+        public int getMaxSellVolume() { return maxSellVolume; }
+    }
+
+    // ===================== Renderer =====================
+
+    // [UI] 增強渲染：數值對齊、買賣區塊底色、類型著色、交錯行
+    private static class EnhancedCellRenderer extends DefaultTableCellRenderer {
+        @Override
+        public Component getTableCellRendererComponent(
+                JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+
+            Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
+
+            // [UI] 量柱顯示：買單數量/賣單數量使用進度條呈現比例
+            try {
+                OrderBookTableModel m = (OrderBookTableModel) table.getModel();
+                if ((column == 0 || column == 4) && value != null && String.valueOf(value).length() > 0) {
+                    int v = Integer.parseInt(String.valueOf(value));
+                    int max = Math.max(1, (column == 0) ? m.getMaxBuyVolume() : m.getMaxSellVolume());
+                    // 保留輕量繪製，但調整外觀為「進度條樣式」
+                    JPanel bar = new JPanel() {
+                        protected void paintComponent(Graphics g) {
+                            super.paintComponent(g);
+                            Graphics2D g2 = (Graphics2D) g.create();
+                            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                            int w = getWidth(); int h = getHeight();
+                            int arc = 10; int pad = 2; int y = pad; int barH = Math.max(6, h - pad*2);
+                            double ratio = Math.min(1.0, Math.max(0.0, v * 1.0 / max));
+                            int innerW = w - pad*2;
+                            int bw = (int) Math.round(innerW * ratio);
+                            // 極小但非零的量，仍給最小可見寬度（避免看起來像沒有條）
+                            if (v > 0 && bw == 0) bw = Math.min(3, innerW);
+                            Color fg = (column == 0) ? new Color(67,160,71) : new Color(239,83,80);
+                            Color track = new Color(230, 230, 230);
+                            // track
+                            g2.setColor(track);
+                            g2.fillRoundRect(pad, y, w - pad*2, barH, arc, arc);
+                            // fill（漸層）
+                            if (bw > 0) {
+                                GradientPaint gp = new GradientPaint(0, y, fg.brighter(), 0, y + barH, fg.darker());
+                                g2.setPaint(gp);
+                                g2.fillRoundRect(pad, y, bw, barH, arc, arc);
+                            }
+                            // 邊框
+                            g2.setColor(new Color(0,0,0,60));
+                            g2.drawRoundRect(pad, y, w - pad*2, barH, arc, arc);
+                            // 文字置中顯示（水平置中在整個儲存格，垂直置中於條中）
+                            String s = String.valueOf(v);
+                            java.awt.FontMetrics fm = g2.getFontMetrics();
+                            int sw = fm.stringWidth(s);
+                            int sxCenter = pad + (w - pad*2 - sw) / 2;
+                            int ty = y + (barH + fm.getAscent() - fm.getDescent()) / 2;
+                            // 依置中文字是否落在填滿區決定字色
+                            boolean textInsideFill = (sxCenter >= pad) && (sxCenter + sw <= pad + bw);
+                            g2.setColor(textInsideFill ? Color.WHITE : new Color(33,33,33));
+                            g2.drawString(s, sxCenter, ty);
+                            g2.dispose();
+                        }
+                    };
+                    bar.setOpaque(false);
+                    return bar;
+                }
+            } catch (Exception ignore) {}
+
+            // [UI] 基本對齊
+            if (column == 0 || column == 1 || column == 3 || column == 4) {
+                setHorizontalAlignment(RIGHT);
+            } else {
+                setHorizontalAlignment(CENTER);
+            }
+
+            // [UI] 標題/模式行特別處理：row 0 = 模式，row 1 = 標題
+            if (!isSelected && row == 0) {
+                setBackground(new Color(230, 230, 230));
+                setFont(getFont().deriveFont(Font.BOLD));
+                setHorizontalAlignment(LEFT);
+                setForeground(Color.DARK_GRAY);
+                return c;
+            }
+            if (!isSelected && row == 1) {
+                setBackground(new Color(240, 240, 240));
+                setFont(getFont().deriveFont(Font.BOLD));
+                setHorizontalAlignment(CENTER);
+                setForeground(Color.BLACK);
+                return c;
+            }
+
+            // [UI] 交錯底色、選取配色（資料行）
+            if (!isSelected) {
+                setBackground((row % 2 == 0) ? Color.WHITE : new Color(248, 248, 248));
+            } else {
+                setBackground(new Color(232, 240, 254));
+            }
+
+            // [UI] 五檔強調顏色：row 2..6 屬於 Top 5（0..4）+ 深度熱力
+            int level = row - 2; // 0 為最優價
+            if (!isSelected) {
+                Color baseBuy = new Color(210, 245, 210);
+                Color baseSell = new Color(245, 210, 210);
+                double alpha = (level >= 0 && level < 5) ? (0.65 - level * 0.12) : 0.15;
+                alpha = Math.max(0.0, Math.min(0.75, alpha));
+                // 熱力：依數量列比例再加深
+                try {
+                    OrderBookTableModel m = (OrderBookTableModel) table.getModel();
+                    if (column <= 2) {
+                        int v = safeInt(table.getValueAt(row, 0));
+                        double ratio = Math.min(1.0, v * 1.0 / Math.max(1, m.getMaxBuyVolume()));
+                        alpha += 0.25 * ratio;
+                        setBackground(blend(getBackground(), baseBuy, alpha));
+            } else {
+                        int v = safeInt(table.getValueAt(row, 4));
+                        double ratio = Math.min(1.0, v * 1.0 / Math.max(1, m.getMaxSellVolume()));
+                        alpha += 0.25 * ratio;
+                        setBackground(blend(getBackground(), baseSell, alpha));
+                    }
+                } catch (Exception ex) {
+                    if (column <= 2) setBackground(blend(getBackground(), baseBuy, alpha));
+                    else setBackground(blend(getBackground(), baseSell, alpha));
+                }
+            }
+
+            // [UI] 價格/數量欄前景色：買=綠、賣=紅
+            if (column == 1) {
+                setForeground(new Color(0, 128, 0));
+            } else if (column == 3) {
+                setForeground(new Color(200, 0, 0));
+            } else if (column == 0) {
+                setForeground(new Color(0, 128, 0));
+            } else if (column == 4) {
+                setForeground(new Color(200, 0, 0));
+            } else {
+                setForeground(Color.BLACK);
+            }
+
+            // [UI] 類型著色
+            if (column == 2 || column == 5) {
+                if (value != null) {
+                    String t = String.valueOf(value);
+                    if ("市價單".equals(t)) {
+                        setForeground(new Color(0, 102, 204));
+                        setFont(getFont().deriveFont(Font.BOLD));
+                    } else if ("FOK單".equals(t)) {
+                        setForeground(new Color(128, 0, 128));
+                        setFont(getFont().deriveFont(Font.BOLD));
+                    } else {
+                        // 保持既定前景（已按價格欄設置），類型以常規顯示
+                        setFont(getFont().deriveFont(Font.PLAIN));
+                    }
+                }
+            }
+
+            return c;
+        }
+
+        private static Color blend(Color base, Color overlay, double alpha) {
+            double a = Math.max(0.0, Math.min(1.0, alpha));
+            int r = (int) Math.round(base.getRed() * (1 - a) + overlay.getRed() * a);
+            int g = (int) Math.round(base.getGreen() * (1 - a) + overlay.getGreen() * a);
+            int b = (int) Math.round(base.getBlue() * (1 - a) + overlay.getBlue() * a);
+            return new Color(r, g, b);
+        }
     }
 }

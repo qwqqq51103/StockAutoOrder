@@ -26,11 +26,12 @@ public final class LogicAudit {
     private static synchronized void init() {
         if (initialized) return;
         try {
-            Path logDir = Paths.get("logs");
+            // 將稽核日誌輸出到桌面 logs 資料夾
+            Path logDir = Paths.get(System.getProperty("user.home"), "Desktop", "logs");
             if (!Files.exists(logDir)) {
                 Files.createDirectories(logDir);
             }
-            FileHandler fh = new FileHandler("logs/audit.log", 10 * 1024 * 1024, 3, true);
+            FileHandler fh = new FileHandler(logDir.resolve("audit.log").toString(), 10 * 1024 * 1024, 3, true);
             fh.setFormatter(new Formatter() {
                 private final SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
                 @Override

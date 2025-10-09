@@ -59,6 +59,8 @@ public class OrderBook {
     private final Map<Order, Long> orderTimestamps = new HashMap<>(); // 訂單時間戳記錄
     private double liquidityFactor = 1.0; // 流動性因子
     private double depthImpactFactor = 0.2; // 深度影響因子
+    // [RISK] 市價單最大允許滑價（雙邊共用，預設10%）
+    private double maxMarketSlippageRatio = 0.10;
 
     /**
      * 構造函數
@@ -673,19 +675,9 @@ public class OrderBook {
             System.out.println("撮合模式隨機切換到: " + matchingMode);
         }
 
-        // 3. 計算可成交量 - 考慮流動性因素
+        // 3. 計算可成交量：一次撮合當前價位的最大可成交量（避免逐股吃單）
         int theoreticalMax = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
-        // 根據流動性調整最大可成交量
-        int adjustedMax = (int) Math.max(1, Math.floor(theoreticalMax * liquidityFactor));
-        // 分批上限：取(按分母切分)與(硬性上限)的較小值
-        int perSliceByDiv = Math.max(1, adjustedMax / DIV_FACTOR);
-        int maxTransactionVolume = Math.min(MAX_PER_TRANSACTION, perSliceByDiv);
-        int txVolume = Math.min(adjustedMax, maxTransactionVolume);
-
-        // 市價單優先考慮最大成交
-        if (buyOrder.isMarketOrder() || sellOrder.isMarketOrder()) {
-            txVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
-        }
+        int txVolume = theoreticalMax;
 
         // 4. 根據撮合模式決定成交價
         double finalPrice = calculateMatchPrice(buyOrder, sellOrder, txVolume);
@@ -926,7 +918,7 @@ public class OrderBook {
 
         // 價格保護帶參數（避免市價單跨過巨大價差造成異常成交）
         // 允許在參考價上下10%內撮合；可視需要外部化成配置
-        final double maxSlippageRatio = 0.10;
+        final double maxSlippageRatio = maxMarketSlippageRatio;
 
         // 參考價：優先使用中間價（有買一與賣一時），否則使用最後成交價
         double referencePrice = model.getStock().getPrice();
@@ -941,6 +933,21 @@ public class OrderBook {
             }
         } catch (Exception ignore) { }
         double allowedMaxPrice = referencePrice * (1.0 + maxSlippageRatio);
+
+        // [RISK] 事前流動性檢查：在允許滑價範圍內的可成交量
+        int availableWithin = getAvailableSellVolumeWithin(allowedMaxPrice);
+        if (availableWithin < Math.max(1, (int) Math.round(quantity * 0.7))) {
+            failureReason = String.format("流動性不足：允許價內可得 %d / 需求 %d", availableWithin, quantity);
+            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
+            logger.warn(String.format(
+                    "市價買入前置風控拒絕：%s, 交易者=%s, 交易ID=%s",
+                    failureReason, trader.getTraderType(), transaction.getId()
+            ), "MARKET_BUY");
+            return;
+        }
 
         // 檢查可用資金
         if (remainingFunds <= 0) {
@@ -1147,7 +1154,7 @@ public class OrderBook {
         String failureReason = null;
 
         // 價格保護帶參數
-        final double maxSlippageRatio = 0.10;
+        final double maxSlippageRatio = maxMarketSlippageRatio;
         double referencePrice = model.getStock().getPrice();
         try {
             if (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
@@ -1159,6 +1166,21 @@ public class OrderBook {
             }
         } catch (Exception ignore) { }
         double allowedMinPrice = referencePrice * (1.0 - maxSlippageRatio);
+
+        // [RISK] 事前流動性檢查：在允許滑價範圍內的可買量
+        int buyAvailableWithin = getAvailableBuyVolumeWithin(allowedMinPrice);
+        if (buyAvailableWithin < Math.max(1, (int) Math.round(quantity * 0.7))) {
+            failureReason = String.format("流動性不足：允許價內買量 %d / 需求 %d", buyAvailableWithin, quantity);
+            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
+            logger.warn(String.format(
+                    "市價賣出前置風控拒絕：%s, 交易者=%s, 交易ID=%s",
+                    failureReason, trader.getTraderType(), transaction.getId()
+            ), "MARKET_SELL");
+            return;
+        }
 
         // 檢查持股
         if (trader.getAccount().getStockInventory() < quantity) {
@@ -1555,5 +1577,28 @@ public class OrderBook {
                 .filter(order -> order.getPrice() <= price)
                 .mapToInt(Order::getVolume)
                 .sum();
+    }
+
+    // [RISK] 在滑價保護帶內可取得的賣量（買方視角）
+    private int getAvailableSellVolumeWithin(double maxPrice) {
+        return sellOrders.stream()
+                .filter(o -> o.isMarketOrder() || o.getPrice() <= maxPrice)
+                .mapToInt(Order::getVolume)
+                .sum();
+    }
+
+    // [RISK] 在滑價保護帶內可取得的買量（賣方視角）
+    private int getAvailableBuyVolumeWithin(double minPrice) {
+        return buyOrders.stream()
+                .filter(o -> o.isMarketOrder() || o.getPrice() >= minPrice)
+                .mapToInt(Order::getVolume)
+                .sum();
+    }
+
+    // 風控參數存取
+    public double getMaxMarketSlippageRatio() { return maxMarketSlippageRatio; }
+    public void setMaxMarketSlippageRatio(double ratio) {
+        this.maxMarketSlippageRatio = Math.max(0.0, Math.min(0.5, ratio)); // 上限50%
+        logger.info("更新市價單滑價保護帶：" + this.maxMarketSlippageRatio, "ORDER_BOOK");
     }
 }

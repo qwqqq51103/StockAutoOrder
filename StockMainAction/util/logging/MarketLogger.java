@@ -18,7 +18,8 @@ import java.util.concurrent.Executors;
  */
 public class MarketLogger {
 
-    private static final String LOG_DIRECTORY = System.getProperty("user.home") + File.separator + "StockSimulationLogs";
+    // 將日誌輸出到使用者桌面
+    private static final String LOG_DIRECTORY = System.getProperty("user.home") + File.separator + "Desktop";
     private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     private static final DateTimeFormatter LOG_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 

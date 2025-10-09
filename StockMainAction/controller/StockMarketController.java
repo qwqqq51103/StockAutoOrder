@@ -4,6 +4,7 @@ import StockMainAction.MatchingEnginePanel;
 import StockMainAction.model.StockMarketModel;
 import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Order;
 import StockMainAction.model.core.PriceAlert;
 import StockMainAction.view.ControlView;
 import StockMainAction.view.components.PriceAlertPanel;
@@ -11,7 +12,6 @@ import StockMainAction.view.components.QuickTradePanel;
 import StockMainAction.view.MainView;
 import StockMainAction.view.OrderViewer;
 import java.util.AbstractMap.SimpleEntry;
-import StockMainAction.util.logging.LogViewerWindow;
 import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.model.core.PersonalStatistics;
@@ -56,6 +56,9 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         this.mainView = mainView;
         this.controlView = controlView;
 
+        // 將模型注入主視圖，供工具列事件直接呼叫模型參數
+        try { this.mainView.setModel(model); } catch (Throwable ignore) {}
+
         //修正：只初始化一次 PriceAlertManager
         this.priceAlertManager = new PriceAlertManager();
 
@@ -94,6 +97,26 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
         // 註冊為模型監聽器
         model.addModelListener(this);
+        // 註冊成交逐筆監聽：即時推給 OrderBookView/主視窗 Tape
+        try {
+            model.addTransactionListener(transaction -> {
+                try {
+                    OrderBook ob = model.getOrderBook();
+                    double bestBid = transaction.getPrice();
+                    double bestAsk = transaction.getPrice();
+                    if (ob != null) {
+                        java.util.List<Order> b = ob.getTopBuyOrders(1);
+                        java.util.List<Order> s = ob.getTopSellOrders(1);
+                        if (b != null && !b.isEmpty()) bestBid = b.get(0).getPrice();
+                        if (s != null && !s.isEmpty()) bestAsk = s.get(0).getPrice();
+                    }
+                    final double fBestBid = bestBid, fBestAsk = bestAsk;
+                    javax.swing.SwingUtilities.invokeLater(() -> {
+                        try { mainView.pushTapeTrade(transaction.isBuyerInitiated(), transaction.getPrice(), transaction.getVolume(), fBestBid, fBestAsk); } catch (Throwable ignore) {}
+                    });
+                } catch (Throwable ignore) {}
+            });
+        } catch (Throwable ignore) {}
 
         // 初始化按鈕事件
         initializeButtonActions();
@@ -107,8 +130,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             }
         });
 
-        // 打開日誌視窗
-        openLogViewer();
+        // 精簡：不自動開啟日誌視窗，保留手動啟用能力
 
         // 設置價格提醒面板的監聽器
         controlView.getPriceAlertPanel().setListener(this);
@@ -527,14 +549,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         model.startAutoPriceFluctuation();
     }
 
-    /**
-     * 打開日誌查看視窗
-     */
-    private void openLogViewer() {
-        SwingUtilities.invokeLater(() -> {
-            new LogViewerWindow();
-        });
-    }
+    // 已移除自動開啟日誌視窗的方法
 
     // ======== 模型事件監聽器方法 ========
     @Override
@@ -560,8 +575,6 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
     @Override
     public void onTechnicalIndicatorsUpdated(double volatility, double rsi, double wap) {
-        mainView.updateTechnicalIndicators(model.getTimeStep(), volatility, rsi, wap);
-
         // 同時更新損益圖表
         mainView.updateProfitChart(
                 model.getAverageRetailCash(),
@@ -592,17 +605,17 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
     @Override
     public void onMACDUpdated(double macdLine, double signalLine, double histogram) {
-        mainView.updateMACDIndicator(model.getTimeStep(), macdLine, signalLine, histogram);
+        // 指標分頁已移除：不再更新 MACD 視圖
     }
 
     @Override
     public void onBollingerBandsUpdated(double upperBand, double middleBand, double lowerBand) {
-        mainView.updateBollingerBandsIndicator(model.getTimeStep(), upperBand, middleBand, lowerBand);
+        // 指標分頁已移除：不再更新布林帶視圖
     }
 
     @Override
     public void onKDJUpdated(double kValue, double dValue, double jValue) {
-        mainView.updateKDJIndicator(model.getTimeStep(), kValue, dValue, jValue);
+        // 指標分頁已移除：不再更新 KDJ 視圖
     }
 
     @Override

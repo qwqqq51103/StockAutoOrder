@@ -40,10 +40,10 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 1698000, initialMainForceCash = 3698000;
-    private int initialRetails = 5;
-    private int marketBehaviorStock = 300000;
-    private double marketBehaviorGash = -999999990;
+    private double initialRetailCash = 20000000, initialMainForceCash = 20000000;
+    private int initialRetails = 1;
+    private int marketBehaviorStock = 20000000;
+    private double marketBehaviorGash = -9999999.0;
 
     // 🆕 成交記錄列表
     private List<Transaction> transactionHistory;
@@ -58,6 +58,25 @@ public class StockMarketModel {
 
     // 加技術指標計算器作為成員變數
     private TechnicalIndicatorsCalculator technicalCalculator;
+
+    // 最近一次計算的技術指標值（供策略/風控倉位縮放使用）
+    private volatile double lastMacdLine = Double.NaN;
+    private volatile double lastMacdSignal = Double.NaN;
+    private volatile double lastMacdHist = Double.NaN;
+    private volatile double lastBollUpper = Double.NaN;
+    private volatile double lastBollMiddle = Double.NaN;
+    private volatile double lastBollLower = Double.NaN;
+    private volatile double lastK = Double.NaN;
+    private volatile double lastD = Double.NaN;
+    private volatile double lastJ = Double.NaN;
+
+    // 事件模式參數（全域）
+    private String eventMode = "一般"; // 一般/新聞/財報
+    private int eventWindow = 60;
+    private int eventConsecutive = 3;
+    private int eventBaseThreshold = 65;
+    private int eventThresholdBoost = 0; // 新聞+5，財報+10
+    private double eventPositionScale = 1.0; // 新聞0.85，財報0.7
 
     // 模型監聽器介面 - 用於通知View更新
     public interface ModelListener {
@@ -106,6 +125,39 @@ public class StockMarketModel {
         initializeSimulation();
         this.technicalCalculator = new TechnicalIndicatorsCalculator();
         this.transactionHistory = new ArrayList<>();
+    }
+
+    // 設定事件模式參數（由 UI 下發）
+    public void setEventParams(int window, int consecutive, int baseThreshold, String mode) {
+        this.eventWindow = Math.max(1, window);
+        this.eventConsecutive = Math.max(1, consecutive);
+        this.eventBaseThreshold = Math.max(1, Math.min(99, baseThreshold));
+        this.eventMode = (mode == null ? "一般" : mode);
+        if ("新聞".equals(this.eventMode)) {
+            this.eventThresholdBoost = 5;
+            this.eventPositionScale = 0.85;
+        } else if ("財報".equals(this.eventMode)) {
+            this.eventThresholdBoost = 10;
+            this.eventPositionScale = 0.70;
+        } else {
+            this.eventThresholdBoost = 0;
+            this.eventPositionScale = 1.0;
+        }
+        // 通知 UI
+        sendInfoMessage(String.format("事件模式：%s（門檻+%d%%，倉位係數=%.2f）", this.eventMode, this.eventThresholdBoost, this.eventPositionScale));
+    }
+
+    // 取得事件模式下的有效門檻值（若未設定則回傳傳入的預設）
+    public int getEventEffectiveThresholdOr(int fallback) {
+        int base = (eventBaseThreshold > 0 ? eventBaseThreshold : fallback);
+        int eff = base + eventThresholdBoost;
+        if (eff < 1) eff = 1; if (eff > 99) eff = 99;
+        return eff;
+    }
+
+    // 倉位縮放係數（散戶/主力用）
+    public double getEventPositionScale() {
+        return eventPositionScale;
     }
 
     /**
@@ -258,6 +310,23 @@ public class StockMarketModel {
         double[] bollingerResult = technicalCalculator.calculateBollingerBands();
         double[] kdjResult = technicalCalculator.calculateKDJ();
 
+        // 保存最近一次指標值
+        if (macdResult != null) {
+            lastMacdLine = macdResult[0];
+            lastMacdSignal = macdResult[1];
+            lastMacdHist = macdResult[2];
+        }
+        if (bollingerResult != null) {
+            lastBollUpper = bollingerResult[0];
+            lastBollMiddle = bollingerResult[1];
+            lastBollLower = bollingerResult[2];
+        }
+        if (kdjResult != null) {
+            lastK = kdjResult[0];
+            lastD = kdjResult[1];
+            lastJ = kdjResult[2];
+        }
+
         // 通知所有監聽器
         for (ModelListener listener : listeners) {
             // 原有的通知
@@ -301,6 +370,51 @@ public class StockMarketModel {
     // 可選：提供獲取技術指標計算器的方法（用於調試或配置）
     public TechnicalIndicatorsCalculator getTechnicalCalculator() {
         return technicalCalculator;
+    }
+
+    // ===== 指標值 Getter（NaN 表示暫無） =====
+    public double getLastMacdLine() { return lastMacdLine; }
+    public double getLastMacdSignal() { return lastMacdSignal; }
+    public double getLastMacdHist() { return lastMacdHist; }
+    public double getLastBollUpper() { return lastBollUpper; }
+    public double getLastBollMiddle() { return lastBollMiddle; }
+    public double getLastBollLower() { return lastBollLower; }
+    public double getLastK() { return lastK; }
+    public double getLastD() { return lastD; }
+    public double getLastJ() { return lastJ; }
+
+    // ===== 近期 Tape 統計（供策略與風控使用） =====
+    public double getRecentTPS(int n) {
+        try {
+            java.util.List<Transaction> recent = getRecentTransactions(Math.max(1, n));
+            if (recent.isEmpty()) return 0.0;
+            long now = System.currentTimeMillis();
+            long earliest = recent.get(0).getTimestamp();
+            double secs = Math.max(1.0, (now - earliest) / 1000.0);
+            return recent.size() / secs;
+        } catch (Exception e) { return 0.0; }
+    }
+
+    public double getRecentVPS(int n) {
+        try {
+            java.util.List<Transaction> recent = getRecentTransactions(Math.max(1, n));
+            if (recent.isEmpty()) return 0.0;
+            long now = System.currentTimeMillis();
+            long earliest = recent.get(0).getTimestamp();
+            double secs = Math.max(1.0, (now - earliest) / 1000.0);
+            long vol = 0; for (Transaction t : recent) vol += t.getVolume();
+            return vol / secs;
+        } catch (Exception e) { return 0.0; }
+    }
+
+    public double getRecentTickImbalance(int n) {
+        try {
+            java.util.List<Transaction> recent = getRecentTransactions(Math.max(1, n));
+            if (recent.isEmpty()) return 0.0;
+            int buy=0, sell=0; for (Transaction t : recent) { if (t.isBuyerInitiated()) buy++; else sell++; }
+            int tot = Math.max(1, buy + sell);
+            return (buy - sell) / (double) tot; // [-1,1]
+        } catch (Exception e) { return 0.0; }
     }
 
     /**

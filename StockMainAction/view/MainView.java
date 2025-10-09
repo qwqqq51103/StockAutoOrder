@@ -3,6 +3,7 @@ package StockMainAction.view;
 import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
+import StockMainAction.model.core.Transaction;
 import StockMainAction.model.StockMarketModel;
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.ChartPanel;
@@ -49,12 +50,28 @@ import java.util.Map;
 import java.util.HashMap;
 import javax.swing.event.ChangeListener;
 import java.text.SimpleDateFormat;
+import java.text.DecimalFormat;
 import java.util.Date;
+// [UI] 內外盤分析大圖
+import javax.swing.border.EmptyBorder;
 
 /**
  * 主視圖類別 - 負責顯示圖表和數據 作為MVC架構中的View組件
  */
 public class MainView extends JFrame {
+
+    // [PERF] 圖表合併重繪排程參數
+    private static volatile int chartFlushIntervalMs = 120; // 節能/平衡/效能 = 200/120/60
+    private static volatile boolean chartDirty = false;
+    private static javax.swing.Timer chartFlushTimer;
+    private static final java.util.List<JFreeChart> registeredCharts = new java.util.ArrayList<>();
+    // [UI] 全域字級縮放
+    private static volatile float globalFontSizePt = 13f;
+
+    // 參照模型（供工具列與事件模式參數下發）
+    private StockMarketModel model;
+    private javax.swing.Timer marketStatsTimer;
+    private JLabel marketStatsLabel;
 
     // 圖表
     private JFreeChart priceChart;
@@ -81,6 +98,71 @@ public class MainView extends JFrame {
     private XYSeries kSeries;
     private XYSeries dSeries;
     private XYSeries jSeries;
+    // [CHART] VWAP 與帶
+    private XYSeries vwapSeries;
+    private XYSeries vwapUpperSeries;
+    private XYSeries vwapLowerSeries;
+    private XYSeriesCollection dsVWAP;
+    private XYLineAndShapeRenderer rVWAP;
+    // VWAP 累計
+    private long vwapCumulativeVolume = 0L;
+    private double vwapCumulativePV = 0.0; // price*volume
+    private long vwapSamples = 0L; // 用於方差估計
+    private double vwapMean = 0.0;
+    private double vwapM2 = 0.0;
+    // [CHART] 觸發點（多空）
+    private XYSeries bullSignals = new XYSeries("BullSignal");
+    private XYSeries bearSignals = new XYSeries("BearSignal");
+    private XYSeriesCollection dsSignals;
+    private XYLineAndShapeRenderer rSignals;
+    // [CHART] 大單標記
+    private XYSeries bigBuySeries = new XYSeries("BigBuy");
+    private XYSeries bigSellSeries = new XYSeries("BigSell");
+    private XYSeries tickImbBuySeries = new XYSeries("TickBuyImb");
+    private XYSeries tickImbSellSeries = new XYSeries("TickSellImb");
+    private XYSeriesCollection dsBig;
+    private XYLineAndShapeRenderer rBig;
+    private int bigOrderThreshold = 500; // 可調
+    // [CHART] 多週期均線容器（與 minuteToSeries 對應）
+    private final Map<Integer, XYSeries> periodToSMA5 = new HashMap<>();
+    private final Map<Integer, XYSeries> periodToSMA10 = new HashMap<>();
+    private final Map<Integer, XYSeries> periodToEMA12 = new HashMap<>();
+    // [CHART] Anchored VWAP
+    private XYSeries avwapSeries = new XYSeries("AVWAP");
+    private XYSeriesCollection dsAVWAP;
+    private XYLineAndShapeRenderer rAVWAP;
+    private long avwapAnchorMs = -1L;
+    private double avwapCumPV = 0.0; private long avwapCount = 0L;
+    // [UI] 指標開關
+    private boolean showSMA5 = true, showSMA10 = true, showEMA12 = true, showVWAP = true, showAVWAP = false;
+    // [CHART] Volume Profile（可見區間）
+    private final java.util.List<org.jfree.chart.plot.IntervalMarker> profileMarkers = new java.util.ArrayList<>();
+    private long lastProfileUpdateMs = 0L;
+    // [CHART] 均線參數
+    private int sma5Period = 5;
+    private int sma10Period = 10;
+    private int ema12Period = 12;
+    private float smaLineWidth = 1.4f;
+    private float emaLineWidth = 1.4f;
+    // [CHART] 關鍵價位標註
+    private Double openPrice = null;
+    private double dayHigh = Double.NEGATIVE_INFINITY;
+    private double dayLow = Double.POSITIVE_INFINITY;
+    private org.jfree.chart.plot.ValueMarker openMarker;
+    private org.jfree.chart.plot.ValueMarker highMarker;
+    private org.jfree.chart.plot.ValueMarker lowMarker;
+    // [UX] 量尺（十字線差值）
+    private Double anchorXMs = null;
+    private Double anchorPrice = null;
+    private boolean measuring = false;
+    // [ANALYTICS] 內外盤參數同步與連續窗判定
+    private volatile int lastInPctFromOB = -1;
+    private volatile long lastInVolFromOB = 0, lastOutVolFromOB = 0;
+    private int consecutiveRequired = 2;
+    private int effectiveThreshold = 65;
+    private int consecIn = 0, consecOut = 0;
+    private final java.util.Deque<Double> priceWindow = new java.util.ArrayDeque<>();
+    private int priceWindowSize = 30;
     // K線疊加指標系列
     private XYSeries sma5Series;
     private XYSeries sma10Series;
@@ -93,6 +175,10 @@ public class MainView extends JFrame {
     // 主圖成交量覆蓋
     private XYSeries volumeOverlaySeries;
     private NumberAxis volumeAxis;
+    // 疊加資料集與渲染器（常駐，僅切換可見性以減少閃爍）
+    private XYSeriesCollection dsSMA5, dsSMA10, dsSMA20, dsEMA12, dsEMA26, dsBOLL, dsVOL, dsMACD;
+    private XYLineAndShapeRenderer rSMA5, rSMA10, rSMA20, rEMA12, rEMA26, rBOLL, rMACD;
+    private XYBarRenderer rVOL;
     // 自適應效能控制與指標點數上限
     private volatile long kOverlayLastRecomputeMs = 0L;
     private volatile int kOverlayMinIntervalMs = 120; // 50~300ms 動態調整
@@ -113,7 +199,7 @@ public class MainView extends JFrame {
     private DefaultCategoryDataset volumeMADataset; // 成交量均線
     // K線多週期管理（新增 10秒、30秒 以秒為單位以 0.x 表示，內部會換算）
     private final int[] klineMinutes = new int[]{1, 5, 10, 30, 60};
-    private final int[] klineSeconds = new int[]{10, 30};
+    private final int[] klineSeconds = new int[]{10, 30, 60};
     private final Map<Integer, OHLCSeries> minuteToSeries = new HashMap<>();
     private final Map<Integer, OHLCSeriesCollection> minuteToCollection = new HashMap<>();
     private int currentKlineMinutes = 1;
@@ -131,6 +217,10 @@ public class MainView extends JFrame {
     private JTextArea infoTextArea;
     private OrderBookView orderBookView;
     private JTabbedPane tabbedPane;
+    // [UI] 市場資訊分頁 + 內外盤分析分頁
+    private JTabbedPane infoTabs; // [UI]
+    private InOutAnalyticsPanel inOutPanel; // [UI]
+    private TapePanel tapePanel; // [UI] Tape
     // 散戶資訊表
     private JTable retailInfoTable;
     private javax.swing.table.DefaultTableModel retailInfoTableModel;
@@ -140,15 +230,55 @@ public class MainView extends JFrame {
     private boolean isDarkTheme = false;  // 預設為明亮主題
 
     private final int maxDataPoints = 100; // 限制圖表數據點數量
+    // 新增：K線與成交量最大保留數，避免無限增長
+    private int maxKlineBars = 600;
+    private int maxVolumeColumns = 60;
+    // （移除）視窗控制與效能優化欄位
 
     /**
      * 構造函數
      */
     public MainView() {
+        // [UI] FlatLaf / Fallback + 全域字型
+        setupLookAndFeelAndFonts();
         initializeChartData();
         initializeUI();
+        applyCandleDomainWindow();
         // 啟動自動效能偵測（3秒內估算最佳參數）
         autoTunePerformance();
+        // 啟動市場指標摘要刷新（每秒）
+        try {
+            marketStatsTimer = new javax.swing.Timer(1000, e -> refreshMarketStats());
+            marketStatsTimer.start();
+        } catch (Exception ignore) {}
+    }
+
+    // [UI] 設定 LAF 與全域字型（JhengHei UI 13pt），FlatLaf 若不可用則使用系統 LAF
+    private void setupLookAndFeelAndFonts() {
+        try {
+            try {
+                Class<?> laf = Class.forName("com.formdev.flatlaf.FlatLightLaf");
+                laf.getMethod("setup").invoke(null);
+            } catch (Throwable noFlat) {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            }
+        } catch (Throwable ignore) {}
+        try {
+            applyGlobalUIFont(new Font("Microsoft JhengHei UI", Font.PLAIN, (int) globalFontSizePt)); // [UI]
+        } catch (Throwable ignore) {}
+    }
+
+    // [UI] 套用全域字型
+    private void applyGlobalUIFont(Font font) {
+        java.util.Enumeration<Object> keys = UIManager.getDefaults().keys();
+        while (keys.hasMoreElements()) {
+            Object key = keys.nextElement();
+            Object val = UIManager.get(key);
+            if (val instanceof Font) {
+                UIManager.put(key, font);
+            }
+        }
+        SwingUtilities.updateComponentTreeUI(this);
     }
 
     /**
@@ -156,26 +286,26 @@ public class MainView extends JFrame {
      */
     private void initializeChartData() {
         // 初始化數據系列
-        priceSeries = new XYSeries("股價");
-        smaSeries = new XYSeries("SMA");
-        volatilitySeries = new XYSeries("波動性");
-        rsiSeries = new XYSeries("RSI");
-        wapSeries = new XYSeries("加權平均價格");
+        priceSeries = new XYSeries("股價"); priceSeries.setMaximumItemCount(2000);
+        smaSeries = new XYSeries("SMA"); smaSeries.setMaximumItemCount(2000);
+        volatilitySeries = new XYSeries("波動性"); volatilitySeries.setMaximumItemCount(2000);
+        rsiSeries = new XYSeries("RSI"); rsiSeries.setMaximumItemCount(2000);
+        wapSeries = new XYSeries("加權平均價格"); wapSeries.setMaximumItemCount(2000);
 
         // 初始化MACD數據系列
-        macdLineSeries = new XYSeries("MACD線");
-        macdSignalSeries = new XYSeries("信號線");
-        macdHistogramSeries = new XYSeries("MACD柱狀圖");
+        macdLineSeries = new XYSeries("MACD線"); macdLineSeries.setMaximumItemCount(2000);
+        macdSignalSeries = new XYSeries("信號線"); macdSignalSeries.setMaximumItemCount(2000);
+        macdHistogramSeries = new XYSeries("MACD柱狀圖"); macdHistogramSeries.setMaximumItemCount(2000);
 
         // 初始化布林帶數據系列
-        bollingerUpperSeries = new XYSeries("上軌");
-        bollingerMiddleSeries = new XYSeries("中軌");
-        bollingerLowerSeries = new XYSeries("下軌");
+        bollingerUpperSeries = new XYSeries("上軌"); bollingerUpperSeries.setMaximumItemCount(2000);
+        bollingerMiddleSeries = new XYSeries("中軌"); bollingerMiddleSeries.setMaximumItemCount(2000);
+        bollingerLowerSeries = new XYSeries("下軌"); bollingerLowerSeries.setMaximumItemCount(2000);
 
         // 初始化KDJ數據系列
-        kSeries = new XYSeries("K值");
-        dSeries = new XYSeries("D值");
-        jSeries = new XYSeries("J值");
+        kSeries = new XYSeries("K值"); kSeries.setMaximumItemCount(2000);
+        dSeries = new XYSeries("D值"); dSeries.setMaximumItemCount(2000);
+        jSeries = new XYSeries("J值"); jSeries.setMaximumItemCount(2000);
 
         // 初始化成交量數據集
         volumeDataset = new DefaultCategoryDataset();
@@ -202,51 +332,12 @@ public class MainView extends JFrame {
 
         // 創建主分頁
         JPanel mainPanel = createMainPanel();
-        // 在市場圖表分頁加入 K線週期切換下拉
-        JPanel topBar = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        topBar.add(new JLabel("K線週期:"));
-        klineIntervalCombo = new JComboBox<>(new String[]{"10秒","30秒","1分","5分","10分","30分","60分"});
-        klineIntervalCombo.setSelectedIndex(0);
-        klineIntervalCombo.addActionListener(e -> switchKlineInterval());
-        topBar.add(klineIntervalCombo);
-
-        // 指標勾選
-        cbSMA5 = new JCheckBox("SMA5", true);
-        cbSMA10 = new JCheckBox("SMA10", false);
-        cbSMA20 = new JCheckBox("SMA20", false);
-        cbEMA12 = new JCheckBox("EMA12", false);
-        cbEMA26 = new JCheckBox("EMA26", false);
-        cbBOLL = new JCheckBox("BOLL", false);
-        cbSwapColor = new JCheckBox("漲跌顏色互換", false);
-        ActionListener toggleIndicators = e -> {
-            // 先重算（避免資料空或不同步），再刷新掛載
-            recomputeOverlayFromOHLC();
-            refreshOverlayIndicators();
-        };
-        cbSMA5.addActionListener(toggleIndicators);
-        cbSMA10.addActionListener(toggleIndicators);
-        cbSMA20.addActionListener(toggleIndicators);
-        cbEMA12.addActionListener(toggleIndicators);
-        cbEMA26.addActionListener(toggleIndicators);
-        cbBOLL.addActionListener(toggleIndicators);
-        cbSwapColor.addActionListener(ev -> swapUpDownColors());
-
-        topBar.add(cbSMA5);
-        topBar.add(cbSMA10);
-        topBar.add(cbSMA20);
-        topBar.add(cbEMA12);
-        topBar.add(cbEMA26);
-        topBar.add(cbBOLL);
-        topBar.add(cbSwapColor);
-
-        // 效能模式（節能/一般/效能）
-        topBar.add(new JLabel("效能模式:"));
-        perfModeCombo = new JComboBox<>(new String[]{"節能","一般","效能"});
-        perfModeCombo.setSelectedIndex(1);
-        perfModeCombo.addActionListener(e -> applyPerfMode((String) perfModeCombo.getSelectedItem()));
-        topBar.add(perfModeCombo);
-        mainPanel.add(topBar, BorderLayout.NORTH);
-        tabbedPane.addTab("市場圖表", mainPanel);
+        // [UI] 工具列：主題切換 / 字級縮放 / 效能模式
+        JToolBar toolBar = createTopToolBar(); // [UI]
+        JPanel withToolbar = new JPanel(new BorderLayout());
+        withToolbar.add(toolBar, BorderLayout.NORTH);
+        withToolbar.add(mainPanel, BorderLayout.CENTER);
+        tabbedPane.addTab("市場圖表", withToolbar);
 
         // 創建損益表分頁
         JPanel profitPanel = createProfitPanel();
@@ -256,9 +347,7 @@ public class MainView extends JFrame {
         JPanel retailPanel = createRetailInfoPanel();
         tabbedPane.addTab("散戶資訊", retailPanel);
 
-        // 創建技術指標分頁
-        JPanel indicatorsPanel = createIndicatorsPanel();
-        tabbedPane.addTab("技術指標", indicatorsPanel);
+        // 精簡：移除技術指標分頁
 
         // 添加分頁面板到視窗
         getContentPane().add(tabbedPane, BorderLayout.CENTER);
@@ -285,6 +374,8 @@ public class MainView extends JFrame {
         JMenuItem resetChartsItem = new JMenuItem("重置所有圖表");
         resetChartsItem.addActionListener(e -> resetAllCharts((JPanel) tabbedPane.getSelectedComponent()));
         toolsMenu.add(resetChartsItem);
+
+        // （移除）視窗範圍與顯示控制
 
         // 創建幫助選單
         JMenu helpMenu = new JMenu("幫助");
@@ -315,6 +406,252 @@ public class MainView extends JFrame {
         // 如果你想載入設置，可以在這裡調用 loadSettings();
     }
 
+    // [UI] 建立頂部工具列
+    private JToolBar createTopToolBar() {
+        JToolBar bar = new JToolBar();
+        bar.setFloatable(false);
+
+        // 主題切換
+        JButton themeBtn = new JButton("主題"); // [UI]
+        themeBtn.addActionListener(e -> toggleTheme());
+        bar.add(themeBtn);
+        bar.addSeparator();
+
+        // 字級縮放
+        JButton fontMinus = new JButton("A-");
+        JButton fontPlus = new JButton("A+");
+        JButton fontReset = new JButton("A");
+        fontMinus.addActionListener(e -> {
+            globalFontSizePt = Math.max(10f, globalFontSizePt - 1f);
+            applyGlobalUIFont(new Font("Microsoft JhengHei UI", Font.PLAIN, (int) globalFontSizePt));
+        });
+        fontPlus.addActionListener(e -> {
+            globalFontSizePt = Math.min(20f, globalFontSizePt + 1f);
+            applyGlobalUIFont(new Font("Microsoft JhengHei UI", Font.PLAIN, (int) globalFontSizePt));
+        });
+        fontReset.addActionListener(e -> {
+            globalFontSizePt = 13f;
+            applyGlobalUIFont(new Font("Microsoft JhengHei UI", Font.PLAIN, (int) globalFontSizePt));
+        });
+        bar.add(fontMinus);
+        bar.add(fontPlus);
+        bar.add(fontReset);
+        bar.addSeparator();
+
+        // 效能模式
+        JComboBox<String> perfCombo = new JComboBox<>(new String[]{"節能", "平衡", "效能"}); // [PERF]
+        perfCombo.setSelectedIndex(1);
+        perfCombo.addActionListener(e -> {
+            String mode = (String) perfCombo.getSelectedItem();
+            applyPerfMode(mode); // [PERF]
+            applyPerfModeOverlay(mode); // [PERF]
+        });
+        bar.add(new JLabel("效能:"));
+        bar.add(perfCombo);
+
+        // 指令面板 (Ctrl+K)
+        JButton cmdBtn = new JButton("命令(Ctrl+K)"); // [UX]
+        cmdBtn.addActionListener(e -> showCommandPalette());
+        bar.addSeparator();
+        bar.add(cmdBtn);
+
+        // [UX] 一鍵重置視窗
+        JButton resetBtn = new JButton("重置視窗");
+        resetBtn.addActionListener(e -> {
+            try {
+                resetAllCharts((JPanel) tabbedPane.getSelectedComponent());
+                scheduleChartFlush();
+            } catch (Exception ignore) {}
+        });
+        bar.add(resetBtn);
+
+        bar.addSeparator();
+        // 市價滑價保護帶（0-50%）
+        bar.add(new JLabel("滑價上限%:"));
+        JSpinner spSlip = new JSpinner(new SpinnerNumberModel(10, 0, 50, 1));
+        JButton btnSlipApply = new JButton("套用滑價");
+        btnSlipApply.addActionListener(e -> {
+            try {
+                int v = (Integer) spSlip.getValue();
+                if (model != null && model.getOrderBook() != null) {
+                    model.getOrderBook().setMaxMarketSlippageRatio(v / 100.0);
+                    appendToInfoArea("已更新市價單滑價上限為 " + v + "%", InfoType.SYSTEM);
+                }
+            } catch (Exception ignore) {}
+        });
+        bar.add(spSlip);
+        bar.add(btnSlipApply);
+
+        // Replace Interval（主力撤換間隔 ticks）
+        bar.add(new JLabel("撤換間隔:"));
+        JSpinner spRepl = new JSpinner(new SpinnerNumberModel(10, 1, 200, 1));
+        JButton btnRepl = new JButton("套用撤換");
+        btnRepl.addActionListener(e -> {
+            try {
+                int v = (Integer) spRepl.getValue();
+                if (model != null && model.getMainForce() != null) {
+                    model.getMainForce().setReplaceIntervalTicks(v);
+                    appendToInfoArea("已更新主力撤換間隔為 " + v + " ticks", InfoType.SYSTEM);
+                }
+            } catch (Exception ignore) {}
+        });
+        bar.add(spRepl);
+        bar.add(btnRepl);
+        bar.addSeparator();
+        // [UI] 事件模式/門檻同步（全域）
+        bar.add(new JLabel("事件:"));
+        JComboBox<String> evMode = new JComboBox<>(new String[]{"一般","新聞","財報"});
+        JSpinner spWin = new JSpinner(new SpinnerNumberModel(60, 10, 600, 10));
+        JSpinner spCon = new JSpinner(new SpinnerNumberModel(3, 1, 20, 1));
+        JSpinner spTh = new JSpinner(new SpinnerNumberModel(65, 30, 95, 1));
+        JButton applyEv = new JButton("套用");
+        bar.add(evMode); bar.add(new JLabel("窗")); bar.add(spWin); bar.add(new JLabel("連")); bar.add(spCon); bar.add(new JLabel("%")); bar.add(spTh); bar.add(applyEv);
+        applyEv.addActionListener(e -> {
+            try {
+                int w = (Integer) spWin.getValue();
+                int c = (Integer) spCon.getValue();
+                int t = (Integer) spTh.getValue();
+                String m = (String) evMode.getSelectedItem();
+                if (orderBookView != null) orderBookView.applyParams(w, c, t, m);
+                // 下發到模型：事件模式影響（門檻提升與倉位係數）
+                if (model != null) {
+                    model.setEventParams(w, c, t, m);
+                }
+                if (inOutPanel != null) {
+                    int eff = t; if ("新聞".equals(m)) eff = Math.min(95, t+5); if ("財報".equals(m)) eff = Math.min(95, t+10);
+                    inOutPanel.setParams(w, c, t, m, eff);
+                }
+            } catch (Exception ignore) {}
+        });
+
+        bar.addSeparator();
+        // [UI] 均線設定面板
+        JButton maBtn = new JButton("指標設定");
+        maBtn.addActionListener(e -> showMaSettingsDialog());
+        bar.add(maBtn);
+
+        return bar;
+    }
+
+    // 供控制器/外部注入模型引用
+    public void setModel(StockMarketModel model) {
+        this.model = model;
+    }
+
+    // [UI] 均線設定對話框
+    private void showMaSettingsDialog(){
+        JCheckBox cbSma5 = new JCheckBox("SMA5", showSMA5);
+        JCheckBox cbSma10 = new JCheckBox("SMA10", showSMA10);
+        JCheckBox cbEma12 = new JCheckBox("EMA12", showEMA12);
+        JCheckBox cbVW = new JCheckBox("VWAP", showVWAP);
+        JCheckBox cbAVW = new JCheckBox("Anchored VWAP", showAVWAP);
+        JSpinner spSma5 = new JSpinner(new SpinnerNumberModel(sma5Period, 2, 200, 1));
+        JSpinner spSma10 = new JSpinner(new SpinnerNumberModel(sma10Period, 2, 300, 1));
+        JSpinner spEma12 = new JSpinner(new SpinnerNumberModel(ema12Period, 2, 300, 1));
+        JSpinner spSmaW = new JSpinner(new SpinnerNumberModel((double) smaLineWidth, 0.5, 5.0, 0.1));
+        JSpinner spEmaW = new JSpinner(new SpinnerNumberModel((double) emaLineWidth, 0.5, 5.0, 0.1));
+        JButton btnAnchor = new JButton("重設 AVWAP 起點(使用目前視窗起點)");
+        btnAnchor.addActionListener(e -> {
+            try {
+                if (priceChart != null && priceChart.getPlot() instanceof XYPlot){
+                    XYPlot p = (XYPlot) priceChart.getPlot();
+                    Range r = p.getDomainAxis().getRange();
+                    avwapAnchorMs = (long) r.getLowerBound();
+                    avwapSeries.clear(); avwapCumPV = 0.0; avwapCount = 0L;
+                }
+            } catch (Exception ignore) {}
+        });
+        JPanel p = new JPanel(new GridLayout(0,2,6,6));
+        p.add(cbSma5); p.add(spSma5);
+        p.add(cbSma10); p.add(spSma10);
+        p.add(cbEma12); p.add(spEma12);
+        p.add(cbVW); p.add(new JLabel("(跟隨主圖)"));
+        p.add(cbAVW); p.add(btnAnchor);
+        p.add(new JLabel("SMA 線寬")); p.add(spSmaW);
+        p.add(new JLabel("EMA 線寬")); p.add(spEmaW);
+        int ok = JOptionPane.showConfirmDialog(this, p, "指標設定", JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+        if (ok == JOptionPane.OK_OPTION){
+            showSMA5 = cbSma5.isSelected(); showSMA10 = cbSma10.isSelected(); showEMA12 = cbEma12.isSelected(); showVWAP = cbVW.isSelected(); showAVWAP = cbAVW.isSelected();
+            sma5Period = (Integer) spSma5.getValue();
+            sma10Period = (Integer) spSma10.getValue();
+            ema12Period = (Integer) spEma12.getValue();
+            smaLineWidth = ((Double) spSmaW.getValue()).floatValue();
+            emaLineWidth = ((Double) spEmaW.getValue()).floatValue();
+            try { rSMA5.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) {}
+            try { rSMA10.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) {}
+            try { rEMA12.setSeriesStroke(0, new BasicStroke(emaLineWidth)); } catch (Exception ignore) {}
+            applyIndicatorVisibility();
+        }
+    }
+
+    private void applyIndicatorVisibility(){
+        try {
+            XYPlot p = (XYPlot) candleChart.getPlot();
+            p.getRenderer(3).setSeriesVisible(0, showSMA5);
+            p.getRenderer(4).setSeriesVisible(0, showSMA10);
+            p.getRenderer(5).setSeriesVisible(0, showEMA12);
+            p.getRenderer(1).setSeriesVisible(0, showVWAP);
+            p.getRenderer(1).setSeriesVisible(1, showVWAP);
+            p.getRenderer(1).setSeriesVisible(2, showVWAP);
+            if (showAVWAP) {
+                if (dsAVWAP == null){
+                    dsAVWAP = new XYSeriesCollection();
+                    dsAVWAP.addSeries(avwapSeries);
+                    rAVWAP = new XYLineAndShapeRenderer(true,false);
+                    rAVWAP.setSeriesPaint(0, new Color(255,87,34));
+                    p.setDataset(7, dsAVWAP);
+                    p.setRenderer(7, rAVWAP);
+                }
+            }
+        } catch (Exception ignore) {}
+    }
+
+    // [CHART] 套用圖表預設（抗鋸齒、字型）
+    private void applyChartDefaults(JFreeChart chart) {
+        if (chart == null) return;
+        try {
+            chart.setAntiAlias(true);
+            setChartFont(chart);
+        } catch (Exception ignore) {}
+    }
+
+    // [CHART] 註冊圖表，以便集中觸發重繪
+    private void registerChart(JFreeChart chart) {
+        if (chart == null) return;
+        synchronized (registeredCharts) {
+            if (!registeredCharts.contains(chart)) {
+                registeredCharts.add(chart);
+            }
+        }
+    }
+
+    // [CHART] 合併重繪（預設 120ms；節能/平衡/效能=200/120/60）
+    public static void scheduleChartFlush() {
+        chartDirty = true;
+        if (chartFlushTimer == null) {
+            chartFlushTimer = new javax.swing.Timer(chartFlushIntervalMs, e -> {
+                if (!chartDirty) return;
+                chartDirty = false;
+                java.util.List<JFreeChart> copy;
+                synchronized (registeredCharts) { copy = new java.util.ArrayList<>(registeredCharts); }
+                for (JFreeChart c : copy) {
+                    try { c.fireChartChanged(); } catch (Exception ignore) {}
+                }
+            });
+            chartFlushTimer.setRepeats(false);
+        }
+        chartFlushTimer.setDelay(chartFlushIntervalMs);
+        chartFlushTimer.restart();
+    }
+
+    // [PERF] 提供外部（ControlView）切換效能模式介面
+    public static void applyPerfMode(String mode) {
+        int ms;
+        if ("節能".equals(mode)) ms = 200; else if ("效能".equals(mode)) ms = 60; else ms = 120;
+        chartFlushIntervalMs = ms;
+        if (chartFlushTimer != null) chartFlushTimer.setDelay(chartFlushIntervalMs);
+    }
+
     /**
      * 創建主分頁面板
      */
@@ -322,22 +659,24 @@ public class MainView extends JFrame {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
         // 創建圖表面板
-        // 放大 K 線圖，MACD/KDJ 改為子圖並存在主分頁下方；波動性與 RSI 改移到「技術指標」分頁
+        // 放大 K 線圖（上），成交量（下）
         JPanel chartPanel = new JPanel(new BorderLayout());
 
         // 創建各個圖表面板
         ChartPanel priceChartPanel = new ChartPanel(priceChart);
         ChartPanel volumeChartPanel = new ChartPanel(volumeChart);
-        ChartPanel macdPanel = new ChartPanel(macdChart);
-        ChartPanel kdjPanel = new ChartPanel(kdjChart);
 
         // 設置圖表交互性
         setupChartInteraction(priceChartPanel, "股價");
         setupChartInteraction(volumeChartPanel, "成交量");
 
-        // 添加到圖表面板 - 只添加一次
-        // 單張主圖：只顯示 K 線圖面板
-        chartPanel.add(priceChartPanel, BorderLayout.CENTER);
+        // 添加到圖表面板：上層 K 線、下層 成交量
+        JSplitPane kAndVolSplit = new JSplitPane(JSplitPane.VERTICAL_SPLIT, priceChartPanel, volumeChartPanel);
+        kAndVolSplit.setResizeWeight(0.8);
+        kAndVolSplit.setContinuousLayout(true);
+        kAndVolSplit.setOneTouchExpandable(true);
+        kAndVolSplit.setDividerSize(6);
+        chartPanel.add(kAndVolSplit, BorderLayout.CENTER);
 
         // 創建標籤面板
         JPanel labelPanel = new JPanel();
@@ -346,62 +685,111 @@ public class MainView extends JFrame {
         // 創建訂單簿視圖
         orderBookView = new OrderBookView();
 
-        // 信息面板
+        // 信息面板（置入分頁：市場信息 + 內外盤分析）
         JPanel infoPanel = new JPanel(new BorderLayout());
-        infoPanel.setBorder(BorderFactory.createTitledBorder("市場信息"));
-
-        // 創建信息文本區域
+        infoPanel.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
         infoTextArea = new JTextArea(8, 30);
         infoTextArea.setEditable(false);
         infoTextArea.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 13));
         infoTextArea.setBackground(new Color(250, 250, 250));
-
-        // 創建自定義滾動面板
+        // 控制訊息區長度上限，避免無限增長
+        infoTextArea.getDocument().addDocumentListener(new javax.swing.event.DocumentListener(){
+            private void trim(){
+                try{
+                    int max = 10000; // 最大字元數
+                    int len = infoTextArea.getDocument().getLength();
+                    if (len > max){
+                        infoTextArea.getDocument().remove(0, len - max);
+                    }
+                } catch (Exception ignore) {}
+            }
+            public void insertUpdate(javax.swing.event.DocumentEvent e){ trim(); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e){}
+            public void changedUpdate(javax.swing.event.DocumentEvent e){ trim(); }
+        });
         JScrollPane infoScrollPane = new JScrollPane(infoTextArea);
         infoScrollPane.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         infoScrollPane.getVerticalScrollBar().setUnitIncrement(16);
-
-        // 添加信息區域工具欄
         JToolBar infoToolBar = new JToolBar();
         infoToolBar.setFloatable(false);
         infoToolBar.setBorder(BorderFactory.createEmptyBorder(0, 0, 5, 0));
-
-        // 添加清除按鈕
         JButton clearButton = new JButton("清除");
         clearButton.addActionListener(e -> infoTextArea.setText(""));
         infoToolBar.add(clearButton);
         infoToolBar.addSeparator();
-
-        // 添加搜索欄位
         JTextField searchField = new JTextField(10);
         JButton searchButton = new JButton("搜索");
         searchButton.addActionListener(e -> searchInInfoText(searchField.getText()));
-
         infoToolBar.add(new JLabel("搜索: "));
         infoToolBar.add(searchField);
         infoToolBar.add(searchButton);
-
-        // 將工具欄和滾動面板添加到信息面板
+        infoToolBar.addSeparator();
+        // 即時市場指標摘要（In/Out、Δ、失衡、TPS、VPS）
+        marketStatsLabel = new JLabel("指標: In/Out --/--  Δ --  失衡 --  TPS -- VPS --");
+        marketStatsLabel.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+        infoToolBar.add(marketStatsLabel);
         infoPanel.add(infoToolBar, BorderLayout.NORTH);
         infoPanel.add(infoScrollPane, BorderLayout.CENTER);
+
+        // 內外盤分析面板（大圖）
+        inOutPanel = new InOutAnalyticsPanel();
+        JPanel inOutTab = new JPanel(new BorderLayout());
+        inOutTab.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        inOutTab.add(inOutPanel, BorderLayout.CENTER);
+
+        // Tape（逐筆成交）：Aggressor/價/量/滑價/速度
+        tapePanel = new TapePanel();
+        JPanel tapeTab = new JPanel(new BorderLayout());
+        tapeTab.setBorder(BorderFactory.createEmptyBorder(4,4,4,4));
+        tapeTab.add(tapePanel, BorderLayout.CENTER);
+
+        // 分頁容器
+        infoTabs = new JTabbedPane(JTabbedPane.TOP);
+        infoTabs.addTab("市場信息", infoPanel);
+        infoTabs.addTab("內外盤分析", inOutTab);
+        infoTabs.addTab("逐筆Tape", tapeTab);
+
+        // （移除）多週期聯動分頁
 
         // 將訂單簿和信息區域組合
         JSplitPane infoSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 orderBookView.getScrollPane(),
-                infoPanel);
+                infoTabs);
         infoSplitPane.setResizeWeight(0.7);
+        infoSplitPane.setOneTouchExpandable(true);
+        infoSplitPane.setDividerSize(6);
 
         // 將圖表和標籤區域組合
         JSplitPane chartLabelSplitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
                 chartPanel,
                 labelPanel);
         chartLabelSplitPane.setResizeWeight(0.8);
+        chartLabelSplitPane.setOneTouchExpandable(true);
+        chartLabelSplitPane.setDividerSize(6);
+
+        // 註冊內外盤回呼 -> 更新分析分頁
+        try {
+            orderBookView.setInOutListener((inVol, outVol, inPct) -> {
+                if (inOutPanel != null) inOutPanel.setData(inVol, outVol, inPct);
+                lastInPctFromOB = inPct; lastInVolFromOB = inVol; lastOutVolFromOB = outVol;
+            });
+            orderBookView.setParamListener((window, consecutive, threshold, mode, effTh) -> {
+                consecutiveRequired = Math.max(1, consecutive);
+                effectiveThreshold = Math.max(1, Math.min(99, effTh));
+                if (inOutPanel != null) inOutPanel.setParams(window, consecutive, threshold, mode, effTh);
+            });
+            orderBookView.setTapeListener((buyerInitiated, price, volume, bestBid, bestAsk) -> {
+                pushTapeTrade(buyerInitiated, price, volume, bestBid, bestAsk);
+            });
+        } catch (Exception ignore) {}
 
         // 將左右兩部分組合
         JSplitPane mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
                 chartLabelSplitPane,
                 infoSplitPane);
         mainSplitPane.setResizeWeight(0.7);
+        mainSplitPane.setOneTouchExpandable(true);
+        mainSplitPane.setDividerSize(6);
 
         // 添加分割面板持續位置記憶功能
         mainSplitPane.setContinuousLayout(true);
@@ -430,6 +818,41 @@ public class MainView extends JFrame {
         mainPanel.add(statusBar, BorderLayout.SOUTH);
 
         return mainPanel;
+    }
+
+    // [UX] Ctrl+K 指令面板（簡化版）
+    private void showCommandPalette() {
+        String[] cmds = new String[]{
+                "切換主題",
+                "重置圖表縮放",
+                "效能: 節能",
+                "效能: 平衡",
+                "效能: 效能",
+                "搜索資訊..."
+        };
+        String sel = (String) JOptionPane.showInputDialog(
+                this, "指令:", "Command Palette", JOptionPane.PLAIN_MESSAGE,
+                null, cmds, cmds[1]);
+        if (sel == null) return;
+        switch (sel) {
+            case "切換主題":
+                toggleTheme();
+                break;
+            case "重置圖表縮放":
+                Component selectedComponent = tabbedPane.getSelectedComponent();
+                if (selectedComponent instanceof JPanel) {
+                    resetAllCharts((JPanel) selectedComponent);
+                    scheduleChartFlush(); // [CHART]
+                }
+                break;
+            case "效能: 節能": applyPerfMode("節能"); applyPerfModeOverlay("節能"); break;
+            case "效能: 平衡": applyPerfMode("平衡"); applyPerfModeOverlay("平衡"); break;
+            case "效能: 效能": applyPerfMode("效能"); applyPerfModeOverlay("效能"); break;
+            case "搜索資訊...":
+                String q = JOptionPane.showInputDialog(this, "輸入關鍵字:");
+                if (q != null && !q.isEmpty()) searchInInfoText(q);
+                break;
+        }
     }
 
     /**
@@ -947,84 +1370,17 @@ public class MainView extends JFrame {
     /**
      * 更新MACD指標數據
      */
-    public void updateMACDIndicator(int timeStep, double macdLine, double signalLine, double histogram) {
-        if (macdLineSeries != null && macdSignalSeries != null && macdHistogramSeries != null) {
-            SwingUtilities.invokeLater(() -> {
-                try {
-                    macdLineSeries.add(timeStep, macdLine);
-                    macdSignalSeries.add(timeStep, signalLine);
-                    macdHistogramSeries.add(timeStep, histogram);
-
-                    // 限制數據點數量，保持性能
-                    limitSeriesDataPoints(macdLineSeries, maxDataPoints);
-                    limitSeriesDataPoints(macdSignalSeries, maxDataPoints);
-                    limitSeriesDataPoints(macdHistogramSeries, maxDataPoints);
-                } catch (Exception e) {
-                    System.err.println("更新MACD指標時發生錯誤: " + e.getMessage());
-                }
-            });
-        }
-    }
+    public void updateMACDIndicator(int timeStep, double macdLine, double signalLine, double histogram) { }
 
     /**
      * 更新布林帶指標數據
      */
-    public void updateBollingerBandsIndicator(int timeStep, double upperBand, double middleBand, double lowerBand) {
-        if (bollingerUpperSeries != null && bollingerMiddleSeries != null && bollingerLowerSeries != null) {
-            SwingUtilities.invokeLater(() -> {
-                try {
-                    bollingerUpperSeries.add(timeStep, upperBand);
-                    bollingerMiddleSeries.add(timeStep, middleBand);
-                    bollingerLowerSeries.add(timeStep, lowerBand);
-
-                    // 同時更新布林帶圖表中的價格線（第一個系列）
-                    if (bollingerBandsChart != null) {
-                        XYPlot plot = bollingerBandsChart.getXYPlot();
-                        XYSeriesCollection dataset = (XYSeriesCollection) plot.getDataset();
-                        if (dataset.getSeriesCount() > 0) {
-                            XYSeries priceSeries = dataset.getSeries(0);
-                            // 從主價格序列複製當前價格點
-                            if (this.priceSeries != null && this.priceSeries.getItemCount() > 0) {
-                                int lastIndex = this.priceSeries.getItemCount() - 1;
-                                double currentPrice = this.priceSeries.getY(lastIndex).doubleValue();
-                                priceSeries.add(timeStep, currentPrice);
-                                limitSeriesDataPoints(priceSeries, maxDataPoints);
-                            }
-                        }
-                    }
-
-                    // 限制數據點數量，保持性能
-                    limitSeriesDataPoints(bollingerUpperSeries, maxDataPoints);
-                    limitSeriesDataPoints(bollingerMiddleSeries, maxDataPoints);
-                    limitSeriesDataPoints(bollingerLowerSeries, maxDataPoints);
-                } catch (Exception e) {
-                    System.err.println("更新布林帶指標時發生錯誤: " + e.getMessage());
-                }
-            });
-        }
-    }
+    public void updateBollingerBandsIndicator(int timeStep, double upperBand, double middleBand, double lowerBand) { }
 
     /**
      * 更新KDJ指標數據
      */
-    public void updateKDJIndicator(int timeStep, double kValue, double dValue, double jValue) {
-        if (kSeries != null && dSeries != null && jSeries != null) {
-            SwingUtilities.invokeLater(() -> {
-                try {
-                    kSeries.add(timeStep, kValue);
-                    dSeries.add(timeStep, dValue);
-                    jSeries.add(timeStep, jValue);
-
-                    // 限制數據點數量，保持性能
-                    limitSeriesDataPoints(kSeries, maxDataPoints);
-                    limitSeriesDataPoints(dSeries, maxDataPoints);
-                    limitSeriesDataPoints(jSeries, maxDataPoints);
-                } catch (Exception e) {
-                    System.err.println("更新KDJ指標時發生錯誤: " + e.getMessage());
-                }
-            });
-        }
-    }
+    public void updateKDJIndicator(int timeStep, double kValue, double dValue, double jValue) { }
 
     /**
      * 限制數據系列的數據點數量
@@ -1142,11 +1498,16 @@ public class MainView extends JFrame {
                     // 限制每個系列的數據點
                     for (int seriesIndex = 0; seriesIndex < collection.getSeriesCount(); seriesIndex++) {
                         XYSeries series = collection.getSeries(seriesIndex);
+                        // 批次更新關閉通知，減少重繪
+                        boolean prev = series.getNotify();
+                        series.setNotify(false);
 
                         // 移除多餘的數據點
                         while (series.getItemCount() > maxPoints) {
                             series.remove(0);
                         }
+
+                        series.setNotify(prev);
                     }
                 }
             }
@@ -1371,6 +1732,7 @@ public class MainView extends JFrame {
         // 建立多週期 K 線系列與集合（秒級 + 分級）
         for (int s : klineSeconds) {
             OHLCSeries srs = new OHLCSeries("K線(" + s + "秒)");
+            try { srs.setMaximumItemCount(30); } catch (Exception ignore) {}
             minuteToSeries.put(-s, srs); // 以負值 key 表示秒
             OHLCSeriesCollection c = new OHLCSeriesCollection();
             c.addSeries(srs);
@@ -1378,6 +1740,7 @@ public class MainView extends JFrame {
         }
         for (int m : klineMinutes) {
             OHLCSeries s = new OHLCSeries("K線(" + m + "分)");
+            try { s.setMaximumItemCount(30); } catch (Exception ignore) {}
             minuteToSeries.put(m, s);
             OHLCSeriesCollection c = new OHLCSeriesCollection();
             c.addSeries(s);
@@ -1388,10 +1751,16 @@ public class MainView extends JFrame {
         ohlcSeries = minuteToSeries.get(currentKlineMinutes);
         OHLCSeriesCollection ohlcCollection = minuteToCollection.get(currentKlineMinutes);
         candleChart = ChartFactory.createCandlestickChart("K線走勢", "時間", "價格", ohlcCollection, true);
+        applyChartDefaults(candleChart); // [CHART]
+        registerChart(candleChart); // [CHART]
 
         XYPlot candlePlot = candleChart.getXYPlot();
         CandlestickRenderer candleRenderer = new CandlestickRenderer();
-        candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_SMALLEST);
+        // 固定較穩定的實體寬度計算，降低重繪計算量
+        try {
+            candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_AVERAGE);
+            candleRenderer.setAutoWidthGap(0.2);
+        } catch (Exception ignore) {}
         candleRenderer.setUpPaint(new Color(220, 20, 60));   // 上漲
         candleRenderer.setDownPaint(new Color(34, 139, 34)); // 下跌
         candlePlot.setRenderer(candleRenderer);
@@ -1400,15 +1769,7 @@ public class MainView extends JFrame {
         dateAxis.setDateFormatOverride(new java.text.SimpleDateFormat("HH:mm:ss"));
         candlePlot.setDomainAxis(dateAxis);
 
-        // 疊加 SMA 折線
-        XYSeriesCollection smaDataset = new XYSeriesCollection();
-        smaDataset.addSeries(smaSeries);
-        candlePlot.setDataset(1, smaDataset);
-        XYLineAndShapeRenderer smaRenderer = new XYLineAndShapeRenderer(true, false);
-        smaRenderer.setSeriesPaint(0, new Color(204, 0, 0));
-        smaRenderer.setSeriesStroke(0, new BasicStroke(1.5f, BasicStroke.CAP_BUTT,
-                BasicStroke.JOIN_ROUND, 0, new float[]{5.0f, 5.0f}, 0));
-        candlePlot.setRenderer(1, smaRenderer);
+        // 精簡：移除 K 線圖上的 SMA 虛線疊加
 
         // 準備其他疊加系列容器（先建立空系列，按勾選顯示/隱藏）
         sma5Series = new XYSeries("SMA5");
@@ -1420,17 +1781,88 @@ public class MainView extends JFrame {
         bollMSeries = new XYSeries("BOLL_M");
         bollLSeries = new XYSeries("BOLL_L");
         volumeOverlaySeries = new XYSeries("VOL");
+        // [CHART] VWAP 與帶
+        vwapSeries = new XYSeries("VWAP"); vwapSeries.setMaximumItemCount(2000);
+        vwapUpperSeries = new XYSeries("VWAP_U"); vwapUpperSeries.setMaximumItemCount(2000);
+        vwapLowerSeries = new XYSeries("VWAP_L"); vwapLowerSeries.setMaximumItemCount(2000);
 
-        // Dataset 索引：2..N 由 refreshOverlayIndicators 動態填入
+        // 預先建立常駐 datasets/renderers，之後僅切換可見性，避免重附加造成閃爍
+        dsSMA5 = new XYSeriesCollection(); dsSMA5.addSeries(sma5Series);
+        dsSMA10 = new XYSeriesCollection(); dsSMA10.addSeries(sma10Series);
+        dsSMA20 = new XYSeriesCollection(); dsSMA20.addSeries(sma20Series);
+        dsEMA12 = new XYSeriesCollection(); dsEMA12.addSeries(ema12Series);
+        dsEMA26 = new XYSeriesCollection(); dsEMA26.addSeries(ema26Series);
+        dsBOLL = new XYSeriesCollection(); dsBOLL.addSeries(bollUSeries); dsBOLL.addSeries(bollMSeries); dsBOLL.addSeries(bollLSeries);
+        dsVOL = new XYSeriesCollection(); dsVOL.addSeries(volumeOverlaySeries);
+        dsMACD = new XYSeriesCollection(); dsMACD.addSeries(macdLineSeries); dsMACD.addSeries(macdSignalSeries);
+        dsVWAP = new XYSeriesCollection(); dsVWAP.addSeries(vwapSeries); dsVWAP.addSeries(vwapUpperSeries); dsVWAP.addSeries(vwapLowerSeries);
+
+        rSMA5 = new XYLineAndShapeRenderer(true, false); rSMA5.setSeriesPaint(0, new Color(255, 165, 0)); rSMA5.setDefaultSeriesVisibleInLegend(false);
+        rSMA10 = new XYLineAndShapeRenderer(true, false); rSMA10.setSeriesPaint(0, new Color(0, 128, 255)); rSMA10.setDefaultSeriesVisibleInLegend(false);
+        rSMA20 = new XYLineAndShapeRenderer(true, false); rSMA20.setSeriesPaint(0, new Color(128, 0, 128)); rSMA20.setDefaultSeriesVisibleInLegend(false);
+        rEMA12 = new XYLineAndShapeRenderer(true, false); rEMA12.setSeriesPaint(0, new Color(0, 180, 180)); rEMA12.setDefaultSeriesVisibleInLegend(false);
+        rEMA26 = new XYLineAndShapeRenderer(true, false); rEMA26.setSeriesPaint(0, new Color(180, 120, 0)); rEMA26.setDefaultSeriesVisibleInLegend(false);
+        rBOLL = new XYLineAndShapeRenderer(true, false); rBOLL.setSeriesPaint(0, Color.GRAY); rBOLL.setSeriesPaint(1, Color.DARK_GRAY); rBOLL.setSeriesPaint(2, Color.GRAY); rBOLL.setDefaultSeriesVisibleInLegend(false);
+        rVOL = new XYBarRenderer(1.0);
+        rMACD = new XYLineAndShapeRenderer(true, false); rMACD.setSeriesPaint(0, new Color(200, 80, 0)); rMACD.setSeriesPaint(1, new Color(0, 180, 0));
+        rVWAP = new XYLineAndShapeRenderer(true, false);
+        rVWAP.setSeriesPaint(0, new Color(33,150,243));
+        rVWAP.setSeriesPaint(1, new Color(33,150,243,120));
+        rVWAP.setSeriesPaint(2, new Color(33,150,243,120));
+        // 觸發點渲染（只畫點）
+        dsSignals = new XYSeriesCollection(); dsSignals.addSeries(bullSignals); dsSignals.addSeries(bearSignals); dsSignals.addSeries(tickImbBuySeries); dsSignals.addSeries(tickImbSellSeries);
+        rSignals = new XYLineAndShapeRenderer(false, true);
+        rSignals.setSeriesPaint(0, new Color(0,150,0));
+        rSignals.setSeriesPaint(1, new Color(200,0,0));
+        rSignals.setSeriesPaint(2, new Color(67,160,71));
+        rSignals.setSeriesPaint(3, new Color(198,40,40));
+        java.awt.Shape shape = new java.awt.geom.Ellipse2D.Double(-2,-2,4,4);
+        rSignals.setSeriesShape(0, shape); rSignals.setSeriesShape(1, shape);
 
         // 背景與網格
-        candlePlot.setBackgroundPaint(new GradientPaint(0, 0, new Color(240, 240, 255), 0, 1000, Color.WHITE));
+        // 簡化背景以減少重繪成本
+        candlePlot.setBackgroundPaint(new Color(245, 248, 255));
         candlePlot.setDomainGridlinePaint(new Color(220, 220, 220));
         candlePlot.setRangeGridlinePaint(new Color(220, 220, 220));
 
         NumberAxis rangeAxis = (NumberAxis) candlePlot.getRangeAxis();
         rangeAxis.setAutoRangeIncludesZero(false);
         rangeAxis.setAutoRangeStickyZero(false);
+
+        // [CHART] 關鍵價位標註（開/高/低）
+        try {
+            openMarker = new org.jfree.chart.plot.ValueMarker(0, new Color(96,125,139), new BasicStroke(0.8f));
+            openMarker.setLabel("開"); openMarker.setLabelPaint(new Color(96,125,139)); openMarker.setLabelAnchor(org.jfree.chart.ui.RectangleAnchor.TOP_LEFT); openMarker.setLabelTextAnchor(org.jfree.chart.ui.TextAnchor.TOP_LEFT);
+            highMarker = new org.jfree.chart.plot.ValueMarker(0, new Color(198,40,40), new BasicStroke(0.8f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 1f, new float[]{4f,4f}, 0f));
+            highMarker.setLabel("高"); highMarker.setLabelPaint(new Color(198,40,40)); highMarker.setLabelAnchor(org.jfree.chart.ui.RectangleAnchor.BOTTOM_LEFT); highMarker.setLabelTextAnchor(org.jfree.chart.ui.TextAnchor.BOTTOM_LEFT);
+            lowMarker = new org.jfree.chart.plot.ValueMarker(0, new Color(56,142,60), new BasicStroke(0.8f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 1f, new float[]{4f,4f}, 0f));
+            lowMarker.setLabel("低"); lowMarker.setLabelPaint(new Color(56,142,60)); lowMarker.setLabelAnchor(org.jfree.chart.ui.RectangleAnchor.TOP_LEFT); lowMarker.setLabelTextAnchor(org.jfree.chart.ui.TextAnchor.TOP_LEFT);
+            candlePlot.addRangeMarker(openMarker);
+            candlePlot.addRangeMarker(highMarker);
+            candlePlot.addRangeMarker(lowMarker);
+        } catch (Exception ignore) {}
+
+        // [CHART] 在 dataset 1 位置加入 VWAP 與上下帶
+        candlePlot.setDataset(1, dsVWAP);
+        candlePlot.setRenderer(1, rVWAP);
+        // [CHART] 在 dataset 2 位置加入觸發點
+        candlePlot.setDataset(2, dsSignals);
+        candlePlot.setRenderer(2, rSignals);
+        // [CHART] 在 dataset 3/4/5 位置加入 SMA5、SMA10、EMA12
+        candlePlot.setDataset(3, dsSMA5);
+        candlePlot.setRenderer(3, rSMA5);
+        candlePlot.setDataset(4, dsSMA10);
+        candlePlot.setRenderer(4, rSMA10);
+        candlePlot.setDataset(5, dsEMA12);
+        candlePlot.setRenderer(5, rEMA12);
+        // [CHART] 在 dataset 6 加入大單標記
+        dsBig = new XYSeriesCollection(); dsBig.addSeries(bigBuySeries); dsBig.addSeries(bigSellSeries);
+        rBig = new XYLineAndShapeRenderer(false, true);
+        java.awt.Shape bigShape = new java.awt.geom.Ellipse2D.Double(-4,-4,8,8);
+        rBig.setSeriesShape(0, bigShape); rBig.setSeriesPaint(0, new Color(0,150,136));
+        rBig.setSeriesShape(1, bigShape); rBig.setSeriesPaint(1, new Color(233,30,99));
+        candlePlot.setDataset(6, dsBig);
+        candlePlot.setRenderer(6, rBig);
 
         // 與既有流程相容：把價格圖參考指向 K 線圖
         priceChart = candleChart;
@@ -1445,6 +1877,8 @@ public class MainView extends JFrame {
         macdDataset.addSeries(macdLineSeries);
         macdDataset.addSeries(macdSignalSeries);
         macdChart = createXYChart("MACD指標", "時間", "MACD值", macdDataset);
+        applyChartDefaults(macdChart); // [CHART]
+        registerChart(macdChart); // [CHART]
 
         // 為MACD添加柱狀圖
         XYBarRenderer macdBarRenderer = new XYBarRenderer(0.2);
@@ -1465,6 +1899,8 @@ public class MainView extends JFrame {
         bollingerDataset.addSeries(bollingerMiddleSeries);
         bollingerDataset.addSeries(bollingerLowerSeries);
         bollingerBandsChart = createXYChart("布林帶", "時間", "價格", bollingerDataset);
+        applyChartDefaults(bollingerBandsChart); // [CHART]
+        registerChart(bollingerBandsChart); // [CHART]
 
         // 設置線條顏色和樣式
         XYPlot bollingerPlot = bollingerBandsChart.getXYPlot();
@@ -1479,6 +1915,8 @@ public class MainView extends JFrame {
         kdjDataset.addSeries(dSeries);
         kdjDataset.addSeries(jSeries);
         kdjChart = createXYChart("KDJ指標", "時間", "KDJ值", kdjDataset);
+        applyChartDefaults(kdjChart); // [CHART]
+        registerChart(kdjChart); // [CHART]
 
         // 設置KDJ線條顏色
         XYPlot kdjPlot = kdjChart.getXYPlot();
@@ -1496,11 +1934,15 @@ public class MainView extends JFrame {
         XYSeriesCollection volatilityDataset = new XYSeriesCollection();
         volatilityDataset.addSeries(volatilitySeries);
         volatilityChart = createXYChart("市場波動性", "時間", "波動性", volatilityDataset);
+        applyChartDefaults(volatilityChart); // [CHART]
+        registerChart(volatilityChart); // [CHART]
 
         // 創建RSI圖
         XYSeriesCollection rsiDataset = new XYSeriesCollection();
         rsiDataset.addSeries(rsiSeries);
         rsiChart = createXYChart("相對強弱指數 (RSI)", "時間", "RSI", rsiDataset);
+        applyChartDefaults(rsiChart); // [CHART]
+        registerChart(rsiChart); // [CHART]
 
         // 設置RSI圖的額外屬性
         XYPlot rsiPlot = rsiChart.getXYPlot();
@@ -1513,12 +1955,16 @@ public class MainView extends JFrame {
         XYSeriesCollection wapDataset = new XYSeriesCollection();
         wapDataset.addSeries(wapSeries);
         wapChart = createXYChart("加權平均價格 (WAP)", "時間", "WAP", wapDataset);
+        applyChartDefaults(wapChart); // [CHART]
+        registerChart(wapChart); // [CHART]
 
         // 創建成交量圖 - 增強版
         volumeChart = ChartFactory.createBarChart(
                 "成交量", "時間", "成交量", volumeDataset,
                 PlotOrientation.VERTICAL, false, true, false
         );
+        applyChartDefaults(volumeChart); // [CHART]
+        registerChart(volumeChart); // [CHART]
 
         // 設置成交量圖的渲染器
         CategoryPlot volumePlot = volumeChart.getCategoryPlot();
@@ -1570,12 +2016,54 @@ public class MainView extends JFrame {
         volumeRenderer.setBarPainter(new StandardBarPainter());
         volumePlot.setRenderer(volumeRenderer);
 
-        // 設置圖表字體
+        // 設置圖表字體與渲染器優化
         setChartFont(volumeChart);
         setChartFont(priceChart);
-        setChartFont(volatilityChart);
-        setChartFont(rsiChart);
-        setChartFont(wapChart);
+
+        // 統一渲染器：關閉 shapes，長線條使用 path 模式以提速
+        try {
+            if (candlePlot.getRenderer() instanceof XYLineAndShapeRenderer) {
+                XYLineAndShapeRenderer rr = (XYLineAndShapeRenderer) candlePlot.getRenderer();
+                rr.setDefaultShapesVisible(false);
+                rr.setDrawSeriesLineAsPath(true);
+            }
+        } catch (Exception ignore) {}
+    }
+
+    // [CHART] 從現有 K 線資料建立指定週期的只讀副本圖（簡版）
+    private JFreeChart copyChartForPeriod(int minutes){
+        try {
+            OHLCSeriesCollection col = minuteToCollection.get(minutes);
+            if (col == null) {
+                // 若尚未存在，臨時建立空集合避免 NPE
+                OHLCSeries s = new OHLCSeries("K線("+minutes+(minutes<0?"秒":"分")+")");
+                try { s.setMaximumItemCount(10); } catch (Exception ignore) {}
+                col = new OHLCSeriesCollection(); col.addSeries(s);
+            }
+            JFreeChart cc = ChartFactory.createCandlestickChart("K("+(minutes<0?(-minutes+"秒"):(minutes+"分"))+")","時間","價格", col, false);
+            applyChartDefaults(cc);
+            // 設定紅漲綠跌的蠟燭顏色
+            XYPlot p = cc.getXYPlot();
+            org.jfree.chart.renderer.xy.CandlestickRenderer r = (org.jfree.chart.renderer.xy.CandlestickRenderer) p.getRenderer();
+            r.setUpPaint(new Color(220, 20, 60));   // 上漲=紅
+            r.setDownPaint(new Color(34, 139, 34)); // 下跌=綠
+            // 於每張分圖加入簡版均線（SMA5/SMA10/EMA12），各自 dataset 層
+            XYSeries s5 = periodToSMA5.computeIfAbsent(minutes, k -> new XYSeries("SMA5"));
+            XYSeries s10 = periodToSMA10.computeIfAbsent(minutes, k -> new XYSeries("SMA10"));
+            XYSeries e12 = periodToEMA12.computeIfAbsent(minutes, k -> new XYSeries("EMA12"));
+            XYSeriesCollection d5 = new XYSeriesCollection(); d5.addSeries(s5);
+            XYSeriesCollection d10 = new XYSeriesCollection(); d10.addSeries(s10);
+            XYSeriesCollection d12 = new XYSeriesCollection(); d12.addSeries(e12);
+            XYLineAndShapeRenderer rr5 = new XYLineAndShapeRenderer(true,false); rr5.setSeriesPaint(0, new Color(255,165,0)); rr5.setSeriesStroke(0, new BasicStroke(smaLineWidth));
+            XYLineAndShapeRenderer rr10 = new XYLineAndShapeRenderer(true,false); rr10.setSeriesPaint(0, new Color(0,128,255)); rr10.setSeriesStroke(0, new BasicStroke(smaLineWidth));
+            XYLineAndShapeRenderer rr12 = new XYLineAndShapeRenderer(true,false); rr12.setSeriesPaint(0, new Color(0,180,180)); rr12.setSeriesStroke(0, new BasicStroke(emaLineWidth));
+            p.setDataset(1, d5); p.setRenderer(1, rr5);
+            p.setDataset(2, d10); p.setRenderer(2, rr10);
+            p.setDataset(3, d12); p.setRenderer(3, rr12);
+            return cc;
+        } catch (Exception e){
+            return ChartFactory.createCandlestickChart("K","時間","價格", new OHLCSeriesCollection(), false);
+        }
     }
 
     /**
@@ -1724,6 +2212,10 @@ public class MainView extends JFrame {
                 }
                 try {
                     OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+                    // 控制最大保留K線根數，避免無限增長
+                    while (series.getItemCount() > maxKlineBars) {
+                        series.remove(0);
+                    }
                     if (series.getItemCount() == 0) {
                         series.add(period, price, price, price, price);
                     } else {
@@ -1748,18 +2240,166 @@ public class MainView extends JFrame {
                     }
                 } catch (Exception ignore) {
                 }
+
+                // [CHART] 另外更新多週期資料（30秒、60秒、10分、30分）
+                int[] extraKeys = new int[]{-30, -60, 10, 30};
+                for (int key : extraKeys) {
+                    if (key == currentKlineMinutes) continue;
+                    try { updateOhlcForKey(price, now, key); } catch (Exception ignore) {}
+                }
+
+                // [CHART] 基於 OHLC close 重新計算 SMA5/SMA10/EMA12
+                try {
+                    OHLCSeries s = minuteToSeries.get(currentKlineMinutes);
+                    if (s != null && s.getItemCount() > 0) {
+                        int n = s.getItemCount();
+                        java.util.List<Double> closes = new java.util.ArrayList<>(n);
+                        for (int i=0;i<n;i++) closes.add(((org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i)).getCloseValue());
+                        // SMA5（可變期間）
+                        sma5Series.clear();
+                        for (int i=0;i<n;i++) {
+                            double sum=0; int cnt=0; for (int j=i-(sma5Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } }
+                            double val = cnt>0? sum/cnt : closes.get(i);
+                            org.jfree.data.time.ohlc.OHLCItem item = (org.jfree.data.time.ohlc.OHLCItem) s.getDataItem(i);
+                            long x = item.getPeriod().getFirstMillisecond();
+                            sma5Series.add(x, val);
+                        }
+                        // SMA10
+                        sma10Series.clear();
+                        for (int i=0;i<n;i++) {
+                            double sum=0; int cnt=0; for (int j=i-(sma10Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } }
+                            double val = cnt>0? sum/cnt : closes.get(i);
+                            org.jfree.data.time.ohlc.OHLCItem item = (org.jfree.data.time.ohlc.OHLCItem) s.getDataItem(i);
+                            long x = item.getPeriod().getFirstMillisecond();
+                            sma10Series.add(x, val);
+                        }
+                        // EMA12
+                        ema12Series.clear();
+                        double k = 2.0/(ema12Period+1);
+                        double ema = closes.get(0);
+                        for (int i=0;i<n;i++){
+                            double c = closes.get(i);
+                            if (i==0) ema = c; else ema = c*k + ema*(1-k);
+                            org.jfree.data.time.ohlc.OHLCItem item = (org.jfree.data.time.ohlc.OHLCItem) s.getDataItem(i);
+                            long x = item.getPeriod().getFirstMillisecond();
+                            ema12Series.add(x, ema);
+                        }
+                        keepSeriesWithinLimit(sma5Series, indicatorMaxPoints);
+                        keepSeriesWithinLimit(sma10Series, indicatorMaxPoints);
+                        keepSeriesWithinLimit(ema12Series, indicatorMaxPoints);
+                        // 同步更新多週期分圖的對應均線數據（若當前 minutes 對應到子圖）
+                        try {
+                            XYSeries s5 = periodToSMA5.get(currentKlineMinutes);
+                            XYSeries s10 = periodToSMA10.get(currentKlineMinutes);
+                            XYSeries e12 = periodToEMA12.get(currentKlineMinutes);
+                            if (s5!=null){ s5.clear(); for(int i=0;i<n;i++){ org.jfree.data.time.ohlc.OHLCItem item=(org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i); long x=item.getPeriod().getFirstMillisecond(); double sum=0; int cnt=0; for(int j=i-(sma5Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } } double val=cnt>0?sum/cnt:closes.get(i); s5.add(x,val);} }
+                            if (s10!=null){ s10.clear(); for(int i=0;i<n;i++){ org.jfree.data.time.ohlc.OHLCItem item=(org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i); long x=item.getPeriod().getFirstMillisecond(); double sum=0; int cnt=0; for(int j=i-(sma10Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } } double val=cnt>0?sum/cnt:closes.get(i); s10.add(x,val);} }
+                            if (e12!=null){ e12.clear(); double k2 = 2.0/(ema12Period+1); double ema2 = closes.get(0); for (int i=0;i<n;i++){ double c=closes.get(i); if(i==0) ema2=c; else ema2=c*k2+ema2*(1-k2); org.jfree.data.time.ohlc.OHLCItem item=(org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i); long x=item.getPeriod().getFirstMillisecond(); e12.add(x,ema2);} }
+                        } catch (Exception ignore) {}
+                    }
+                } catch (Exception ignore) {}
+
+                // [CHART] 即時計算 VWAP 與上下帶（以當前窗累積）
+                try {
+                    vwapCumulativeVolume += 1; // 以 tick 當作單位量，若有真實量請改為 volume
+                    vwapCumulativePV += price; // 以 tick 價格代替 price*volume
+                    vwapSamples++;
+                    double vwap = vwapCumulativePV / Math.max(1.0, vwapCumulativeVolume);
+                    // Welford 單通道方差，用於動態帶寬
+                    double delta = price - vwapMean; vwapMean += delta / vwapSamples; double delta2 = price - vwapMean; vwapM2 += delta * delta2;
+                    double variance = vwapSamples>1 ? vwapM2 / (vwapSamples - 1) : 0.0;
+                    double stdev = Math.sqrt(Math.max(0.0, variance));
+                    double upper = vwap + 2 * stdev;
+                    double lower = vwap - 2 * stdev;
+                    long xMs;
+                    if (currentKlineMinutes < 0) xMs = ((Second) period).getFirstMillisecond(); else xMs = ((Minute) period).getFirstMillisecond();
+                    int idx = vwapSeries.indexOf(xMs);
+                    if (idx >= 0) vwapSeries.updateByIndex(idx, vwap); else vwapSeries.add(xMs, vwap);
+                    idx = vwapUpperSeries.indexOf(xMs);
+                    if (idx >= 0) vwapUpperSeries.updateByIndex(idx, upper); else vwapUpperSeries.add(xMs, upper);
+                    idx = vwapLowerSeries.indexOf(xMs);
+                    if (idx >= 0) vwapLowerSeries.updateByIndex(idx, lower); else vwapLowerSeries.add(xMs, lower);
+                    keepSeriesWithinLimit(vwapSeries, indicatorMaxPoints);
+                    keepSeriesWithinLimit(vwapUpperSeries, indicatorMaxPoints);
+                    keepSeriesWithinLimit(vwapLowerSeries, indicatorMaxPoints);
+                } catch (Exception ignore) {}
+
+                // [CHART] 連續窗 + 價格創新高/低訊號
+                try {
+                    if (!Double.isNaN(price)) {
+                        priceWindow.addLast(price);
+                        while (priceWindow.size() > priceWindowSize) priceWindow.removeFirst();
+                        double max = Double.NEGATIVE_INFINITY, min = Double.POSITIVE_INFINITY;
+                        for (Double v : priceWindow) { if (v>max) max=v; if (v<min) min=v; }
+                        boolean newHigh = price >= max;
+                        boolean newLow = price <= min;
+                        // 以 OrderBookView 推送的 inPct 連續值作判定
+                        if (lastInPctFromOB >= 0) {
+                            int inPct = lastInPctFromOB; int outPct = 100 - inPct;
+                            if (outPct >= effectiveThreshold) { consecOut++; consecIn = 0; } else if (inPct >= effectiveThreshold) { consecIn++; consecOut = 0; } else { consecIn = consecOut = 0; }
+                            long xMs;
+                            if (currentKlineMinutes < 0) xMs = ((Second) period).getFirstMillisecond(); else xMs = ((Minute) period).getFirstMillisecond();
+                            if (consecOut >= consecutiveRequired && newHigh) {
+                                int idx = bullSignals.indexOf(xMs);
+                                if (idx >= 0) bullSignals.updateByIndex(idx, price); else bullSignals.add(xMs, price);
+                                consecOut = 0;
+                            }
+                            if (consecIn >= consecutiveRequired && newLow) {
+                                int idx = bearSignals.indexOf(xMs);
+                                if (idx >= 0) bearSignals.updateByIndex(idx, price); else bearSignals.add(xMs, price);
+                                consecIn = 0;
+                            }
+                            keepSeriesWithinLimit(bullSignals, 200);
+                            keepSeriesWithinLimit(bearSignals, 200);
+                        }
+
+                    }
+                } catch (Exception ignore) {}
             }
 
             // 依最新 K 線即時重算覆蓋指標，確保完全對齊目前時間窗
             recomputeOverlayFromOHLC();
+            applyCandleDomainWindow();
+            scheduleChartFlush(); // [CHART]
 
-            if (!Double.isNaN(sma)) {
-                // 與 K 線共用 DateAxis：使用 epoch 毫秒作為 X
-                long now = System.currentTimeMillis();
-                smaSeries.add((double) now, sma);
-                keepSeriesWithinLimit(smaSeries, 100);
-            }
+                // 精簡：不再維護 SMA 折線資料
         });
+    }
+
+    // [CHART] 將即時價格聚合到指定 period 的 OHLCSeries（key<0=秒，>0=分）
+    private void updateOhlcForKey(double price, long nowMs, int key){
+        OHLCSeries series = minuteToSeries.get(key);
+        if (series == null) return;
+        RegularTimePeriod p;
+        if (key < 0) {
+            int s = -key;
+            long bucket = 1000L * s;
+            long aligned = nowMs - (nowMs % bucket);
+            p = new Second(new java.util.Date(aligned));
+        } else {
+            int m = key;
+            long bucket = 60_000L * m;
+            long aligned = nowMs - (nowMs % bucket);
+            p = new Minute(new java.util.Date(aligned));
+        }
+        if (series.getItemCount() == 0) {
+            series.add(p, price, price, price, price);
+            return;
+        }
+        OHLCItem last = (OHLCItem) series.getDataItem(series.getItemCount()-1);
+        if (last.getPeriod().equals(p)) {
+            double open = last.getOpenValue();
+            double high = Math.max(last.getHighValue(), price);
+            double low = Math.min(last.getLowValue(), price);
+            series.remove(last.getPeriod());
+            series.add(p, open, high, low, price);
+        } else {
+            double prevClose = last.getCloseValue();
+            double newOpen = prevClose;
+            double newHigh = Math.max(newOpen, price);
+            double newLow = Math.min(newOpen, price);
+            series.add(p, newOpen, newHigh, newLow, price);
+        }
     }
 
     // 切換 K 線週期
@@ -1770,248 +2410,51 @@ public class MainView extends JFrame {
         currentKlineMinutes = opts[idx];
         // 切換 dataset 到對應集合
         SwingUtilities.invokeLater(() -> {
+            XYPlot candlePlot = candleChart.getXYPlot();
+            candlePlot.setNotify(false);
             try {
-                XYPlot candlePlot = candleChart.getXYPlot();
-                candlePlot.setNotify(false);
                 candlePlot.setDataset(0, minuteToCollection.get(currentKlineMinutes));
                 // 以當前 K 線序列重算覆蓋指標，確保時間座標完全對齊
                 recomputeOverlayFromOHLC();
                 refreshOverlayIndicators();
+                applyCandleDomainWindow();
+            } catch (Exception ignore) {
+            } finally {
                 candlePlot.setNotify(true);
-            } catch (Exception ignore) {}
+            }
         });
     }
 
     // 重新整理疊加指標的顯示與資料集配置
     private void refreshOverlayIndicators() {
-        try {
-            XYPlot candlePlot = candleChart.getXYPlot();
-            candlePlot.setNotify(false);
-
-            candlePlot.setNotify(false);
-
-            // 0:K線，1:SMA主線
-            XYSeriesCollection smaDs = new XYSeriesCollection();
-            smaDs.addSeries(smaSeries);
-            candlePlot.setDataset(1, smaDs);
-            XYLineAndShapeRenderer smaR = new XYLineAndShapeRenderer(true, false);
-            smaR.setSeriesPaint(0, new Color(204, 0, 0));
-            candlePlot.setRenderer(1, smaR);
-
-            // 勾選額外 SMA
-            if (cbSMA5.isSelected()) {
-                XYSeriesCollection ds = new XYSeriesCollection();
-                ds.addSeries(sma5Series);
-                candlePlot.setDataset(2, ds);
-                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
-                r.setSeriesPaint(0, new Color(255, 165, 0));
-                candlePlot.setRenderer(2, r);
-            }
-            if (cbSMA10.isSelected()) {
-                XYSeriesCollection ds = new XYSeriesCollection();
-                ds.addSeries(sma10Series);
-                candlePlot.setDataset(3, ds);
-                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
-                r.setSeriesPaint(0, new Color(0, 128, 255));
-                candlePlot.setRenderer(3, r);
-            }
-            if (cbSMA20.isSelected()) {
-                XYSeriesCollection ds = new XYSeriesCollection();
-                ds.addSeries(sma20Series);
-                candlePlot.setDataset(4, ds);
-                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
-                r.setSeriesPaint(0, new Color(128, 0, 128));
-                candlePlot.setRenderer(4, r);
-            }
-            if (cbEMA12.isSelected()) {
-                XYSeriesCollection ds = new XYSeriesCollection();
-                ds.addSeries(ema12Series);
-                candlePlot.setDataset(5, ds);
-                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
-                r.setSeriesPaint(0, new Color(0, 180, 180));
-                candlePlot.setRenderer(5, r);
-            }
-            if (cbEMA26.isSelected()) {
-                XYSeriesCollection ds = new XYSeriesCollection();
-                ds.addSeries(ema26Series);
-                candlePlot.setDataset(6, ds);
-                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
-                r.setSeriesPaint(0, new Color(180, 120, 0));
-                candlePlot.setRenderer(6, r);
-            }
-            if (cbBOLL.isSelected()) {
-                XYSeriesCollection ds = new XYSeriesCollection();
-                ds.addSeries(bollUSeries);
-                ds.addSeries(bollMSeries);
-                ds.addSeries(bollLSeries);
-                candlePlot.setDataset(7, ds);
-                XYLineAndShapeRenderer r = new XYLineAndShapeRenderer(true, false);
-                r.setSeriesPaint(0, Color.GRAY);
-                r.setSeriesPaint(1, Color.DARK_GRAY);
-                r.setSeriesPaint(2, Color.GRAY);
-                candlePlot.setRenderer(7, r);
-            }
-
-            // 成交量覆蓋（副軸 #1）
-            XYSeriesCollection volDs = new XYSeriesCollection();
-            volDs.addSeries(volumeOverlaySeries);
-            candlePlot.setDataset(8, volDs);
-            XYBarRenderer volR = new XYBarRenderer(0.8);
-            volR.setShadowVisible(false);
-            volR.setBarPainter(new org.jfree.chart.renderer.xy.StandardXYBarPainter());
-            volR.setSeriesPaint(0, new Color(120,120,180,140));
-            candlePlot.setRenderer(8, volR);
-            if (volumeAxis == null) {
-                volumeAxis = new NumberAxis("VOL");
-                volumeAxis.setAutoRangeIncludesZero(true);
-                volumeAxis.setLabelPaint(new Color(100,100,140));
-                volumeAxis.setTickLabelPaint(new Color(100,100,140));
-                candlePlot.setRangeAxis(1, volumeAxis);
-            }
-            candlePlot.mapDatasetToRangeAxis(8, 1);
-
-            // MACD 疊加（副軸 #2）
-            XYSeriesCollection macdDs = new XYSeriesCollection();
-            macdDs.addSeries(macdLineSeries);
-            macdDs.addSeries(macdSignalSeries);
-            candlePlot.setDataset(9, macdDs);
-            XYLineAndShapeRenderer macdR = new XYLineAndShapeRenderer(true, false);
-            macdR.setSeriesPaint(0, new Color(200, 80, 0));
-            macdR.setSeriesPaint(1, new Color(0, 180, 0));
-            candlePlot.setRenderer(9, macdR);
-            if (macdAxis == null) {
-                macdAxis = new NumberAxis("MACD");
-                macdAxis.setAutoRangeIncludesZero(true);
-                macdAxis.setLabelPaint(new Color(120,120,120));
-                macdAxis.setTickLabelPaint(new Color(120,120,120));
-                candlePlot.setRangeAxis(2, macdAxis);
-            }
-            candlePlot.mapDatasetToRangeAxis(9, 2);
-
-            candlePlot.setNotify(true);
-        } catch (Exception ignore) {}
+        // 精簡：已移除疊加指標刷新
     }
 
     // 基於當前 K 線序列（OHLCSeries）的 close 值重算 SMA/EMA/BOLL 並以 K 線 period 時間作為 X 軸
     private void recomputeOverlayFromOHLC() {
+        // 精簡：已移除疊加指標重算
+    }
+
+    // 僅重算成本估計，不寫入任何 UI（供啟動自動效能偵測使用）
+    private void recomputeOverlayCostOnly() {
         try {
             OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
             if (series == null) return;
-
-            // 先清空既有資料（避免巨大資料導致重繪卡頓）
-            toggleOverlayNotify(false);
-            if (sma5Series.getItemCount() > 0) sma5Series.clear();
-            if (sma10Series.getItemCount() > 0) sma10Series.clear();
-            if (sma20Series.getItemCount() > 0) sma20Series.clear();
-            if (ema12Series.getItemCount() > 0) ema12Series.clear();
-            if (ema26Series.getItemCount() > 0) ema26Series.clear();
-            if (bollUSeries.getItemCount() > 0) bollUSeries.clear();
-            if (bollMSeries.getItemCount() > 0) bollMSeries.clear();
-            if (bollLSeries.getItemCount() > 0) bollLSeries.clear();
-            if (macdLineSeries != null && macdLineSeries.getItemCount() > 0) macdLineSeries.clear();
-            if (macdSignalSeries != null && macdSignalSeries.getItemCount() > 0) macdSignalSeries.clear();
-            if (macdHistogramSeries != null && macdHistogramSeries.getItemCount() > 0) macdHistogramSeries.clear();
-            if (kSeries != null && kSeries.getItemCount() > 0) kSeries.clear();
-            if (dSeries != null && dSeries.getItemCount() > 0) dSeries.clear();
-            if (jSeries != null && jSeries.getItemCount() > 0) jSeries.clear();
-
             int n = series.getItemCount();
             if (n == 0) return;
 
-            // 取 close 與對應時間（毫秒）
             java.util.List<Double> closes = new java.util.ArrayList<>(n);
-            java.util.List<Long> times = new java.util.ArrayList<>(n);
-            java.util.GregorianCalendar cal = new java.util.GregorianCalendar();
             for (int i = 0; i < n; i++) {
                 org.jfree.data.time.ohlc.OHLCItem it = (org.jfree.data.time.ohlc.OHLCItem) series.getDataItem(i);
                 closes.add(it.getCloseValue());
-                long t = it.getPeriod().getMiddleMillisecond(cal);
-                times.add(t);
             }
 
-            // 同步把 Volume 聚合映射為 overlaySeries（用量表達）
-            volumeOverlaySeries.clear();
-            @SuppressWarnings("unchecked")
-            java.util.List<Comparable> cols = volumeDataset.getColumnKeys();
-            for (int i = 0; i < n; i++) {
-                double x = times.get(i).doubleValue();
-                // 量資料以類別柱狀儲存，這裡用近似：若同時間鍵存在則取值，否則為 0
-                double vol = 0;
-                try {
-                    String keySec = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(times.get(i)));
-                    String keyMin = new java.text.SimpleDateFormat("HH:mm").format(new java.util.Date(times.get(i)));
-                    if (cols.contains(keySec)) {
-                        Number v = volumeDataset.getValue("Volume", keySec);
-                        vol = v != null ? v.doubleValue() : 0;
-                    } else if (cols.contains(keyMin)) {
-                        Number v = volumeDataset.getValue("Volume", keyMin);
-                        vol = v != null ? v.doubleValue() : 0;
-                    }
-                } catch (Exception ignore) {}
-                volumeOverlaySeries.add(x, vol);
-            }
-
-            // 工具：移動平均（避免觸發事件：先暫停通知）
-            java.util.function.BiConsumer<Integer, org.jfree.data.xy.XYSeries> smaFill = (period, out) -> {
-                if (n < period) return;
-                double sum = 0;
-                for (int i = 0; i < n; i++) {
-                    sum += closes.get(i);
-                    if (i >= period) sum -= closes.get(i - period);
-                    if (i >= period - 1) {
-                        out.add(times.get(i).doubleValue(), sum / period);
-                    }
-                }
-            };
-
-            // 工具：EMA
-            java.util.function.BiConsumer<Integer, org.jfree.data.xy.XYSeries> emaFill = (period, out) -> {
-                if (n == 0) return;
-                double k = 2.0 / (period + 1);
-                double ema = closes.get(0);
-                for (int i = 0; i < n; i++) {
-                    if (i == 0) {
-                        ema = closes.get(0);
-                    } else {
-                        ema = (closes.get(i) - ema) * k + ema;
-                    }
-                    if (i >= period - 1) out.add(times.get(i).doubleValue(), ema);
-                }
-            };
-
-            // 工具：BOLL(period=20)
-            java.util.function.Consumer<Integer> bollFill = (Integer period) -> {
-                if (n < period) return;
-                double sum = 0, sumSq = 0;
-                for (int i = 0; i < n; i++) {
-                    double c = closes.get(i);
-                    sum += c; sumSq += c * c;
-                    if (i >= period) {
-                        double old = closes.get(i - period);
-                        sum -= old; sumSq -= old * old;
-                    }
-                    if (i >= period - 1) {
-                        double mean = sum / period;
-                        double var = (sumSq / period) - (mean * mean);
-                        if (var < 0) var = 0;
-                        double sd = Math.sqrt(var);
-                        bollMSeries.add(times.get(i).doubleValue(), mean);
-                        bollUSeries.add(times.get(i).doubleValue(), mean + 2 * sd);
-                        bollLSeries.add(times.get(i).doubleValue(), mean - 2 * sd);
-                    }
-                }
-            };
-
-            // ===== 準備 MACD 與 KDJ 的數據（以 K 線 close 與高低計算） =====
+            // 輕量級計算（EMA + MACD 估算），不觸發任何圖表寫入
             final int macdShort = 12, macdLong = 26, macdSignal = 9;
-            final int kdjN = 9, kdjK = 3, kdjD = 3;
-
-            // 預先計算 MACD 所需 EMA
             double[] emaShort = new double[n];
             double[] emaLong = new double[n];
             double multShort = 2.0 / (macdShort + 1);
             double multLong = 2.0 / (macdLong + 1);
-            // 初始化為首點
             emaShort[0] = closes.get(0);
             emaLong[0] = closes.get(0);
             for (int i = 1; i < n; i++) {
@@ -2021,82 +2464,10 @@ public class MainView extends JFrame {
             }
             double[] macdLine = new double[n];
             for (int i = 0; i < n; i++) macdLine[i] = emaShort[i] - emaLong[i];
-            // 訊號線 EMA
             double[] macdSignalArr = new double[n];
             double multSig = 2.0 / (macdSignal + 1);
             macdSignalArr[0] = macdLine[0];
             for (int i = 1; i < n; i++) macdSignalArr[i] = (macdLine[i] - macdSignalArr[i-1]) * multSig + macdSignalArr[i-1];
-            double[] macdHist = new double[n];
-            for (int i = 0; i < n; i++) macdHist[i] = macdLine[i] - macdSignalArr[i];
-
-            // KDJ：計算每點 n 期最高/最低與 RSV，平滑 K、D
-            double[] rsvArr = new double[n];
-            for (int i = 0; i < n; i++) {
-                int start = Math.max(0, i - kdjN + 1);
-                double hh = Double.NEGATIVE_INFINITY, ll = Double.POSITIVE_INFINITY;
-                for (int j = start; j <= i; j++) {
-                    org.jfree.data.time.ohlc.OHLCItem it = (org.jfree.data.time.ohlc.OHLCItem) series.getDataItem(j);
-                    hh = Math.max(hh, it.getHighValue());
-                    ll = Math.min(ll, it.getLowValue());
-                }
-                double c = closes.get(i);
-                if (hh == ll) rsvArr[i] = 50.0; else rsvArr[i] = (c - ll) / (hh - ll) * 100.0;
-            }
-            double[] kArr = new double[n];
-            double[] dArr = new double[n];
-            double[] jArr = new double[n];
-            kArr[0] = 50.0; dArr[0] = 50.0; jArr[0] = 50.0;
-            for (int i = 1; i < n; i++) {
-                kArr[i] = (kArr[i-1] * (kdjK - 1) + rsvArr[i]) / kdjK;
-                dArr[i] = (dArr[i-1] * (kdjD - 1) + kArr[i]) / kdjD;
-                jArr[i] = 3 * kArr[i] - 2 * dArr[i];
-                if (jArr[i] < 0) jArr[i] = 0; if (jArr[i] > 100) jArr[i] = 100;
-            }
-
-            // ===== 自適應：限制重算頻率，避免在較慢機器卡頓 =====
-            long nowTick = System.currentTimeMillis();
-            if (nowTick - kOverlayLastRecomputeMs < kOverlayMinIntervalMs) return;
-            kOverlayLastRecomputeMs = nowTick;
-
-            // 實際填入（在 EDT 中執行，避免 UI 卡住）
-            SwingUtilities.invokeLater(() -> {
-                try {
-                    smaFill.accept(5, sma5Series);
-                    smaFill.accept(10, sma10Series);
-                    smaFill.accept(20, sma20Series);
-                    emaFill.accept(12, ema12Series);
-                    emaFill.accept(26, ema26Series);
-                    bollFill.accept(20);
-                    // MACD/KDJ 對齊 K 線 period（時間座標取 K 線時刻）
-                    for (int i = 0; i < n; i++) {
-                        double x = times.get(i).doubleValue();
-                        macdLineSeries.add(x, macdLine[i]);
-                        macdSignalSeries.add(x, macdSignalArr[i]);
-                        macdHistogramSeries.add(x, macdHist[i]);
-                        kSeries.add(x, kArr[i]);
-                        dSeries.add(x, dArr[i]);
-                        jSeries.add(x, jArr[i]);
-                    }
-
-                    // 控制最大點數，避免資料無上限導致重繪卡頓
-                    limitSeriesDataPoints(sma5Series, indicatorMaxPoints);
-                    limitSeriesDataPoints(sma10Series, indicatorMaxPoints);
-                    limitSeriesDataPoints(sma20Series, indicatorMaxPoints);
-                    limitSeriesDataPoints(ema12Series, indicatorMaxPoints);
-                    limitSeriesDataPoints(ema26Series, indicatorMaxPoints);
-                    limitSeriesDataPoints(bollUSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(bollMSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(bollLSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(macdLineSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(macdSignalSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(macdHistogramSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(kSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(dSeries, indicatorMaxPoints);
-                    limitSeriesDataPoints(jSeries, indicatorMaxPoints);
-                } catch (Exception ignore) {}
-                finally { toggleOverlayNotify(true); }
-            });
-
         } catch (Exception ignore) {}
     }
 
@@ -2116,8 +2487,23 @@ public class MainView extends JFrame {
         } catch (Exception ignore) {}
     }
 
+    // 將來源 series 的資料離線複製到目標 series（整批替換，避免逐筆觸發重繪）
+    private void swapSeriesData(XYSeries target, XYSeries source) {
+        if (target == null || source == null) return;
+        try {
+            target.setNotify(false);
+            target.clear();
+            for (int i = 0; i < source.getItemCount(); i++) {
+                target.add(source.getX(i), source.getY(i), false);
+            }
+        } catch (Exception ignore) {
+        } finally {
+            target.setNotify(true);
+        }
+    }
+
     // 根據模式套用自適應參數
-    private void applyPerfMode(String mode) {
+    private void applyPerfModeOverlay(String mode) {
         if (mode == null) return;
         switch (mode) {
             case "節能":
@@ -2144,7 +2530,7 @@ public class MainView extends JFrame {
                 while (System.currentTimeMillis() - start < 3000) { // 3 秒內抽樣
                     long t0 = System.nanoTime();
                     // 嘗試只做一次輕量重算（不進 EDT 寫入）
-                    try { recomputeOverlayFromOHLC(); } catch (Exception ignore) {}
+                    try { recomputeOverlayCostOnly(); } catch (Exception ignore) {}
                     long t1 = System.nanoTime();
                     long costMs = (t1 - t0) / 1_000_000;
                     sum += Math.max(1, costMs);
@@ -2172,6 +2558,21 @@ public class MainView extends JFrame {
         }, "AutoTune-Indicators").start();
     }
 
+    // 根據目前的 K 線周期，設定時間軸固定視窗，避免多指標切換導致畫面跳動
+    private void applyCandleDomainWindow() {
+        try {
+            XYPlot candlePlot = candleChart.getXYPlot();
+            if (candlePlot.getDomainAxis() instanceof DateAxis) {
+                DateAxis axis = (DateAxis) candlePlot.getDomainAxis();
+                // 初始顯示全域（最左到最右）
+                axis.setAutoRange(true);
+                axis.setFixedAutoRange(0); // 0 表示不限制視窗長度
+                axis.setLowerMargin(0.02);
+                axis.setUpperMargin(0.02);
+            }
+        } catch (Exception ignore) {}
+    }
+
     // 交換上漲/下跌顏色，並套用到成交量與 K 線
     private void swapUpDownColors() {
         Color tmp = upColor;
@@ -2182,25 +2583,7 @@ public class MainView extends JFrame {
     /**
      * 更新技術指標
      */
-    public void updateTechnicalIndicators(int timeStep, double volatility, double rsi, double wap) {
-        SwingUtilities.invokeLater(() -> {
-            if (!Double.isNaN(volatility)) {
-                volatilitySeries.add(timeStep, volatility);
-                keepSeriesWithinLimit(volatilitySeries, 100);
-            }
-
-            if (!Double.isNaN(rsi)) {
-                rsiSeries.add(timeStep, rsi);
-                keepSeriesWithinLimit(rsiSeries, 100);
-            }
-
-            if (!Double.isNaN(wap)) {
-                wapSeries.add(timeStep, wap);
-                keepSeriesWithinLimit(wapSeries, 100);
-            }
-            // 同步更新量能均線等可在此處理（若有對應數據）
-        });
-    }
+    public void updateTechnicalIndicators(int timeStep, double volatility, double rsi, double wap) { }
 
     /**
      * 更新成交量圖
@@ -2230,7 +2613,7 @@ public class MainView extends JFrame {
             @SuppressWarnings("unchecked")
             java.util.List<Comparable> keys = volumeDataset.getColumnKeys();
             if (!keys.contains(key)) {
-                while (volumeDataset.getColumnCount() >= 30) {
+                while (volumeDataset.getColumnCount() >= maxVolumeColumns) {
                     String firstKey = (String) volumeDataset.getColumnKeys().get(0);
                     volumeDataset.removeColumn(firstKey);
                     if (!colorList.isEmpty()) colorList.remove(0);
@@ -2255,20 +2638,102 @@ public class MainView extends JFrame {
                 int newValue = (existingValue != null ? existingValue.intValue() : 0) + volume;
                 volumeDataset.setValue(newValue, "Volume", key);
             }
-
-            // 同步更新主圖的成交量覆蓋（使用同一對齊時間）
-            try {
-                Double x = (double) aligned;
-                int idx = volumeOverlaySeries.indexOf(x);
-                if (idx >= 0) {
-                    Number old = volumeOverlaySeries.getY(idx);
-                    double nv = (old != null ? old.doubleValue() : 0) + volume;
-                    volumeOverlaySeries.update(x, nv);
-                } else {
-                    volumeOverlaySeries.add(x.doubleValue(), (double) volume);
-                }
-            } catch (Exception ignore) {}
+            scheduleChartFlush(); // [CHART]
         });
+    }
+
+    // === Tape 逐筆面板（簡版） ===
+    private static class TapePanel extends JPanel {
+        private static class Trade { long ts; boolean buy; double price; int vol; double slipAbs; }
+        private final DefaultListModel<String> model = new DefaultListModel<>();
+        private final JList<String> list = new JList<>(model);
+        private final JLabel ratioLabel = new JLabel("買/賣比: -- / --");
+        private final JLabel rateLabel = new JLabel("近10s: 0.0 筆/秒  0 量/秒");
+        private final JLabel slipLabel = new JLabel("均滑價: --");
+        private final JLabel avgVolLabel = new JLabel("均量: --");
+        private final JLabel streakLabel = new JLabel("最大連續: --");
+        private final java.util.Deque<Trade> q = new java.util.ArrayDeque<>();
+        private final long WINDOW_MS = 10_000L;
+        public TapePanel(){
+            setLayout(new BorderLayout(6,6));
+            list.setFont(new Font("Monospaced", Font.PLAIN, 12));
+            add(new JScrollPane(list), BorderLayout.CENTER);
+            JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 12, 4));
+            top.add(ratioLabel); top.add(rateLabel); top.add(slipLabel); top.add(avgVolLabel); top.add(streakLabel);
+            add(top, BorderLayout.NORTH);
+        }
+        public void pushTrade(boolean buyerInitiated, double price, int volume, double bestBid, double bestAsk){
+            String side = buyerInitiated ? "買" : "賣";
+            double slipAbs = Math.abs(buyerInitiated ? (price - bestAsk) : (bestBid - price));
+            String t = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date());
+            model.add(0, String.format("%s  %s  價:%.2f  量:%d  滑價:%.2f", t, side, price, volume, slipAbs));
+            while(model.size()>300) model.removeElementAt(model.size()-1);
+            Trade tr = new Trade(); tr.ts = System.currentTimeMillis(); tr.buy = buyerInitiated; tr.price = price; tr.vol = volume; tr.slipAbs = slipAbs;
+            q.addLast(tr); prune(); recompute();
+            // 大單標記：若超門檻，於主圖加一點
+            if (volume >= ((MainView)SwingUtilities.getWindowAncestor(this)).bigOrderThreshold) {
+                try {
+                    long nowMs = tr.ts;
+                    if (buyerInitiated) ((MainView)SwingUtilities.getWindowAncestor(this)).bigBuySeries.add(nowMs, price);
+                    else ((MainView)SwingUtilities.getWindowAncestor(this)).bigSellSeries.add(nowMs, price);
+                } catch (Exception ignore) {}
+            }
+        }
+        private void prune(){ long now = System.currentTimeMillis(); while(!q.isEmpty() && now - q.peekFirst().ts > WINDOW_MS) q.removeFirst(); }
+        private void recompute(){
+            if (q.isEmpty()){ ratioLabel.setText("買/賣比: -- / --"); rateLabel.setText("近10s: 0.0 筆/秒  0 量/秒"); slipLabel.setText("均滑價: --"); avgVolLabel.setText("均量: --"); streakLabel.setText("最大連續: --"); return; }
+            int trades=0; long vol=0, buyVol=0, sellVol=0; double slipSum=0; int slipN=0; int maxBuy=0, maxSell=0, cur=0; Boolean curSide=null;
+            for(Trade tr: q){
+                trades++; vol += tr.vol; if (tr.buy) buyVol += tr.vol; else sellVol += tr.vol; slipSum += tr.slipAbs; slipN++;
+                if (curSide==null || curSide!=tr.buy){ curSide = tr.buy; cur = 1; }
+                else { cur++; }
+                if (tr.buy) maxBuy = Math.max(maxBuy, cur); else maxSell = Math.max(maxSell, cur);
+            }
+            double secs = Math.max(1.0, WINDOW_MS/1000.0);
+            double tps = trades / secs; double vps = vol / secs;
+            double buyPct = (buyVol + sellVol) > 0 ? (buyVol*100.0/(buyVol+sellVol)) : 0.0;
+            double sellPct = 100.0 - buyPct;
+            double avgSlip = slipN>0 ? (slipSum/slipN) : 0.0;
+            double avgVol = trades>0 ? (vol*1.0/trades) : 0.0;
+            ratioLabel.setText(String.format("買/賣比: %.1f%% / %.1f%%", buyPct, sellPct));
+            rateLabel.setText(String.format("近10s: %.2f 筆/秒  %,d 量/秒", tps, Math.round(vps)));
+            slipLabel.setText(String.format("均滑價: %.2f", avgSlip));
+            avgVolLabel.setText(String.format("均量: %.1f", avgVol));
+            streakLabel.setText(String.format("最大連續: 買%d / 賣%d", maxBuy, maxSell));
+        }
+    }
+
+    // 對外公開：控制器可直接推送逐筆到 Tape
+    public void pushTapeTrade(boolean buyerInitiated, double price, int volume, double bestBid, double bestAsk){
+        if (tapePanel != null) {
+            SwingUtilities.invokeLater(() -> tapePanel.pushTrade(buyerInitiated, price, volume, bestBid, bestAsk));
+        }
+    }
+
+    // 刷新底部指標摘要（每秒）
+    private void refreshMarketStats(){
+        try {
+            if (marketStatsLabel == null || model == null) return;
+            java.util.List<Transaction> recent = model.getRecentTransactions(60);
+            if (recent.isEmpty()) {
+                marketStatsLabel.setText("指標: In/Out --/--  Δ --  失衡 --  TPS -- VPS --");
+                return;
+            }
+            long inVol=0,outVol=0,vol=0;
+            int buyTicks=0,sellTicks=0;
+            for (Transaction t: recent){
+                vol += t.getVolume();
+                if (t.isBuyerInitiated()) { outVol += t.getVolume(); buyTicks++; } else { inVol += t.getVolume(); sellTicks++; }
+            }
+            int tot = (int)Math.max(1, inVol + outVol);
+            int inPct = (int)Math.round(inVol * 100.0 / tot);
+            int outPct = 100 - inPct;
+            long delta = outVol - inVol;
+            double tps = model.getRecentTPS(60);
+            double vps = model.getRecentVPS(60);
+            double imb = model.getRecentTickImbalance(60);
+            marketStatsLabel.setText(String.format("指標: In/Out %d%%/%d%%  Δ %,d  失衡 %.2f  TPS %.2f  VPS %,d", inPct, outPct, delta, imb, tps, Math.round(vps)));
+        } catch (Exception ignore) {}
     }
 
     /**
@@ -2293,6 +2758,7 @@ public class MainView extends JFrame {
             mainForceDataset.setValue(mainForceStocks, "持股", mainCategory);
             double mainForceProfit = (mainForceStocks * stockPrice) + mainForceCash - initialMainForceCash;
             mainForceDataset.setValue(mainForceProfit, "損益", mainCategory);
+            scheduleChartFlush(); // [CHART]
         });
     }
 
@@ -2305,16 +2771,17 @@ public class MainView extends JFrame {
             double funds, int inventory,
             double wap) {
         SwingUtilities.invokeLater(() -> {
-            stockPriceLabel.setText("股票價格: " + String.format("%.2f", price));
-            retailCashLabel.setText("散戶平均現金: " + String.format("%.2f", retailCash));
+            DecimalFormat df2 = new DecimalFormat("#,##0.00");
+            stockPriceLabel.setText("股票價格: " + df2.format(price));
+            retailCashLabel.setText("散戶平均現金: " + df2.format(retailCash));
             retailStocksLabel.setText("散戶平均持股: " + retailStocks);
-            mainForceCashLabel.setText("主力現金: " + String.format("%.2f", mainForceCash));
+            mainForceCashLabel.setText("主力現金: " + df2.format(mainForceCash));
             mainForceStocksLabel.setText("主力持有籌碼: " + mainForceStocks);
-            targetPriceLabel.setText("主力目標價位: " + String.format("%.2f", targetPrice));
-            averageCostPriceLabel.setText("主力平均成本: " + String.format("%.2f", avgCostPrice));
-            fundsLabel.setText("市場可用資金: " + String.format("%.2f", funds));
+            targetPriceLabel.setText("主力目標價位: " + df2.format(targetPrice));
+            averageCostPriceLabel.setText("主力平均成本: " + df2.format(avgCostPrice));
+            fundsLabel.setText("市場可用資金: " + df2.format(funds));
             inventoryLabel.setText("市場庫存: " + inventory);
-            weightedAveragePriceLabel.setText("加權平均價格: " + String.format("%.2f", wap));
+            weightedAveragePriceLabel.setText("加權平均價格: " + df2.format(wap));
         });
     }
 
@@ -2498,8 +2965,22 @@ public class MainView extends JFrame {
         chartPanel.addChartMouseListener(new ChartMouseListener() {
             @Override
             public void chartMouseClicked(ChartMouseEvent event) {
-                // 點擊事件可以實現標記功能
-                // 這裡可以預留未來擴展
+                // [UX] 左鍵點擊開/關量尺；右鍵清除
+                if (!(plot instanceof XYPlot)) return;
+                if (SwingUtilities.isLeftMouseButton(event.getTrigger())) {
+                    XYPlot xp = (XYPlot) plot;
+                    Point2D p = chartPanel.translateScreenToJava2D(event.getTrigger().getPoint());
+                    Rectangle2D area = chartPanel.getScreenDataArea();
+                    if (area != null && area.contains(p)) {
+                        double x = xp.getDomainAxis().java2DToValue(p.getX(), area, xp.getDomainAxisEdge());
+                        double y = xp.getRangeAxis().java2DToValue(p.getY(), area, xp.getRangeAxisEdge());
+                        measuring = !measuring;
+                        if (measuring) { anchorXMs = x; anchorPrice = y; }
+                        else { anchorXMs = null; anchorPrice = null; chartValueLabel.setText(""); }
+                    }
+                } else if (SwingUtilities.isRightMouseButton(event.getTrigger())) {
+                    measuring = false; anchorXMs = null; anchorPrice = null; chartValueLabel.setText("");
+                }
             }
 
             @Override
@@ -2522,12 +3003,36 @@ public class MainView extends JFrame {
                         plot.setRangeCrosshairValue(chartY);
 
                         // 更新狀態欄或信息區域
-                        String valueText = String.format("%s - 時間: %.0f, 值: %.2f",
-                                title, chartX, chartY);
+                        String valueText = String.format("%s  價: %.2f",
+                                title, chartY);
+                        if (measuring && anchorXMs != null && anchorPrice != null) {
+                            double dx = Math.abs(chartX - anchorXMs);
+                            double dy = chartY - anchorPrice;
+                            double pct = (anchorPrice != 0) ? (dy / anchorPrice * 100.0) : 0.0;
+                            valueText += String.format("  Δt: %.0fms  Δ價: %.2f (%.2f%%)", dx, dy, pct);
+                        }
 
                         // 如果存在狀態欄標籤，更新它
                         if (chartValueLabel != null) {
                             chartValueLabel.setText(valueText);
+                        }
+
+                        // [UX] 在圖上顯示量尺文字（更明顯）
+                        if (plot instanceof XYPlot) {
+                            XYPlot xp = (XYPlot) plot;
+                            // 用 plot 的 annotations 管理文字
+                            // 清除上一個臨時標註（簡化：保留至多一個）
+                            if (!measuring || anchorXMs == null || anchorPrice == null) {
+                                try { xp.clearAnnotations(); } catch (Exception ignore) {}
+                            } else {
+                                String ann = String.format("Δt: %.0fms\nΔ價: %.2f (%.2f%%)", Math.abs(chartX-anchorXMs), (chartY-anchorPrice), anchorPrice!=0?((chartY-anchorPrice)/anchorPrice*100.0):0.0);
+                                org.jfree.chart.annotations.XYTextAnnotation txt = new org.jfree.chart.annotations.XYTextAnnotation(ann, chartX, chartY);
+                                txt.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));
+                                txt.setPaint(new Color(33,33,33));
+                                txt.setTextAnchor(org.jfree.chart.ui.TextAnchor.TOP_LEFT);
+                                try { xp.clearAnnotations(); } catch (Exception ignore) {}
+                                xp.addAnnotation(txt);
+                            }
                         }
                     } catch (Exception e) {
                         // 忽略任何坐標轉換錯誤
@@ -2622,14 +3127,7 @@ public class MainView extends JFrame {
             }
         });
 
-        // F7: 切換到技術指標頁面
-        inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_F7, 0), "showIndicatorsTab");
-        actionMap.put("showIndicatorsTab", new AbstractAction() {
-            @Override
-            public void actionPerformed(ActionEvent e) {
-                tabbedPane.setSelectedIndex(2);
-            }
-        });
+        // 精簡：移除技術指標頁面快捷鍵
 
         // === 信息區域快捷鍵 ===
         // Ctrl+L: 清除信息區域
@@ -2784,7 +3282,7 @@ public class MainView extends JFrame {
         helpText.append("--- 頁面切換 ---\n");
         helpText.append("F5: 顯示市場圖表頁面\n");
         helpText.append("F6: 顯示損益表頁面\n");
-        helpText.append("F7: 顯示技術指標頁面\n\n");
+        // 精簡：刪除技術指標頁面說明
 
         helpText.append("--- 信息操作 ---\n");
         helpText.append("Ctrl+L: 清除信息區域\n");
@@ -2981,8 +3479,8 @@ public class MainView extends JFrame {
             plot.getRangeAxis().setTickLabelPaint(fgColor);
         }
 
-        // 發送圖表改變事件，強制重繪
-        chart.fireChartChanged();
+        // [CHART] 合併重繪
+        scheduleChartFlush();
     }
 
     /**
@@ -3023,5 +3521,131 @@ public class MainView extends JFrame {
                 + "一個專業的股票市場模擬和交易練習系統",
                 "關於",
                 JOptionPane.INFORMATION_MESSAGE);
+    }
+}
+
+// === 內外盤分析大圖面板（方案B：於資訊分頁顯示） ===
+class InOutAnalyticsPanel extends JPanel {
+    private final RatioBar ratioBar = new RatioBar();
+    private final SparkPanel spark = new SparkPanel();
+    private final DeltaPanel delta = new DeltaPanel();
+    private final JLabel desc = new JLabel();
+    private final DefaultListModel<String> signalModel = new DefaultListModel<>();
+    private final JList<String> signalList = new JList<>(signalModel);
+    private int lastInPct = -1;
+    private int curWindow = 120, curConsecutive = 2, curThreshold = 65, curEff = 65; private String curMode = "一般";
+
+    public InOutAnalyticsPanel() {
+        setLayout(new BorderLayout(8, 8));
+        setBorder(new EmptyBorder(8, 8, 8, 8));
+        ratioBar.setPreferredSize(new Dimension(600, 40));
+        add(ratioBar, BorderLayout.NORTH);
+        JPanel center = new JPanel(new BorderLayout(8,0));
+        JPanel charts = new JPanel(new GridLayout(1, 2, 10, 0));
+        charts.add(spark);
+        charts.add(delta);
+        center.add(charts, BorderLayout.CENTER);
+        // 訊號清單
+        signalList.setVisibleRowCount(5);
+        signalList.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+        JScrollPane sigScroll = new JScrollPane(signalList);
+        sigScroll.setPreferredSize(new Dimension(220, 120));
+        sigScroll.setBorder(BorderFactory.createTitledBorder("連續窗訊號"));
+        center.add(sigScroll, BorderLayout.EAST);
+        add(center, BorderLayout.CENTER);
+        // 說明區（HTML，可動態更新當前值）
+        desc.setBorder(new EmptyBorder(6,4,0,4));
+        desc.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+        desc.setText("<html>"
+                + "<b>解釋：</b> 內盤=成交價≤買一或賣方主動；外盤=成交價≥賣一或買方主動。"
+                + " 建議：連續外盤比＞65%且價格創短線新高→偏多；內盤比＞65%且價格創新低→偏空。"
+                + " 事件模式（新聞/財報）建議將門檻上調5%/10%。"
+                + "</html>");
+        add(desc, BorderLayout.SOUTH);
+    }
+
+    // 外部可呼叫：更新內外盤數據
+    public void setData(long inVol, long outVol, int inPct) {
+        ratioBar.setData(inVol, outVol);
+        spark.pushRatio(inPct);
+        delta.pushDelta((int) (outVol - inVol));
+        int outPct = 100 - Math.max(0, Math.min(100, inPct));
+        desc.setText(String.format("<html>"
+                + "<b>解釋：</b> 內盤=成交價≤買一或賣方主動；外盤=成交價≥賣一或買方主動。"
+                + " <b>目前：</b> 內盤 <span style='color:#2E7D32'>%,d</span> ( %d%% )，外盤 <span style='color:#C62828'>%,d</span> ( %d%% )。"
+                + " 建議：連續外盤比＞65%% 並且價格創短線新高⇒偏多；連續內盤比＞65%% 並且價格創短線新低⇒偏空。"
+                + "</html>", inVol, inPct, outVol, outPct));
+        // 簡單 SMA/EMA 顯示與穿越偵測
+        double sma = spark.computeSMA(20);
+        double ema = spark.computeEMA(20);
+        String head = String.format("SMA20=%.1f%%  EMA20=%.1f%%", sma, ema);
+        signalList.setBorder(BorderFactory.createTitledBorder(head));
+        if (lastInPct >= 0) {
+            int th = 65; // 可與事件模式連動
+            if (lastInPct <= th && inPct > th) addSignal("內盤上穿 " + th + "% → 偏空");
+            if (lastInPct >= (100-th) && inPct < (100-th)) addSignal("外盤上穿 " + th + "% → 偏多");
+        }
+        lastInPct = inPct;
+        revalidate();
+        repaint();
+    }
+
+    // 外部可呼叫：同步顯示參數（來自五檔控制面板）
+    public void setParams(int window, int consecutive, int threshold, String mode, int effTh){
+        curWindow = window; curConsecutive = consecutive; curThreshold = threshold; curMode = mode; curEff = effTh;
+        desc.setText(String.format("<html>"
+                + "<b>解釋：</b> 內盤=成交價≤買一或賣方主動；外盤=成交價≥賣一或買方主動。"
+                + " 建議：連續外盤比＞%d%%且價格創短線新高→偏多；內盤比＞%d%%且價格創新低→偏空。"
+                + " 事件模式：%s（門檻生效=%d%%），連續窗=%d，觀察窗口=%d。"
+                + "</html>", curEff, curEff, curMode, curEff, curConsecutive, curWindow));
+    }
+    private void addSignal(String s){
+        String t = new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date());
+        signalModel.add(0, t+"  "+s);
+        while (signalModel.size()>50) signalModel.removeElementAt(signalModel.size()-1);
+    }
+
+    // 左綠右紅長條
+    private static class RatioBar extends JPanel {
+        private long inVol, outVol;
+        private final Color green = new Color(67, 160, 71);
+        private final Color red = new Color(198, 40, 40);
+        private final Color border = new Color(180, 180, 180);
+        public void setData(long inVol, long outVol) { this.inVol = Math.max(0, inVol); this.outVol = Math.max(0, outVol); repaint(); }
+        @Override protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int w = getWidth(), h = getHeight(); int pad = 6; int barH = h - pad * 2; int x = pad, y = pad;
+            g2.setColor(new Color(245,245,245)); g2.fillRoundRect(x, y, w - pad * 2, barH, 10, 10);
+            g2.setColor(border); g2.drawRoundRect(x, y, w - pad * 2, barH, 10, 10);
+            long total = Math.max(1, inVol + outVol); int inW = (int) Math.round((w - pad * 2) * (inVol / (double) total));
+            g2.setColor(green); g2.fillRoundRect(x, y, Math.max(0, inW), barH, 10, 10);
+            g2.setColor(red); g2.fillRoundRect(x + inW, y, Math.max(0, (w - pad * 2) - inW), barH, 10, 10);
+            int inPct = (int) Math.round(inVol * 100.0 / total); int outPct = 100 - inPct;
+            g2.setColor(Color.WHITE); g2.setFont(getFont().deriveFont(Font.BOLD, 12f));
+            g2.drawString("內 " + inPct + "%", x + 8, y + barH - 6);
+            String rs = "外 " + outPct + "%"; int sw = g2.getFontMetrics().stringWidth(rs);
+            g2.drawString(rs, x + (w - pad * 2) - sw - 8, y + barH - 6);
+            g2.dispose();
+        }
+    }
+
+    // 內盤百分比歷史（最近60點）
+    private static class SparkPanel extends JPanel {
+        private final java.util.Deque<Integer> hist = new java.util.ArrayDeque<>();
+        private int window = 120;
+        public void pushRatio(int v){ hist.addLast(Math.max(0, Math.min(100, v))); while(hist.size() > window) hist.removeFirst(); repaint(); }
+        public double computeSMA(int n){ if (hist.isEmpty()) return 0; int c=0,sum=0; for(Integer v:hist){sum+=v; c++;} return sum*1.0/Math.max(1, Math.min(c,n)); }
+        public double computeEMA(int n){ if (hist.isEmpty()) return 0; double k=2.0/(n+1); double ema=hist.peekFirst(); for(Integer v:hist){ ema = v*k + ema*(1-k);} return ema; }
+        @Override protected void paintComponent(Graphics g){ super.paintComponent(g); Graphics2D g2=(Graphics2D)g.create(); int w=getWidth(),h=getHeight(); g2.setColor(new Color(250,250,250)); g2.fillRect(0,0,w,h); g2.setColor(new Color(220,220,220)); g2.drawRect(0,0,w-1,h-1); if(hist.isEmpty()){g2.dispose();return;} int i=0,px=0,py=h-(hist.peekFirst()*h/100); for(Integer v:hist){ int x=i*(w-1)/Math.max(1,window-1); int y=h-(v*h/100); if(i>0){ g2.setColor(new Color(33,150,243)); g2.drawLine(px,py,x,y);} px=x; py=y; i++; } g2.dispose(); }
+    }
+
+    // 累積 Delta（外-內）
+    private static class DeltaPanel extends JPanel {
+        private final java.util.Deque<Integer> pts = new java.util.ArrayDeque<>();
+        private int window = 120; private int cum = 0;
+        public void pushDelta(int d){ cum += d; pts.addLast(cum); while(pts.size()>window) pts.removeFirst(); repaint(); }
+        @Override protected void paintComponent(Graphics g){ super.paintComponent(g); Graphics2D g2=(Graphics2D)g.create(); int w=getWidth(),h=getHeight(); g2.setColor(new Color(250,250,250)); g2.fillRect(0,0,w,h); g2.setColor(new Color(220,220,220)); g2.drawRect(0,0,w-1,h-1); if(pts.isEmpty()){g2.dispose();return;} int min=Integer.MAX_VALUE,max=Integer.MIN_VALUE; for(Integer v:pts){min=Math.min(min,v);max=Math.max(max,v);} if(min==max){min--;max++;} int i=0,px=0,py=h-(pts.peekFirst()-min)*(h-1)/(max-min); for(Integer v:pts){ int x=i*(w-1)/Math.max(1,window-1); int y=h-(v-min)*(h-1)/(max-min); g2.setColor(v>=0? new Color(67,160,71): new Color(198,40,40)); if(i>0) g2.drawLine(px,py,x,y); px=x; py=y; i++; } g2.dispose(); }
     }
 }

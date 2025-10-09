@@ -42,7 +42,7 @@ public class MarketBehavior implements Trader {
 
     // 需要在類的成員變量中添加
     private long lastOrderTime = 0; // 上次下單時間
-    private static final long ORDER_COOLDOWN_MS = 100; // 下單冷卻時間，2秒
+    private static final long ORDER_COOLDOWN_MS = 2000; // 下單冷卻時間，2秒
 
     /**
      * 構造函數
@@ -940,24 +940,36 @@ public class MarketBehavior implements Trader {
      * 大單影響：若有單筆交易量超過 threshold，就調整價格變動
      */
     private double calculateLargeOrderImpact(OrderBook orderBook) {
-        double impact = 0.0;
-        int largeOrderThreshold = 1000;
+        try {
+            if (orderBook == null) {
+                return 0.0;
+            }
+            double impact = 0.0;
+            int largeOrderThreshold = 1000;
 
-        // 檢查前5個買單
-        List<Order> topBuys = orderBook.getTopBuyOrders(5);
-        for (Order b : topBuys) {
-            if (b.getVolume() >= largeOrderThreshold) {
-                impact += 0.005;
+            // 檢查前5個買單
+            List<Order> topBuys = orderBook.getTopBuyOrders(5);
+            if (topBuys != null) {
+                for (Order b : topBuys) {
+                    if (b != null && b.getVolume() >= largeOrderThreshold) {
+                        impact += 0.005;
+                    }
+                }
             }
-        }
-        // 檢查前5個賣單
-        List<Order> topSells = orderBook.getTopSellOrders(5);
-        for (Order s : topSells) {
-            if (s.getVolume() >= largeOrderThreshold) {
-                impact -= 0.005;
+            // 檢查前5個賣單
+            List<Order> topSells = orderBook.getTopSellOrders(5);
+            if (topSells != null) {
+                for (Order s : topSells) {
+                    if (s != null && s.getVolume() >= largeOrderThreshold) {
+                        impact -= 0.005;
+                    }
+                }
             }
+            return impact;
+        } catch (Exception e) {
+            logger.error("計算大單影響異常：" + e.getMessage(), "MARKET_BEHAVIOR_ANALYSIS");
+            return 0.0;
         }
-        return impact;
     }
 
     /**

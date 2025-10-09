@@ -274,12 +274,15 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         JTable table = new JTable(model);
 
         // 基本設置
-        table.setRowHeight(35);
+        table.setRowHeight(26); // [UI] 行高
         table.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 13));
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);
         table.setShowGrid(false);
         table.setIntercellSpacing(new Dimension(0, 0));
+
+        // [UX] AutoRowSorter + Ctrl+F 聚焦搜尋框
+        table.setAutoCreateRowSorter(true);
 
         // 表頭樣式
         JTableHeader header = table.getTableHeader();
@@ -327,30 +330,49 @@ public class OrderViewer extends JFrame implements OrderBookListener {
             // 設置邊框和內邊距
             setBorder(BorderFactory.createEmptyBorder(0, 10, 0, 10));
 
-            // 設置顏色
+            // 設置顏色與底色（去除灰色與斑馬紋，整列只用紅/綠/白）
             if (isSelected) {
                 setBackground(new Color(232, 240, 254));
                 setForeground(new Color(13, 71, 161));
             } else {
-                setBackground(row % 2 == 0 ? Color.WHITE : new Color(250, 250, 250));
+                Color rowBg = Color.WHITE;
+                try {
+                    Object typeObj = table.getValueAt(row, 2); // 類型列
+                    if (typeObj != null) {
+                        String type = typeObj.toString();
+                        if ("買入".equals(type) || "Buy".equals(type)) {
+                            rowBg = new Color(224, 244, 229); // 純綠系底
+                        } else if ("賣出".equals(type) || "Sell".equals(type)) {
+                            rowBg = new Color(252, 231, 231); // 純紅系底
+                        }
+                    }
+                } catch (Exception ignore) {}
+
+                setBackground(rowBg);
                 setForeground(Color.BLACK);
 
-                // 特殊列的顏色
-                if (column == 2) { // 類型列
+                // 類型列用更鮮明文字顏色
+                if (column == 2 && value != null) {
                     String type = value.toString();
                     if ("買入".equals(type) || "Buy".equals(type)) {
-                        setForeground(new Color(76, 175, 80));
+                        setForeground(new Color(27, 94, 32));
                         setFont(getFont().deriveFont(Font.BOLD));
                     } else if ("賣出".equals(type) || "Sell".equals(type)) {
-                        setForeground(new Color(244, 67, 54));
+                        setForeground(new Color(183, 28, 28));
                         setFont(getFont().deriveFont(Font.BOLD));
                     }
-                } else if (column == 6) { // 狀態列
-                    setForeground(new Color(255, 152, 0));
                 }
             }
 
             return comp;
+        }
+
+        private Color blend(Color base, Color overlay, double alpha) {
+            double a = Math.max(0.0, Math.min(1.0, alpha));
+            int r = (int) Math.round(base.getRed() * (1 - a) + overlay.getRed() * a);
+            int g = (int) Math.round(base.getGreen() * (1 - a) + overlay.getGreen() * a);
+            int b = (int) Math.round(base.getBlue() * (1 - a) + overlay.getBlue() * a);
+            return new Color(r, g, b);
         }
     }
 
@@ -386,6 +408,12 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         // 搜索框
         JTextField searchField = new JTextField(20);
         searchField.putClientProperty("JTextField.placeholderText", "搜索訂單...");
+        // [UX] Ctrl+F 聚焦
+        KeyStroke ks = KeyStroke.getKeyStroke(KeyEvent.VK_F, InputEvent.CTRL_DOWN_MASK);
+        toolBar.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(ks, "focusSearch");
+        toolBar.getActionMap().put("focusSearch", new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) { searchField.requestFocusInWindow(); }
+        });
 
         // 搜索按鈕
         JButton searchButton = new JButton("搜索");
@@ -462,6 +490,11 @@ public class OrderViewer extends JFrame implements OrderBookListener {
         public ButtonRenderer() {
             setOpaque(true);
             setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+            // [UI] 底色更明顯
+            setBackground(new Color(244, 67, 54));
+            setForeground(Color.WHITE);
+            setBorder(BorderFactory.createLineBorder(new Color(198, 40, 40)));
+            setFocusPainted(false);
         }
 
         @Override
@@ -471,7 +504,6 @@ public class OrderViewer extends JFrame implements OrderBookListener {
             setText("取消");
             setBackground(new Color(244, 67, 54));
             setForeground(Color.WHITE);
-            setFocusPainted(false);
 
             // 根據訂單狀態決定是否啟用按鈕
             String status = (String) table.getValueAt(row, 6);
@@ -500,6 +532,9 @@ public class OrderViewer extends JFrame implements OrderBookListener {
             button = new JButton();
             button.setOpaque(true);
             button.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
+            button.setBackground(new Color(244, 67, 54));
+            button.setForeground(Color.WHITE);
+            button.setBorder(BorderFactory.createLineBorder(new Color(198, 40, 40)));
             button.addActionListener(e -> fireEditingStopped());
         }
 

@@ -77,6 +77,20 @@ public class PriceAlertPanel extends JPanel {
         panel.add(new JLabel("目標值:"), gbc);
         gbc.gridx = 1;
         alertPriceField = new JTextField(10);
+        // [UX] 即時驗證：僅允許數字與小數點；>0 才能啟用新增
+        JButton[] addBtnHolder = new JButton[1];
+        alertPriceField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
+            private void validateNow() {
+                String t = alertPriceField.getText().trim();
+                boolean ok;
+                try { ok = !t.isEmpty() && Double.parseDouble(t) > 0; }
+                catch (Exception ex) { ok = false; }
+                if (addBtnHolder[0] != null) addBtnHolder[0].setEnabled(ok);
+            }
+            public void insertUpdate(javax.swing.event.DocumentEvent e) { validateNow(); }
+            public void removeUpdate(javax.swing.event.DocumentEvent e) { validateNow(); }
+            public void changedUpdate(javax.swing.event.DocumentEvent e) { validateNow(); }
+        });
         panel.add(alertPriceField, gbc);
 
         // 提醒方式
@@ -97,6 +111,8 @@ public class PriceAlertPanel extends JPanel {
         gbc.gridwidth = 2;
         JPanel buttonPanel = new JPanel(new FlowLayout());
         JButton addButton = new JButton("添加提醒");
+        addButton.setEnabled(false); // [UX] 初始不可用，驗證通過才啟用
+        addBtnHolder[0] = addButton;
         JButton removeButton = new JButton("刪除選中");
         JButton clearButton = new JButton("清空全部");
 

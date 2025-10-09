@@ -7,6 +7,8 @@ import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.view.components.QuickTradePanel;
 import javax.swing.*;
 import java.awt.*;
+// [PERF] 新增引用以呼叫效能模式
+import StockMainAction.view.MainView;
 
 /**
  * 控制視圖 - 分頁式設計
@@ -119,6 +121,21 @@ public class ControlView extends JFrame {
         stopButton.setFocusPainted(false);
 
         panel.add(stopButton);
+
+        // [PERF] 效能模式選擇
+        panel.add(Box.createHorizontalStrut(12));
+        panel.add(new JLabel("效能模式:"));
+        JComboBox<String> perfCombo = new JComboBox<>(new String[]{"節能", "平衡", "效能"}); // [PERF]
+        perfCombo.setSelectedIndex(1);
+        perfCombo.addActionListener(e -> {
+            String mode = (String) perfCombo.getSelectedItem();
+            try {
+                MainView.applyPerfMode(mode); // [PERF]
+            } catch (Throwable t) {
+                System.err.println("applyPerfMode failed: " + t.getMessage());
+            }
+        });
+        panel.add(perfCombo);
 
         return panel;
     }

@@ -11,6 +11,8 @@ import java.awt.event.ActionListener;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.util.List;
+import java.util.concurrent.ExecutorService; // [PERF]
+import java.util.concurrent.Executors; // [PERF]
 
 /**
  * 快捷交易面板組件
@@ -47,6 +49,9 @@ public class QuickTradePanel extends JPanel {
     }
 
     private QuickTradePanelListener listener;
+
+    // [PERF] 背景執行緒
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     public QuickTradePanel() {
         initializeUI();
@@ -169,6 +174,17 @@ public class QuickTradePanel extends JPanel {
         executeButton.setFont(new Font("Microsoft JhengHei", Font.BOLD, 12));
         executeButton.setEnabled(false);
         executeButton.addActionListener(e -> executeSelectedTrade());
+        // [UX] Enter 送單 / Esc 清空
+        KeyStroke enter = KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0);
+        KeyStroke esc = KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0);
+        previewArea.getInputMap(JComponent.WHEN_FOCUSED).put(enter, "doExec");
+        previewArea.getActionMap().put("doExec", new AbstractAction(){
+            @Override public void actionPerformed(ActionEvent e){ executeSelectedTrade(); }
+        });
+        previewArea.getInputMap(JComponent.WHEN_FOCUSED).put(esc, "doClear");
+        previewArea.getActionMap().put("doClear", new AbstractAction(){
+            @Override public void actionPerformed(ActionEvent e){ clearPreview(); }
+        });
 
         JPanel buttonPanel = new JPanel(new FlowLayout());
         buttonPanel.add(executeButton);
@@ -375,8 +391,15 @@ public class QuickTradePanel extends JPanel {
      */
     private void executeSelectedTrade() {
         if (selectedConfig != null && listener != null) {
-            listener.onQuickTradeExecute(selectedConfig);
+            QuickTradeConfig cfg = selectedConfig;
             executeButton.setEnabled(false);
+            executor.submit(() -> {
+                try {
+                    listener.onQuickTradeExecute(cfg); // [PERF] 背景執行下單
+                } finally {
+                    SwingUtilities.invokeLater(() -> updatePreview());
+                }
+            });
         }
     }
 

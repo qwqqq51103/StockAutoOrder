@@ -16,6 +16,8 @@ import javax.swing.Timer;
 import java.awt.BasicStroke;
 import java.util.Map;
 import java.util.HashMap;
+// [CHART]
+import StockMainAction.view.MainView;
 
 /**
  * 完整的成交記錄視窗 - 支持限價單和市價單的詳細顯示
@@ -62,6 +64,8 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
     private JTextArea statsAnalysisTextArea;
     private DefaultTableModel traderAnalysisModel;
     private static final MarketLogger logger = MarketLogger.getInstance();
+    // [PERF] 表格與記錄上限
+    private static final int MAX_ROWS = 2000;
 
     /**
      * 構造函數
@@ -257,19 +261,36 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
         JTable table = new JTable(model);
 
         // 基本設置
-        table.setRowHeight(32);
+        table.setRowHeight(26); // [UI]
         table.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 12));
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.setFillsViewportHeight(true);
         table.setShowGrid(false);
         table.setIntercellSpacing(new Dimension(0, 1));
+        table.setAutoCreateRowSorter(true); // [UX]
 
-        // 表頭樣式
+        // 表頭樣式（自訂渲染，避免 LAF 覆蓋造成白字白底）
         JTableHeader header = table.getTableHeader();
         header.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
-        header.setBackground(new Color(63, 81, 181));
-        header.setForeground(Color.WHITE);
         header.setPreferredSize(new Dimension(0, 35));
+        header.setOpaque(true);
+        final Color headerBg = new Color(63, 81, 181); // 深藍底
+        final Color headerFg = Color.WHITE;
+        header.setBackground(headerBg);
+        header.setForeground(headerFg);
+        header.setDefaultRenderer(new DefaultTableCellRenderer() {
+            @Override
+            public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
+                JLabel lbl = (JLabel) super.getTableCellRendererComponent(table, value, false, false, row, column);
+                lbl.setHorizontalAlignment(CENTER);
+                lbl.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
+                lbl.setOpaque(true);
+                lbl.setBackground(headerBg);
+                lbl.setForeground(headerFg);
+                lbl.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(224, 224, 224)));
+                return lbl;
+            }
+        });
 
         // 設置列寬 - 針對增強版列進行優化
         TableColumnModel columnModel = table.getColumnModel();
@@ -287,10 +308,12 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
         columnModel.getColumn(11).setPreferredWidth(80);  // 執行時間
         columnModel.getColumn(12).setPreferredWidth(120); // 備註
 
-        // 自定義渲染器 - 增強版
-        table.setDefaultRenderer(Object.class, new EnhancedTransactionTableCellRenderer());
-        table.setDefaultRenderer(Double.class, new EnhancedTransactionTableCellRenderer());
-        table.setDefaultRenderer(Integer.class, new EnhancedTransactionTableCellRenderer());
+        // 自定義渲染器 - 增強版（共用同一個實例，並強制預設前景色）
+        table.setForeground(Color.BLACK);
+        EnhancedTransactionTableCellRenderer sharedRenderer = new EnhancedTransactionTableCellRenderer();
+        table.setDefaultRenderer(Object.class, sharedRenderer);
+        table.setDefaultRenderer(Double.class, sharedRenderer);
+        table.setDefaultRenderer(Integer.class, sharedRenderer);
 
         return table;
     }
@@ -385,22 +408,56 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
                 }
             }
 
-            // 設置背景色
+            // 先給預設前景，避免繼承到白字
+            setForeground(Color.BLACK);
+
+            // 底色：依買/賣方主動與類型淡化強調
             if (isSelected) {
                 setBackground(new Color(232, 240, 254));
-                // 選中時保持文字顏色可見性
-                if (column != 9 && column != 10 && column != 1) {
-                    setForeground(new Color(13, 71, 161));
-                }
+                if (column != 9 && column != 10 && column != 1) setForeground(new Color(13, 71, 161));
             } else {
-                setBackground(row % 2 == 0 ? Color.WHITE : new Color(250, 250, 250));
-                // 非選中時的默認顏色在上面的switch中已設置
-                if (column != 9 && column != 10 && column != 1) {
-                    setForeground(Color.BLACK);
-                }
+                Color base = (row % 2 == 0) ? Color.WHITE : new Color(250, 250, 250);
+                try {
+                    // 類型在列 1，買入成交用綠底、賣出用紅底（更深）
+                    Object typeObj = table.getValueAt(row, 1);
+                    if (typeObj != null) {
+                        String type = typeObj.toString();
+                        if (type.contains("買")) base = blend(base, new Color(220, 245, 230), 0.85);
+                        if (type.contains("賣")) base = blend(base, new Color(245, 220, 220), 0.85);
+                    }
+                } catch (Exception ignore) {}
+
+                // 數值欄位微加強（更深）
+                if (column == 5 || column == 7) base = blend(base, new Color(230, 238, 255), 0.5);
+                // 成交時間欄（列 2）整欄底色
+                if (column == 2) base = blend(base, new Color(220, 235, 255), 0.85);
+
+                setBackground(base);
+                if (column != 9 && column != 10 && column != 1) setForeground(Color.BLACK);
+                // 對超淺底色做對比保護
+                ensureContrast();
             }
 
             return comp;
+        }
+
+        private Color blend(Color base, Color overlay, double alpha) {
+            double a = Math.max(0.0, Math.min(1.0, alpha));
+            int r = (int) Math.round(base.getRed() * (1 - a) + overlay.getRed() * a);
+            int g = (int) Math.round(base.getGreen() * (1 - a) + overlay.getGreen() * a);
+            int b = (int) Math.round(base.getBlue() * (1 - a) + overlay.getBlue() * a);
+            return new Color(r, g, b);
+        }
+
+        // 若背景太亮而前景非深色，強制改為深灰/黑，避免看不到
+        private void ensureContrast() {
+            Color bg = getBackground();
+            Color fg = getForeground();
+            int bgY = (int)(0.2126 * bg.getRed() + 0.7152 * bg.getGreen() + 0.0722 * bg.getBlue());
+            int fgY = (int)(0.2126 * fg.getRed() + 0.7152 * fg.getGreen() + 0.0722 * fg.getBlue());
+            if (bgY > 235 && fgY > 180) { // 背景很亮且前景偏亮
+                setForeground(new Color(33, 33, 33));
+            }
         }
     }
 
@@ -541,7 +598,8 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
         String[] slippageColumns = {"滑價範圍", "交易筆數", "平均滑價", "最大滑價", "影響因素"};
         DefaultTableModel slippageModel = new DefaultTableModel(slippageColumns, 0);
         JTable slippageTable = new JTable(slippageModel);
-        slippageTable.setRowHeight(30);
+        slippageTable.setRowHeight(26); // [UI]
+        slippageTable.setAutoCreateRowSorter(true); // [UX]
 
         JScrollPane scrollPane = new JScrollPane(slippageTable);
         panel.add(scrollPane, BorderLayout.CENTER);
@@ -834,6 +892,27 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
             // 如果是個人交易，添加到我的成交表
             if (isPersonalTransaction(trans)) {
                 myTransactionsModel.addRow(rowData);
+            }
+        }
+
+        // [PERF] 上限裁切（保留最新）
+        trimModelRows(allTransactionsModel);
+        trimModelRows(buyTransactionsModel);
+        trimModelRows(sellTransactionsModel);
+        trimModelRows(myTransactionsModel);
+        trimModelRows(marketOrderModel);
+        trimModelRows(limitOrderModel);
+
+        MainView.scheduleChartFlush(); // [CHART]
+    }
+
+    // [PERF] 保留最新 MAX_ROWS 筆
+    private void trimModelRows(DefaultTableModel model) {
+        int extra = model.getRowCount() - MAX_ROWS;
+        if (extra > 0) {
+            // 移除最舊的前 extra 筆
+            for (int i = 0; i < extra; i++) {
+                model.removeRow(0);
             }
         }
     }
@@ -1625,6 +1704,15 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
 
         // 自動滾動到最新記錄
         scrollToLastRow();
+
+        // [PERF] 上限裁切 + 合併重繪
+        trimModelRows(allTransactionsModel);
+        trimModelRows(buyTransactionsModel);
+        trimModelRows(sellTransactionsModel);
+        trimModelRows(myTransactionsModel);
+        trimModelRows(marketOrderModel);
+        trimModelRows(limitOrderModel);
+        MainView.scheduleChartFlush(); // [CHART]
     }
 
     // 自動滾動到最後一行
