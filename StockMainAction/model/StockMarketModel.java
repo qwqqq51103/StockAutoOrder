@@ -41,8 +41,8 @@ public class StockMarketModel {
 
     // 配置參數
     private double initialRetailCash = 20000000, initialMainForceCash = 20000000;
-    private int initialRetails = 1;
-    private int marketBehaviorStock = 20000000;
+    private int initialRetails = 10;
+    private int marketBehaviorStock = 100000;
     private double marketBehaviorGash = -9999999.0;
 
     // 🆕 成交記錄列表

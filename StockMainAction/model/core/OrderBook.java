@@ -916,38 +916,6 @@ public class OrderBook {
         int remainingQuantity = quantity;
         String failureReason = null;
 
-        // 價格保護帶參數（避免市價單跨過巨大價差造成異常成交）
-        // 允許在參考價上下10%內撮合；可視需要外部化成配置
-        final double maxSlippageRatio = maxMarketSlippageRatio;
-
-        // 參考價：優先使用中間價（有買一與賣一時），否則使用最後成交價
-        double referencePrice = model.getStock().getPrice();
-        try {
-            if (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
-                double bestBid = buyOrders.get(0).getPrice();
-                double bestAsk = sellOrders.get(0).getPrice();
-                // 僅當買一 < 賣一時使用中間價
-                if (bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk) {
-                    referencePrice = (bestBid + bestAsk) / 2.0;
-                }
-            }
-        } catch (Exception ignore) { }
-        double allowedMaxPrice = referencePrice * (1.0 + maxSlippageRatio);
-
-        // [RISK] 事前流動性檢查：在允許滑價範圍內的可成交量
-        int availableWithin = getAvailableSellVolumeWithin(allowedMaxPrice);
-        if (availableWithin < Math.max(1, (int) Math.round(quantity * 0.7))) {
-            failureReason = String.format("流動性不足：允許價內可得 %d / 需求 %d", availableWithin, quantity);
-            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
-            if (transaction.getActualVolume() > 0) {
-                model.addTransaction(transaction);
-            }
-            logger.warn(String.format(
-                    "市價買入前置風控拒絕：%s, 交易者=%s, 交易ID=%s",
-                    failureReason, trader.getTraderType(), transaction.getId()
-            ), "MARKET_BUY");
-            return;
-        }
 
         // 檢查可用資金
         if (remainingFunds <= 0) {
@@ -977,14 +945,7 @@ public class OrderBook {
                 int chunk = Math.min(availableVolume, remainingQuantity);
                 double cost = chunk * sellPx;
 
-                // 價格保護：市價買不吃超過參考價+保護帶的掛單
-                if (sellPx > allowedMaxPrice) {
-                    failureReason = String.format(
-                            "價格超出市價單保護帶：賣價=%.2f，高於允許上限=%.2f（ref=%.2f, +%.0f%%）",
-                            sellPx, allowedMaxPrice, referencePrice, maxSlippageRatio * 100);
-                    logger.warn(failureReason + ", 停止後續撮合，保護剩餘市價買單不被高價吃掉", "MARKET_BUY");
-                    break; // 之後價位只會更高，直接停止
-                }
+
 
                 // 自成交檢查
                 if (sellOrder.getTrader() == trader) {
@@ -1151,36 +1112,7 @@ public class OrderBook {
         ), "MARKET_SELL");
 
         int remainingQty = quantity;
-        String failureReason = null;
-
-        // 價格保護帶參數
-        final double maxSlippageRatio = maxMarketSlippageRatio;
-        double referencePrice = model.getStock().getPrice();
-        try {
-            if (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
-                double bestBid = buyOrders.get(0).getPrice();
-                double bestAsk = sellOrders.get(0).getPrice();
-                if (bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk) {
-                    referencePrice = (bestBid + bestAsk) / 2.0;
-                }
-            }
-        } catch (Exception ignore) { }
-        double allowedMinPrice = referencePrice * (1.0 - maxSlippageRatio);
-
-        // [RISK] 事前流動性檢查：在允許滑價範圍內的可買量
-        int buyAvailableWithin = getAvailableBuyVolumeWithin(allowedMinPrice);
-        if (buyAvailableWithin < Math.max(1, (int) Math.round(quantity * 0.7))) {
-            failureReason = String.format("流動性不足：允許價內買量 %d / 需求 %d", buyAvailableWithin, quantity);
-            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
-            if (transaction.getActualVolume() > 0) {
-                model.addTransaction(transaction);
-            }
-            logger.warn(String.format(
-                    "市價賣出前置風控拒絕：%s, 交易者=%s, 交易ID=%s",
-                    failureReason, trader.getTraderType(), transaction.getId()
-            ), "MARKET_SELL");
-            return;
-        }
+		String failureReason = null;
 
         // 檢查持股
         if (trader.getAccount().getStockInventory() < quantity) {
@@ -1210,14 +1142,7 @@ public class OrderBook {
                 int availableVolume = buyOrder.getVolume();
                 int chunk = Math.min(availableVolume, remainingQty);
 
-                // 價格保護：市價賣不賣到低於參考價-保護帶的掛單
-                if (buyPx < allowedMinPrice) {
-                    failureReason = String.format(
-                            "價格超出市價單保護帶：買價=%.2f，低於允許下限=%.2f（ref=%.2f, -%.0f%%）",
-                            buyPx, allowedMinPrice, referencePrice, maxSlippageRatio * 100);
-                    logger.warn(failureReason + ", 停止後續撮合，保護剩餘市價賣單不被低價賣出", "MARKET_SELL");
-                    break; // 之後價位只會更低，直接停止
-                }
+
 
                 // 自成交檢查
                 if (buyOrder.getTrader() == trader) {
