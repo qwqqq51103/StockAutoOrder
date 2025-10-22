@@ -16,6 +16,9 @@ import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.util.logging.LogicAudit;
 import java.util.Arrays;
 import StockMainAction.model.core.Transaction;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.stream.Collectors;
 
 /**
  * 主力策略 - 處理主力的操作策略
@@ -101,18 +104,66 @@ public class MainForceStrategyWithOrderBook implements Trader {
     // 手動干預
     private boolean manualLock = false;
     private Phase manualPhase = Phase.待機;
+    
+    // 訂單管理相關
+    private Map<String, Long> orderCreationTime = new HashMap<>();
+    private int orderManagementCounter = 0;
+    private static final int ORDER_MANAGEMENT_INTERVAL = 20; // 每20個週期檢查一次
+    private static final long MAX_ORDER_AGE_MS = 300000; // 5分鐘
 
     public void setManualPhase(String phaseName, boolean lock) {
         try {
-            Phase p = Phase.valueOf(phaseName.toUpperCase());
+            Phase p;
+            // 支援兩種命名格式：全大寫（UI使用）和首字母大寫（保持相容性）
+            switch (phaseName.toUpperCase()) {
+                case "IDLE": 
+                case "待機": 
+                    p = Phase.待機; 
+                    break;
+                case "ACCUMULATE": 
+                case "ACCUM":
+                case "吸籌": 
+                    p = Phase.吸籌; 
+                    break;
+                case "MARKUP": 
+                case "拉抬": 
+                case "拉升": 
+                    p = Phase.拉抬; 
+                    break;
+                case "DISTRIBUTE": 
+                case "DIST":
+                case "出貨": 
+                case "派發": 
+                    p = Phase.出貨; 
+                    break;
+                case "WASH": 
+                case "洗盤": 
+                    p = Phase.洗盤; 
+                    break;
+                default: 
+                    // 嘗試直接解析中文enum值
+                    try {
+                        p = Phase.valueOf(phaseName);
+                    } catch (Exception e) {
+                        System.out.println("無法識別的階段名稱: " + phaseName + "，保持當前階段");
+                        return;
+                    }
+                    break;
+            }
             this.manualPhase = p;
             this.manualLock = lock;
             if (lock) {
                 this.phase = p;
                 this.phaseTicks = 0;
                 LogicAudit.info("MAIN_FORCE_PHASE", "manual lock -> " + p.name());
+                System.out.println(String.format("[主力手動控制] 階段已鎖定為：%s (來源：%s)", p.name(), phaseName));
+            } else {
+                System.out.println(String.format("[主力手動控制] 設定手動階段為：%s (未鎖定，來源：%s)", p.name(), phaseName));
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            System.err.println("設定主力手動階段時發生錯誤：" + e.getMessage());
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -167,7 +218,11 @@ public class MainForceStrategyWithOrderBook implements Trader {
     public void updateAfterTransaction(String type, int volume, double price) {
         double transactionAmount = price * volume;
         if ("buy".equals(type)) {
-            // 限價單買入：增加股數
+            try {
+                account.consumeFrozenFunds(transactionAmount);
+            } catch (Exception e) {
+                account.decrementFunds(transactionAmount);
+            }
             account.incrementStocks(volume);
             // 更新平均成本價
             double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
@@ -246,6 +301,13 @@ public class MainForceStrategyWithOrderBook implements Trader {
      * 主力行為：根據市場狀況做出交易決策 - 增強版 支持各種訂單類型和更多策略選擇
      */
     public void makeDecision() {
+        // 定期執行訂單管理
+        orderManagementCounter++;
+        if (orderManagementCounter >= ORDER_MANAGEMENT_INTERVAL) {
+            orderManagementCounter = 0;
+            manageOutdatedOrders();
+        }
+        
         try {
             double currentPrice = stock.getPrice();
             double availableFunds = account.getAvailableFunds();
@@ -365,6 +427,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             for (int i = 1; i <= 3; i++) {
                                 double px = computeBuyLimitPrice(currentPrice * (1 - i * 0.005), sma, rsi, volatility);
                                 Order o = Order.createLimitBuyOrder(px, Math.max(10, vol / 3), this);
+                                trackOrderCreation(o.getId());
                                 orderBook.submitBuyOrder(o, px);
                                 placed += o.getVolume();
                                 LogicAudit.info("MAIN_FORCE_ORDER", String.format("ACCUM buy %d @ %.4f", o.getVolume(), px));
@@ -446,6 +509,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                     double px = computeSellLimitPrice(currentPrice * (1 + i * 0.005), sma, rsi, volatility);
                                     int size = Math.min(chunk, hold - placed);
                                     Order o = Order.createLimitSellOrder(px, size, this);
+                                    trackOrderCreation(o.getId());
                                     orderBook.submitSellOrder(o, px);
                                     placed += size;
                                     LogicAudit.info("MAIN_FORCE_ORDER", String.format("DIST sell %d @ %.4f", size, px));
@@ -747,6 +811,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
             // 創建並提交買單
             Order buyOrder = Order.createLimitBuyOrder(limitPrice, volume, this);
+            trackOrderCreation(buyOrder.getId());
             orderBook.submitBuyOrder(buyOrder, limitPrice);
 
             logger.info(String.format(
@@ -802,6 +867,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
             // 創建並提交賣單
             Order sellOrder = Order.createLimitSellOrder(limitPrice, volume, this);
+            trackOrderCreation(sellOrder.getId());
             orderBook.submitSellOrder(sellOrder, limitPrice);
 
             logger.info(String.format(
@@ -857,6 +923,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             } else {
                 // 普通限價賣單
                 Order sellOrder = Order.createLimitSellOrder(price, volume, this);
+                trackOrderCreation(sellOrder.getId());
                 orderBook.submitSellOrder(sellOrder, price);
 
                 logger.info(String.format(
@@ -908,6 +975,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     double px = stock.getPrice() * 1.001; // 小幅抬價
                     px = orderBook.adjustPriceToUnit(px);
                     Order o = Order.createLimitBuyOrder(px, volume, this);
+                    trackOrderCreation(o.getId());
                     orderBook.submitBuyOrder(o, px);
                 }
             } catch (Exception ex) {
@@ -977,6 +1045,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     double px = stock.getPrice() * 0.999; // 小幅讓價
                     px = orderBook.adjustPriceToUnit(px);
                     Order o = Order.createLimitSellOrder(px, volume, this);
+                    trackOrderCreation(o.getId());
                     orderBook.submitSellOrder(o, px);
                 }
             } catch (Exception ex) {
@@ -1367,5 +1436,147 @@ public class MainForceStrategyWithOrderBook implements Trader {
             }
         } catch (Exception ignore) {}
         return scale;
+    }
+    
+    /**
+     * 管理過時或不合理的訂單
+     */
+    private void manageOutdatedOrders() {
+        if (orderBook == null || model == null) return;
+        
+        double currentPrice = model.getStock().getPrice();
+        long currentTime = System.currentTimeMillis();
+        double sma = model.getMarketAnalyzer().calculateSMA();
+        
+        List<Order> myOrders = new ArrayList<>();
+        myOrders.addAll(orderBook.getBuyOrders().stream()
+            .filter(o -> o.getTrader() == this)
+            .collect(Collectors.toList()));
+        myOrders.addAll(orderBook.getSellOrders().stream()
+            .filter(o -> o.getTrader() == this)
+            .collect(Collectors.toList()));
+        
+        for (Order order : myOrders) {
+            boolean shouldCancel = false;
+            String reason = "";
+            
+            // 1. 訂單年齡過大
+            Long creationTime = orderCreationTime.get(order.getId());
+            long maxAge = getMaxOrderAgeForPhase();
+            if (creationTime != null && (currentTime - creationTime) > maxAge) {
+                shouldCancel = true;
+                reason = "訂單存在時間過長";
+            }
+            
+            // 2. 價格偏離過大（根據階段動態調整）
+            double priceDeviation = Math.abs(order.getPrice() - currentPrice) / currentPrice;
+            double maxDeviation = getMaxPriceDeviationForPhase();
+            
+            if (priceDeviation > maxDeviation) {
+                shouldCancel = true;
+                reason = String.format("價格偏離過大 (%.2f%%)", priceDeviation * 100);
+            }
+            
+            // 3. 與均線的關係（避免不利訂單）
+            if (sma > 0) {
+                if (order.getType().equals("buy") && order.getPrice() > sma * 1.10) {
+                    // 買單價格高於均線10%太多
+                    shouldCancel = true;
+                    reason = "買單價格遠高於均線";
+                } else if (order.getType().equals("sell") && order.getPrice() < sma * 0.90) {
+                    // 賣單價格低於均線10%太多
+                    shouldCancel = true;
+                    reason = "賣單價格遠低於均線";
+                }
+            }
+            
+            // 4. 階段特定邏輯
+            if (!shouldCancel && shouldCancelByPhase(order, currentPrice)) {
+                shouldCancel = true;
+                reason = "階段特定條件觸發";
+            }
+            
+            // 執行取消
+            if (shouldCancel) {
+                orderBook.cancelOrder(order.getId());
+                orderCreationTime.remove(order.getId());
+                System.out.println(String.format(
+                    "[主力訂單管理] 取消%s訂單，價格=%.2f，原因=%s，階段=%s",
+                    order.getType(), order.getPrice(), reason, phase.name()
+                ));
+            }
+        }
+    }
+    
+    /**
+     * 根據當前階段獲取最大價格偏離
+     */
+    private double getMaxPriceDeviationForPhase() {
+        switch (phase) {
+            case 吸籌: return 0.08; // 吸籌階段：8%
+            case 拉抬: return 0.15; // 拉抬階段：15%
+            case 出貨: return 0.12; // 出貨階段：12%
+            case 洗盤: return 0.10; // 洗盤階段：10%
+            case 待機: return 0.05; // 待機階段：5%
+            default: return 0.10;
+        }
+    }
+    
+    /**
+     * 根據當前階段獲取最大訂單年齡
+     */
+    private long getMaxOrderAgeForPhase() {
+        switch (phase) {
+            case 吸籌: return 600000; // 吸籌：10分鐘
+            case 拉抬: return 180000; // 拉抬：3分鐘（快速反應）
+            case 出貨: return 240000; // 出貨：4分鐘
+            case 洗盤: return 300000; // 洗盤：5分鐘
+            case 待機: return 900000; // 待機：15分鐘
+            default: return 300000;
+        }
+    }
+    
+    /**
+     * 根據階段判斷是否取消訂單
+     */
+    private boolean shouldCancelByPhase(Order order, double currentPrice) {
+        switch (phase) {
+            case 拉抬:
+                // 拉抬階段：取消過低的買單和過高的賣單
+                if (order.getType().equals("buy") && order.getPrice() < currentPrice * 0.92) {
+                    return true;
+                }
+                if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.15) {
+                    return true;
+                }
+                break;
+                
+            case 出貨:
+                // 出貨階段：取消過高的賣單（需要快速出貨）
+                if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.08) {
+                    return true;
+                }
+                break;
+                
+            case 洗盤:
+                // 洗盤階段：取消離譜的訂單
+                if (order.getType().equals("buy") && order.getPrice() < currentPrice * 0.85) {
+                    return true;
+                }
+                if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.20) {
+                    return true;
+                }
+                break;
+        }
+        return false;
+    }
+    
+    /**
+     * 記錄訂單創建時間
+     */
+    private void trackOrderCreation(String orderId) {
+        if (orderId != null) {
+            orderCreationTime.put(orderId, System.currentTimeMillis());
+        }
     }
 }

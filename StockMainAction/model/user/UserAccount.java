@@ -8,6 +8,7 @@ public class UserAccount {
     private double availableFunds;
     private int stockInventory;
     private int frozenStocks;
+    private double frozenFunds;
 
     /**
      * 構造函數
@@ -17,14 +18,15 @@ public class UserAccount {
      */
     public UserAccount(double initialFunds, int initialStocks) {
         this.availableFunds = initialFunds;
-        this.stockInventory = initialStocks; // 初始化可用股票餘額
+        this.stockInventory = initialStocks;
         this.frozenStocks = 0;
+        this.frozenFunds = 0.0;
     }
 
-    // 凍結資金
     public boolean freezeFunds(double amount) {
         if (availableFunds >= amount) {
-            availableFunds -= amount;  // 扣除資金，視為凍結
+            availableFunds -= amount;
+            frozenFunds += amount;
             return true;
         }
         return false;
@@ -126,9 +128,6 @@ public class UserAccount {
         stockInventory += quantity;
     }
 
-    /**
-     * 成交時消耗凍結股票；若凍結不足，餘額自可用庫存扣除（保險處理）。
-     */
     public void consumeFrozenStocks(int quantity) {
         if (quantity <= 0) return;
         int useFrozen = Math.min(quantity, frozenStocks);
@@ -140,5 +139,38 @@ public class UserAccount {
             }
             stockInventory -= remain;
         }
+    }
+    
+    public double getFrozenFunds() {
+        return frozenFunds;
+    }
+    
+    public boolean consumeFrozenFunds(double amount) {
+        if (frozenFunds >= amount) {
+            frozenFunds -= amount;
+            return true;
+        }
+        if (availableFunds >= amount) {
+            availableFunds -= amount;
+            return true;
+        }
+        return false;
+    }
+    
+    public boolean unfreezeFunds(double amount) {
+        if (frozenFunds >= amount) {
+            frozenFunds -= amount;
+            availableFunds += amount;
+            return true;
+        }
+        return false;
+    }
+    
+    public double getTotalFunds() {
+        return availableFunds + frozenFunds;
+    }
+    
+    public int getTotalStocks() {
+        return stockInventory + frozenStocks;
     }
 }

@@ -934,9 +934,10 @@ public class OrderBook {
             return;
         }
 
+        int depthLevel = 1;
         try {
+            synchronized (sellOrders) {
             ListIterator<Order> it = sellOrders.listIterator();
-            int depthLevel = 1; // 訂單簿深度層級
 
             while (it.hasNext() && remainingQuantity > 0 && remainingFunds > 0) {
                 Order sellOrder = it.next();
@@ -947,15 +948,7 @@ public class OrderBook {
 
 
 
-                // 自成交檢查
-                if (sellOrder.getTrader() == trader) {
-                    logger.debug(String.format(
-                            "市價買入跳過自成交：交易者=%s, 賣單價格=%.2f, 數量=%d, 深度=%d",
-                            trader.getTraderType(), sellPx, chunk, depthLevel
-                    ), "MARKET_BUY");
-                    depthLevel++;
-                    continue;
-                }
+                // 允許自成交
 
                 // 資金檢查
                 if (remainingFunds < cost) {
@@ -1014,6 +1007,7 @@ public class OrderBook {
                 }
 
                 depthLevel++;
+            }
             }
 
             // 完成交易記錄
@@ -1132,9 +1126,10 @@ public class OrderBook {
             return;
         }
 
+        int depthLevel = 1;
         try {
+            synchronized (buyOrders) {
             ListIterator<Order> it = buyOrders.listIterator();
-            int depthLevel = 1; // 訂單簿深度層級
 
             while (it.hasNext() && remainingQty > 0) {
                 Order buyOrder = it.next();
@@ -1144,15 +1139,7 @@ public class OrderBook {
 
 
 
-                // 自成交檢查
-                if (buyOrder.getTrader() == trader) {
-                    logger.debug(String.format(
-                            "市價賣出跳過自成交：交易者=%s, 買單價格=%.2f, 數量=%d, 深度=%d",
-                            trader.getTraderType(), buyPx, chunk, depthLevel
-                    ), "MARKET_SELL");
-                    depthLevel++;
-                    continue;
-                }
+                // 允許自成交
 
                 // 檢查賣方持股（動態檢查）
                 if (trader.getAccount().getStockInventory() < chunk) {
@@ -1205,6 +1192,7 @@ public class OrderBook {
                 }
 
                 depthLevel++;
+            }
             }
 
             // 完成交易記錄
@@ -1297,7 +1285,10 @@ public class OrderBook {
             if (canceled != null) {
                 buyOrders.remove(canceled);
                 double refund = canceled.getPrice() * canceled.getVolume();
-                canceled.getTrader().getAccount().incrementFunds(refund);
+                UserAccount acc = canceled.getTrader().getAccount();
+                if (!acc.unfreezeFunds(refund)) {
+                    acc.incrementFunds(refund);
+                }
                 success = true;
 
                 logger.info(String.format(
@@ -1525,5 +1516,71 @@ public class OrderBook {
     public void setMaxMarketSlippageRatio(double ratio) {
         this.maxMarketSlippageRatio = Math.max(0.0, Math.min(0.5, ratio)); // 上限50%
         logger.info("更新市價單滑價保護帶：" + this.maxMarketSlippageRatio, "ORDER_BOOK");
+    }
+    
+    public double getTickSize(double price) {
+        if (price < 10) return 0.01;
+        if (price < 50) return 0.05;
+        if (price < 100) return 0.10;
+        if (price < 500) return 0.50;
+        if (price < 1000) return 1.00;
+        return 5.00;
+    }
+    
+    public double[][] generateFiveLevelPrices(double currentPrice) {
+        double[] buyPrices = new double[5];
+        double[] sellPrices = new double[5];
+        
+        // 買1-5：從當前價開始往下遞減
+        double price = currentPrice;
+        for (int i = 0; i < 5; i++) {
+            buyPrices[i] = price;
+            price -= getTickSize(price);
+            if (price < 0.01) price = 0.01;
+        }
+        
+        // 賣1-5：從當前價開始往上遞增（修正：不再+tick，讓當前價的買賣單都能顯示）
+        price = currentPrice;
+        for (int i = 0; i < 5; i++) {
+            sellPrices[i] = price;
+            price += getTickSize(price);
+        }
+        
+        return new double[][] { buyPrices, sellPrices };
+    }
+    
+    public int getBuyVolumeAtPrice(double targetPrice, double tolerance) {
+        synchronized (buyOrders) {
+            int totalVolume = 0;
+            for (Order order : buyOrders) {
+                if (Math.abs(order.getPrice() - targetPrice) <= tolerance) {
+                    totalVolume += order.getVolume();
+                }
+            }
+            return totalVolume;
+        }
+    }
+    
+    public int getSellVolumeAtPrice(double targetPrice, double tolerance) {
+        synchronized (sellOrders) {
+            int totalVolume = 0;
+            for (Order order : sellOrders) {
+                if (Math.abs(order.getPrice() - targetPrice) <= tolerance) {
+                    totalVolume += order.getVolume();
+                }
+            }
+            return totalVolume;
+        }
+    }
+    
+    public double getCurrentStockPrice() {
+        try {
+            if (model != null && model.getStock() != null) {
+                return model.getStock().getPrice();
+            }
+        } catch (Exception e) {
+            logger.warn("無法取得當前股價：" + e.getMessage(), "ORDER_BOOK");
+        }
+        return 10.0;
     }
 }

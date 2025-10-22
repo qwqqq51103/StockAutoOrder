@@ -22,11 +22,16 @@ public class PersonalAI extends RetailInvestorAI {
     private Stock stock;  // 股票實例
     private StockMarketModel model;
 
+    // 標記：個人戶不使用自動撤單
+    private boolean disableAutoCancellation = true;
+    
     public PersonalAI(double initialCash, String traderID, StockMarketModel model, OrderBook orderBook, Stock stock) {
         super(initialCash, traderID, model);  // 修正：使用 model 參數
         this.model = model;  // 修正：使用 model 參數
         this.orderBook = orderBook;
         this.stock = stock;
+        
+        System.out.println("[個人AI] 初始化完成，自動撤單已禁用");
     }
 
     /**
@@ -35,6 +40,40 @@ public class PersonalAI extends RetailInvestorAI {
     @Override
     public String getTraderType() {
         return "PERSONAL";
+    }
+
+    /**
+     * 覆寫 makeDecision 方法，移除自動撤單邏輯
+     * 個人戶由用戶完全手動控制，不進行自動撤單
+     */
+    @Override
+    public void makeDecision(Stock stock, OrderBook orderBook, StockMarketModel model) {
+        // 如果傳入的 model 不為 null，更新當前實例的 model 引用
+        if (model != null) {
+            this.model = model;
+        }
+        
+        // ❌ 個人戶不執行自動撤單
+        // orderCancelCounter++;
+        // if (orderCancelCounter >= ORDER_CANCEL_INTERVAL) {
+        //     orderCancelCounter = 0;
+        //     cancelOutdatedOrders();
+        // }
+        
+        // ✅ 直接調用父類的決策邏輯（不包含撤單部分）
+        // 因為父類的 makeDecision 包含撤單邏輯，我們需要重新實現簡化版
+        // 個人戶主要由UI手動操作，這裡僅保留基本初始化
+        
+        try {
+            this.orderBook = orderBook;
+            this.stock = stock;
+            
+            // 個人戶不執行自動交易決策，完全由用戶手動控制
+            // 如果未來需要自動策略，可以在這裡添加
+            
+        } catch (Exception e) {
+            System.err.println("[個人AI] 決策過程發生錯誤：" + e.getMessage());
+        }
     }
 
     /**
@@ -227,7 +266,11 @@ public class PersonalAI extends RetailInvestorAI {
         double transactionAmount = price * volume;
 
         if (type.equals("buy")) {
-            // 更新持有股數
+            try {
+                getAccount().consumeFrozenFunds(transactionAmount);
+            } catch (Exception e) {
+                getAccount().decrementFunds(transactionAmount);
+            }
             getAccount().incrementStocks(volume);
 
             // 更新個人平均成本
@@ -265,7 +308,6 @@ public class PersonalAI extends RetailInvestorAI {
         double transactionAmount = price * volume;
 
         if ("buy".equals(type)) {
-            // 扣款並增加持股
             getAccount().decrementFunds(transactionAmount);
             getAccount().incrementStocks(volume);
 

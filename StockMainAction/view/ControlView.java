@@ -156,13 +156,13 @@ public class ControlView extends JFrame {
         gbc.weighty = 1.0;
 
         // 創建交易按鈕
-        limitBuyButton = createTradeButton("限價買入", new Color(0, 150, 0));
-        limitSellButton = createTradeButton("限價賣出", new Color(200, 0, 0));
-        marketBuyButton = createTradeButton("市價買入", new Color(0, 200, 0));
-        marketSellButton = createTradeButton("市價賣出", new Color(255, 0, 0));
-        cancelOrderButton = createTradeButton("取消訂單", new Color(100, 100, 100));
-        viewOrdersButton = createTradeButton("查看訂單", new Color(0, 100, 200));
-        transactionHistoryButton = createTradeButton("成交記錄", new Color(156, 39, 176));
+        limitBuyButton = createFixedButton("限價買入", new Color(0, 150, 0));
+        limitSellButton = createFixedButton("限價賣出", new Color(200, 0, 0));
+        marketBuyButton = createFixedButton("市價買入", new Color(0, 200, 0));
+        marketSellButton = createFixedButton("市價賣出", new Color(255, 0, 0));
+        cancelOrderButton = createFixedButton("取消訂單", new Color(100, 100, 100));
+        viewOrdersButton = createFixedButton("查看訂單", new Color(0, 100, 200));
+        transactionHistoryButton = createFixedButton("成交記錄", new Color(156, 39, 176));
         
         gbc.gridx = 0;
         gbc.gridy = 0;
@@ -242,6 +242,18 @@ public class ControlView extends JFrame {
         scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
         tabbedPane.addTab("個人統計", scrollPane);
+    }
+    
+    private JButton createFixedButton(String text, Color bgColor) {
+        JButton button = new JButton(text);
+        button.setFont(new Font("微軟正黑體", Font.BOLD, 18));
+        button.setPreferredSize(new Dimension(150, 70));
+        button.setBackground(bgColor);
+        button.setForeground(Color.WHITE);
+        button.setContentAreaFilled(true);
+        button.setOpaque(true);
+        button.setUI(new javax.swing.plaf.basic.BasicButtonUI());
+        return button;
     }
 
     /**

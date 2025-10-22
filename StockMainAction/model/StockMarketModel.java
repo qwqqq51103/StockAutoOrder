@@ -40,9 +40,9 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 20000000, initialMainForceCash = 20000000;
+    private double initialRetailCash = 300000, initialMainForceCash = 3000000;
     private int initialRetails = 10;
-    private int marketBehaviorStock = 100000;
+    private int marketBehaviorStock = 30000;
     private double marketBehaviorGash = -9999999.0;
 
     // 🆕 成交記錄列表
@@ -219,7 +219,7 @@ public class StockMarketModel {
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
-        int period = 100; // 執行間隔（單位：毫秒）
+        int period = 500; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {

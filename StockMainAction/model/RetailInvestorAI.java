@@ -16,6 +16,10 @@ import StockMainAction.util.logging.DecisionFactorLogger;
 import StockMainAction.model.core.Transaction;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.Map;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.stream.Collectors;
 
 /**
  * AI散戶行為，實現 Trader 接口，自動輸入下單金額
@@ -39,8 +43,14 @@ public class RetailInvestorAI implements Trader {
     private static final MarketLogger logger = MarketLogger.getInstance();
     private StockMarketModel model;
 
+    // 訂單管理相關
+    private Map<String, Long> orderCreationTime = new HashMap<>();
+    private int orderCancelCounter = 0;
+    private static final int ORDER_CANCEL_INTERVAL = 30; // 每30個決策週期檢查一次
+    private static final long MAX_ORDER_AGE_MS = 180000; // 3分鐘
+
     // 每位散戶的策略型別與風格參數
-    private enum StrategyProfile { MOMENTUM, CONTRARIAN, VALUE, SCALPER }
+    private enum StrategyProfile { MOMENTUM, CONTRARIAN, VALUE, SCALPER, AGGRESSIVE, CONSERVATIVE, SWING }
     private final StrategyProfile profile;
     private final double riskFactor;          // 0.5 ~ 1.8，放大/縮小下單量（略強化）
     private final double marketOrderBias;     // 0.0 ~ 1.0，偏好市價單比率
@@ -158,7 +168,11 @@ public class RetailInvestorAI implements Trader {
         double transactionAmount = price * volume;
 
         if ("buy".equals(type)) {
-            // 限價單買入
+            try {
+                account.consumeFrozenFunds(transactionAmount);
+            } catch (Exception e) {
+                account.decrementFunds(transactionAmount);
+            }
             account.incrementStocks(volume);
             logger.info(String.format("【散戶-限價買入更新】散戶 %s 買入 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
         } else if ("sell".equals(type)) {
@@ -208,6 +222,14 @@ public class RetailInvestorAI implements Trader {
         if (model != null) {
             this.model = model;
         }
+        
+        // 定期執行訂單管理
+        orderCancelCounter++;
+        if (orderCancelCounter >= ORDER_CANCEL_INTERVAL) {
+            orderCancelCounter = 0;
+            cancelOutdatedOrders();
+        }
+        
         try {
             logger.debug(String.format(
                     "散戶%s 決策分析開始：可用資金=%.2f, 當前股價=%.2f",
@@ -1039,6 +1061,7 @@ public class RetailInvestorAI implements Trader {
         } else {
             // 90% 機率使用普通限價單
             Order buyOrder = Order.createLimitBuyOrder(finalPrice, amount, this);
+            trackOrderCreation(buyOrder.getId());
             orderBook.submitBuyOrder(buyOrder, finalPrice);
             return amount;
         }
@@ -1235,6 +1258,7 @@ public class RetailInvestorAI implements Trader {
         } else {
             // 90% 機率使用普通限價單
             Order sellOrder = Order.createLimitSellOrder(finalPrice, amount, this);
+            trackOrderCreation(sellOrder.getId());
             orderBook.submitSellOrder(sellOrder, finalPrice);
             return amount;
         }
@@ -1682,5 +1706,117 @@ public class RetailInvestorAI implements Trader {
             logger.warn("actByProfile 異常：" + e.getMessage(), "RETAIL_INVESTOR_DECISION");
         }
         return false;
+    }
+    
+    /**
+     * 取消過時或不合理的訂單
+     */
+    private void cancelOutdatedOrders() {
+        if (orderBook == null || model == null) return;
+        
+        double currentPrice = model.getStock().getPrice();
+        long currentTime = System.currentTimeMillis();
+        java.util.List<Order> myOrders = new java.util.ArrayList<>();
+        
+        // 收集所有自己的訂單
+        myOrders.addAll(orderBook.getBuyOrders().stream()
+            .filter(o -> o.getTrader() == this)
+            .collect(Collectors.toList()));
+        myOrders.addAll(orderBook.getSellOrders().stream()
+            .filter(o -> o.getTrader() == this)
+            .collect(Collectors.toList()));
+        
+        for (Order order : myOrders) {
+            boolean shouldCancel = false;
+            String reason = "";
+            
+            // 基本取消規則
+            // 1. 訂單年齡過大
+            Long creationTime = orderCreationTime.get(order.getId());
+            if (creationTime != null && (currentTime - creationTime) > MAX_ORDER_AGE_MS) {
+                shouldCancel = true;
+                reason = "訂單存在時間過長";
+            }
+            
+            // 2. 價格偏離過大（根據策略調整）
+            double priceDeviation = Math.abs(order.getPrice() - currentPrice) / currentPrice;
+            double maxDeviation = getMaxPriceDeviation();
+            
+            if (priceDeviation > maxDeviation) {
+                shouldCancel = true;
+                reason = String.format("價格偏離過大 (%.2f%%)", priceDeviation * 100);
+            }
+            
+            // 3. 策略特定的取消邏輯
+            if (!shouldCancel && shouldCancelByStrategy(order, currentPrice)) {
+                shouldCancel = true;
+                reason = "策略特定條件觸發";
+            }
+            
+            // 執行取消
+            if (shouldCancel) {
+                orderBook.cancelOrder(order.getId());
+                orderCreationTime.remove(order.getId());
+                logger.info(String.format(
+                    "【散戶訂單取消】%s %s訂單，價格=%.2f，原因=%s",
+                    traderID, order.getType(), order.getPrice(), reason
+                ), "RETAIL_ORDER_CANCEL");
+            }
+        }
+    }
+    
+    /**
+     * 根據當前策略獲取最大價格偏離
+     */
+    private double getMaxPriceDeviation() {
+        switch (profile) {
+            case AGGRESSIVE: return 0.15; // 激進型：15%
+            case CONSERVATIVE: return 0.05; // 保守型：5%
+            case MOMENTUM: return 0.20; // 動量型：20%
+            case CONTRARIAN: return 0.12; // 逆勢型：12%
+            case SCALPER: return 0.03; // 短線型：3%
+            case SWING: return 0.10; // 波段型：10%
+            case VALUE: return 0.08; // 價值型：8%
+            default: return 0.10;
+        }
+    }
+    
+    /**
+     * 根據策略判斷是否取消訂單
+     */
+    private boolean shouldCancelByStrategy(Order order, double currentPrice) {
+        switch (profile) {
+            case SCALPER:
+                // 短線型：對小波動敏感，快速調整
+                return Math.abs(order.getPrice() - currentPrice) / currentPrice > 0.02;
+                
+            case MOMENTUM:
+                // 動量型：如果價格趨勢改變則取消
+                if (order.getType().equals("buy") && currentPrice < order.getPrice() * 0.95) {
+                    return true;
+                }
+                if (order.getType().equals("sell") && currentPrice > order.getPrice() * 1.05) {
+                    return true;
+                }
+                break;
+                
+            case CONSERVATIVE:
+                // 保守型：嚴格控制風險
+                Long creationTime = orderCreationTime.get(order.getId());
+                if (creationTime != null && (System.currentTimeMillis() - creationTime) > 60000) {
+                    return true; // 1分鐘未成交就取消
+                }
+                break;
+        }
+        return false;
+    }
+    
+    /**
+     * 記錄訂單創建時間
+     */
+    private void trackOrderCreation(String orderId) {
+        if (orderId != null) {
+            orderCreationTime.put(orderId, System.currentTimeMillis());
+        }
     }
 }

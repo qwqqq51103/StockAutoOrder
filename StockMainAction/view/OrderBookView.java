@@ -20,6 +20,8 @@ public class OrderBookView {
     // [UX] 搜尋列
     private JTextField searchField;
     private JPanel container; // [UI] 卡片風
+    // [UI] 當前股價顯示
+    private JLabel currentPriceLabel;
     // [UI] 內外盤比例區域
     private JLabel inOutLabel;
     private InOutRatioBar ratioBar; // 中央大條內外盤比
@@ -64,7 +66,36 @@ public class OrderBookView {
             @Override public void actionPerformed(java.awt.event.ActionEvent e) { searchField.requestFocusInWindow(); }
         });
 
-        container.add(topBar, BorderLayout.NORTH);
+        // [UI] 當前股價顯示面板
+        JPanel pricePanel = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 8));
+        pricePanel.setBackground(new Color(240, 248, 255));
+        pricePanel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(0, 0, 2, 0, new Color(70, 130, 180)),
+            new EmptyBorder(5, 10, 5, 10)
+        ));
+        
+        JLabel priceTitle = new JLabel("當前股價：");
+        priceTitle.setFont(new Font("微軟正黑體", Font.BOLD, 16));
+        priceTitle.setForeground(new Color(60, 60, 60));
+        
+        currentPriceLabel = new JLabel("--");
+        currentPriceLabel.setFont(new Font("Consolas", Font.BOLD, 24));
+        currentPriceLabel.setForeground(new Color(0, 100, 200));
+        
+        JLabel ntdLabel = new JLabel("NTD");
+        ntdLabel.setFont(new Font("微軟正黑體", Font.PLAIN, 12));
+        ntdLabel.setForeground(new Color(100, 100, 100));
+        
+        pricePanel.add(priceTitle);
+        pricePanel.add(currentPriceLabel);
+        pricePanel.add(ntdLabel);
+        
+        // 組裝頂部區域（搜尋 + 股價）
+        JPanel topArea = new JPanel(new BorderLayout());
+        topArea.add(topBar, BorderLayout.NORTH);
+        topArea.add(pricePanel, BorderLayout.CENTER);
+        
+        container.add(topArea, BorderLayout.NORTH);
         // 重用原先的 scrollPane，但改設置其 viewport 內容為 container，並將原表格加入 container 中
         java.awt.Component tableView = scrollPane.getViewport().getView();
         scrollPane.setViewportView(container);
@@ -203,93 +234,56 @@ public class OrderBookView {
         // 創建一個更大的數據表以容納更多信息
         // 買單部分: [數量, 價格, 類型]
         // 賣單部分: [價格, 數量, 類型]
-        Object[][] updatedData = new Object[12][6]; // 增加兩行用於顯示標題和撮合模式
+        Object[][] updatedData = new Object[7][6]; // 2行標題 + 5行五檔數據
 
-        // 第一行顯示當前撮合模式
-        updatedData[0][0] = "當前撮合模式:";
-        updatedData[0][1] = orderBook.getMatchingMode().toString();
+        // 第一行顯示標題
+        updatedData[0][0] = "【台股五檔】";
+        updatedData[0][1] = "";
         updatedData[0][2] = "";
-        updatedData[0][3] = "";
+        updatedData[0][3] = "【台股五檔】";
         updatedData[0][4] = "";
         updatedData[0][5] = "";
 
         // 第二行顯示列標題
-        updatedData[1][0] = "買單數量";
-        updatedData[1][1] = "買單價格";
-        updatedData[1][2] = "買單類型";
-        updatedData[1][3] = "賣單價格";
-        updatedData[1][4] = "賣單數量";
-        updatedData[1][5] = "賣單類型";
+        updatedData[1][0] = "買量";
+        updatedData[1][1] = "買價";
+        updatedData[1][2] = "檔位";
+        updatedData[1][3] = "賣價";
+        updatedData[1][4] = "賣量";
+        updatedData[1][5] = "檔位";
 
-        List<Order> buyOrders = orderBook.getTopBuyOrders(10);
-        List<Order> sellOrders = orderBook.getTopSellOrders(10);
-
-        for (int i = 0; i < 10; i++) {
-            int rowIndex = i + 2; // 前兩行已用於標題
-
-            // 填充買單
-            if (i < buyOrders.size()) {
-                Order buyOrder = buyOrders.get(i);
-                if (buyOrder != null && buyOrder.getTrader() != null) {
-                    updatedData[rowIndex][0] = buyOrder.getVolume();
-
-                    // 處理市價單的價格顯示
-                    if (buyOrder.isMarketOrder()) {
-                        updatedData[rowIndex][1] = "市價";
-                    } else {
-                        updatedData[rowIndex][1] = String.format("%.2f", buyOrder.getPrice());
-                    }
-
-                    // 顯示訂單類型
-                    if (buyOrder.isMarketOrder()) {
-                        updatedData[rowIndex][2] = "市價單";
-                    } else if (buyOrder.isFillOrKill()) {
-                        updatedData[rowIndex][2] = "FOK單";
-                    } else {
-                        updatedData[rowIndex][2] = "限價單";
-                    }
-                } else {
-                    updatedData[rowIndex][0] = "";
-                    updatedData[rowIndex][1] = "";
-                    updatedData[rowIndex][2] = "";
-                }
-            } else {
-                updatedData[rowIndex][0] = "";
-                updatedData[rowIndex][1] = "";
-                updatedData[rowIndex][2] = "";
+        double currentPrice = orderBook.getCurrentStockPrice();
+        
+        // 更新當前股價顯示
+        if (currentPriceLabel != null) {
+            currentPriceLabel.setText(String.format("%.2f", currentPrice));
+            // 根據價格變化設置顏色（可選）
+            if (currentPrice > 0) {
+                currentPriceLabel.setForeground(new Color(220, 53, 69)); // 紅色
             }
+        }
+        
+        double[][] fiveLevels = orderBook.generateFiveLevelPrices(currentPrice);
+        double[] buyPrices = fiveLevels[0];
+        double[] sellPrices = fiveLevels[1];
+        double tolerance = orderBook.getTickSize(currentPrice) * 0.5;
 
-            // 填充賣單
-            if (i < sellOrders.size()) {
-                Order sellOrder = sellOrders.get(i);
-                if (sellOrder != null && sellOrder.getTrader() != null) {
-                    // 處理市價單的價格顯示
-                    if (sellOrder.isMarketOrder()) {
-                        updatedData[rowIndex][3] = "市價";
-                    } else {
-                        updatedData[rowIndex][3] = String.format("%.2f", sellOrder.getPrice());
-                    }
-
-                    updatedData[rowIndex][4] = sellOrder.getVolume();
-
-                    // 顯示訂單類型
-                    if (sellOrder.isMarketOrder()) {
-                        updatedData[rowIndex][5] = "市價單";
-                    } else if (sellOrder.isFillOrKill()) {
-                        updatedData[rowIndex][5] = "FOK單";
-                    } else {
-                        updatedData[rowIndex][5] = "限價單";
-                    }
-                } else {
-                    updatedData[rowIndex][3] = "";
-                    updatedData[rowIndex][4] = "";
-                    updatedData[rowIndex][5] = "";
-                }
-            } else {
-                updatedData[rowIndex][3] = "";
-                updatedData[rowIndex][4] = "";
-                updatedData[rowIndex][5] = "";
-            }
+        // 顯示台股五檔（已合併相同價格的訂單）
+        for (int i = 0; i < 5; i++) {
+            int rowIndex = i + 2;
+            
+            int buyVol = orderBook.getBuyVolumeAtPrice(buyPrices[i], tolerance);
+            int sellVol = orderBook.getSellVolumeAtPrice(sellPrices[i], tolerance);
+            
+            // 買單資訊（左側）- 數量為0時也顯示0
+            updatedData[rowIndex][0] = buyVol;
+            updatedData[rowIndex][1] = String.format("%.2f", buyPrices[i]);
+            updatedData[rowIndex][2] = "買" + (i + 1);
+            
+            // 賣單資訊（右側）- 數量為0時也顯示0
+            updatedData[rowIndex][3] = String.format("%.2f", sellPrices[i]);
+            updatedData[rowIndex][4] = sellVol;
+            updatedData[rowIndex][5] = "賣" + (i + 1);
         }
 
         // 使用修改後的數據更新訂單簿表格

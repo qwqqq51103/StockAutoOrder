@@ -83,7 +83,11 @@ public class MarketBehavior implements Trader {
         double transactionAmount = price * volume;
 
         if (type.equals("buy")) {
-            // 限價單買入：增加股數
+            try {
+                account.consumeFrozenFunds(transactionAmount);
+            } catch (Exception e) {
+                account.decrementFunds(transactionAmount);
+            }
             account.incrementStocks(volume);
             System.out.println(String.format("【市場行為-限價買入後更新】買入 %d 股，成交價 %.2f", volume, price));
         } else if (type.equals("sell")) {
