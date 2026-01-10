@@ -41,13 +41,13 @@ public class StockMarketModel {
 
     // 配置參數
     private double initialRetailCash = 300000, initialMainForceCash = 3000000;
-    private int initialRetails = 10;
-    private int marketBehaviorStock = 30000;
+    private int initialRetails = 1;
+    private int marketBehaviorStock = 100000;
     private double marketBehaviorGash = -9999999.0;
 
     // 🆕 成交記錄列表
     private List<Transaction> transactionHistory;
-    private static final int MAX_TRANSACTION_HISTORY = 10000; // 最多保留10000筆
+    private static final int MAX_TRANSACTION_HISTORY = 1000; // 最多保留10000筆
 
     // 線程安全鎖
     private final ReentrantLock orderBookLock = new ReentrantLock();
@@ -219,7 +219,7 @@ public class StockMarketModel {
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
-        int period = 500; // 執行間隔（單位：毫秒）
+        int period = 1000; // 執行間隔（單位：毫秒）
 
         executorService = Executors.newScheduledThreadPool(1);
         executorService.scheduleAtFixedRate(() -> {

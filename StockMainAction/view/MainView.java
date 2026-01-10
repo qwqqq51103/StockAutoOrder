@@ -187,6 +187,13 @@ public class MainView extends JFrame {
     // 自適應效能控制與指標點數上限
     private volatile long kOverlayLastRecomputeMs = 0L;
     private volatile int kOverlayMinIntervalMs = 120; // 50~300ms 動態調整
+    // [PERF] K線/指標/UI 節流狀態
+    private volatile long overlayLastXMs = Long.MIN_VALUE;          // 最近一次處理的K線時間（ms）
+    private volatile long domainLastUpdateMs = 0L;                  // 最近一次更新域軸時間
+    private volatile long domainLastXMs = Long.MIN_VALUE;           // 最近一次域軸所對應的K線時間
+    private volatile long ohlcInfoLastUpdateMs = 0L;                // OHLC info label 節流
+    private volatile long ohlcInfoLastXMs = Long.MIN_VALUE;
+    private volatile double ema12PrevForCurrent = Double.NaN;       // 當前K線的 EMA 計算所用的「前一根」EMA
     private int indicatorMaxPoints = 600;
     // 副軸（同一張 K 線圖上顯示 MACD/KDJ）
     private NumberAxis macdAxis;
@@ -225,7 +232,7 @@ public class MainView extends JFrame {
     
     // [K線自動跟隨] 控制K線圖是否自動跟隨最新數據
     private boolean autoFollowLatest = true;  // 預設啟用自動跟隨
-    private final int defaultVisibleCandles = 30;  // 預設顯示30根K線
+    private volatile int visibleCandles = 20;  // 預設顯示最近20根K線（避免長時間變成一條線）
     
     private JComboBox<String> klineIntervalCombo;
     private JCheckBox cbSMA5, cbSMA10, cbSMA20, cbEMA12, cbEMA26, cbBOLL, cbSwapColor;
@@ -554,23 +561,38 @@ public class MainView extends JFrame {
         // [K線自動跟隨] 自動跟隨/顯示全部 切換按鈕
         bar.add(new JLabel("K線視圖:"));
         JButton followBtn = new JButton(autoFollowLatest ? "🎯 自動跟隨" : "📊 顯示全部");
-        followBtn.setToolTipText(autoFollowLatest ? "當前自動跟隨最近30根K線，點擊切換到顯示全部" : "當前顯示全部K線，點擊切換到自動跟隨");
+        // [UX] 可調顯示根數（追隨模式）
+        JSpinner spVisible = new JSpinner(new SpinnerNumberModel(20, 10, 200, 5));
+        spVisible.setToolTipText("追隨模式：只顯示最近 N 根K線（可調）");
+        spVisible.setEnabled(autoFollowLatest);
+        followBtn.setToolTipText(autoFollowLatest ? ("當前自動跟隨最近" + visibleCandles + "根K線，點擊切換到顯示全部") : "當前顯示全部K線，點擊切換到自動跟隨");
+        spVisible.addChangeListener(e -> {
+            try {
+                visibleCandles = Math.max(5, Math.min(500, (Integer) spVisible.getValue()));
+                if (autoFollowLatest) applyCandleDomainWindow();
+                scheduleChartFlush();
+            } catch (Exception ignore) {}
+        });
         followBtn.addActionListener(e -> {
             autoFollowLatest = !autoFollowLatest;
             followBtn.setText(autoFollowLatest ? "🎯 自動跟隨" : "📊 顯示全部");
-            followBtn.setToolTipText(autoFollowLatest ? "當前自動跟隨最近30根K線，點擊切換到顯示全部" : "當前顯示全部K線，點擊切換到自動跟隨");
+            spVisible.setEnabled(autoFollowLatest);
+            followBtn.setToolTipText(autoFollowLatest ? ("當前自動跟隨最近" + visibleCandles + "根K線，點擊切換到顯示全部") : "當前顯示全部K線，點擊切換到自動跟隨");
             
             if (!autoFollowLatest) {
                 // 切換到顯示全部：重置域軸範圍
                 resetCandleDomainToAll();
             } else {
-                // 切換到自動跟隨：應用最近30根的域窗口
+                // 切換到自動跟隨：應用最近N根的域窗口
                 applyCandleDomainWindow();
             }
             
             appendToInfoArea("已切換到" + (autoFollowLatest ? "自動跟隨模式" : "顯示全部模式"), InfoType.SYSTEM);
         });
         bar.add(followBtn);
+        bar.add(new JLabel("最近"));
+        bar.add(spVisible);
+        bar.add(new JLabel("根"));
         
         bar.addSeparator();
         // [UI] 均線設定面板
@@ -593,14 +615,15 @@ public class MainView extends JFrame {
             if (series == null || series.getItemCount() == 0) return;
             
             int count = series.getItemCount();
-            if (count <= defaultVisibleCandles) {
+            int nVisible = Math.max(5, Math.min(500, visibleCandles));
+            if (count <= nVisible) {
                 // 如果K線數量不足，顯示全部
                 resetCandleDomainToAll();
                 return;
             }
             
             // 取最後N根K線的時間範圍
-            OHLCItem firstVisible = (OHLCItem) series.getDataItem(count - defaultVisibleCandles);
+            OHLCItem firstVisible = (OHLCItem) series.getDataItem(count - nVisible);
             OHLCItem lastVisible = (OHLCItem) series.getDataItem(count - 1);
             
             long startMs = firstVisible.getPeriod().getFirstMillisecond();
@@ -611,7 +634,8 @@ public class MainView extends JFrame {
                 org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot = 
                     (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
                 
-                NumberAxis domainAxis = (NumberAxis) combinedPlot.getDomainAxis();
+                // domainAxis 實際可能是 DateAxis（不是 NumberAxis），用 ValueAxis 才能通用
+                org.jfree.chart.axis.ValueAxis domainAxis = (org.jfree.chart.axis.ValueAxis) combinedPlot.getDomainAxis();
                 if (domainAxis != null) {
                     domainAxis.setRange(startMs, endMs);
                     domainAxis.setAutoRange(false);
@@ -630,7 +654,7 @@ public class MainView extends JFrame {
                 org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot = 
                     (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
                 
-                NumberAxis domainAxis = (NumberAxis) combinedPlot.getDomainAxis();
+                org.jfree.chart.axis.ValueAxis domainAxis = (org.jfree.chart.axis.ValueAxis) combinedPlot.getDomainAxis();
                 if (domainAxis != null) {
                     domainAxis.setAutoRange(true);
                 }
@@ -678,7 +702,7 @@ public class MainView extends JFrame {
             org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot = 
                 (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
             
-            NumberAxis domainAxis = (NumberAxis) combinedPlot.getDomainAxis();
+            org.jfree.chart.axis.ValueAxis domainAxis = (org.jfree.chart.axis.ValueAxis) combinedPlot.getDomainAxis();
             if (domainAxis == null) return;
             
             // 獲取當前週期的K線數據
@@ -693,7 +717,8 @@ public class MainView extends JFrame {
             int count = series.getItemCount();
             
             // 如果數據量少，顯示全部
-            if (count <= defaultVisibleCandles) {
+            int nVisible = Math.max(5, Math.min(500, visibleCandles));
+            if (count <= nVisible) {
                 OHLCItem first = (OHLCItem) series.getDataItem(0);
                 OHLCItem last = (OHLCItem) series.getDataItem(count - 1);
                 
@@ -726,7 +751,7 @@ public class MainView extends JFrame {
                 domainAxis.setAutoRange(false);
                 
                 if (autoFollowLatest) {
-                    appendToInfoArea(String.format("域軸已重置（顯示全部 %d 根K線，將自動跟隨最近30根）", count), InfoType.SYSTEM);
+                    appendToInfoArea(String.format("域軸已重置（顯示全部 %d 根K線，將自動跟隨最近%d根）", count, nVisible), InfoType.SYSTEM);
                 } else {
                     appendToInfoArea(String.format("域軸已重置（顯示全部 %d 根K線）", count), InfoType.SYSTEM);
                 }
@@ -2639,10 +2664,14 @@ public class MainView extends JFrame {
                 }
                 try {
                     OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+                    if (series == null) return;
+                    boolean prevNotify = true;
+                    boolean trimmed = false;
+                    try {
+                        prevNotify = series.getNotify();
+                        series.setNotify(false);
                     // 控制最大保留K線根數，避免無限增長
-                    while (series.getItemCount() > maxKlineBars) {
-                        series.remove(0);
-                    }
+                        while (series.getItemCount() > maxKlineBars) { series.remove(0); trimmed = true; }
                     if (series.getItemCount() == 0) {
                         series.add(period, price, price, price, price);
                     } else {
@@ -2665,6 +2694,13 @@ public class MainView extends JFrame {
                             series.add(period, newOpen, newHigh, newLow, price);
                         }
                     }
+                    } finally {
+                        try { series.setNotify(prevNotify); } catch (Exception ignore) {}
+                    }
+                    // [PERF] 若K線被裁切，對應的標誌符號（signals/big/tick imbalance）也要同步裁切，避免前面殘留幽靈點
+                    if (trimmed) {
+                        try { trimSignalMarkersToOhlcWindow(series); } catch (Exception ignore) {}
+                    }
                 } catch (Exception ignore) {
                 }
 
@@ -2675,54 +2711,11 @@ public class MainView extends JFrame {
                     try { updateOhlcForKey(price, now, key); } catch (Exception ignore) {}
                 }
 
-                // [CHART] 基於 OHLC close 重新計算 SMA5/SMA10/EMA12
+                // [PERF] K線疊加指標（SMA/EMA）改為增量更新 + 節流（避免每 tick 全量 clear/add）
                 try {
                     OHLCSeries s = minuteToSeries.get(currentKlineMinutes);
                     if (s != null && s.getItemCount() > 0) {
-                        int n = s.getItemCount();
-                        java.util.List<Double> closes = new java.util.ArrayList<>(n);
-                        for (int i=0;i<n;i++) closes.add(((org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i)).getCloseValue());
-                        // SMA5（可變期間）
-                        sma5Series.clear();
-                        for (int i=0;i<n;i++) {
-                            double sum=0; int cnt=0; for (int j=i-(sma5Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } }
-                            double val = cnt>0? sum/cnt : closes.get(i);
-                            org.jfree.data.time.ohlc.OHLCItem item = (org.jfree.data.time.ohlc.OHLCItem) s.getDataItem(i);
-                            long x = item.getPeriod().getFirstMillisecond();
-                            sma5Series.add(x, val);
-                        }
-                        // SMA10
-                        sma10Series.clear();
-                        for (int i=0;i<n;i++) {
-                            double sum=0; int cnt=0; for (int j=i-(sma10Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } }
-                            double val = cnt>0? sum/cnt : closes.get(i);
-                            org.jfree.data.time.ohlc.OHLCItem item = (org.jfree.data.time.ohlc.OHLCItem) s.getDataItem(i);
-                            long x = item.getPeriod().getFirstMillisecond();
-                            sma10Series.add(x, val);
-                        }
-                        // EMA12
-                        ema12Series.clear();
-                        double k = 2.0/(ema12Period+1);
-                        double ema = closes.get(0);
-                        for (int i=0;i<n;i++){
-                            double c = closes.get(i);
-                            if (i==0) ema = c; else ema = c*k + ema*(1-k);
-                            org.jfree.data.time.ohlc.OHLCItem item = (org.jfree.data.time.ohlc.OHLCItem) s.getDataItem(i);
-                            long x = item.getPeriod().getFirstMillisecond();
-                            ema12Series.add(x, ema);
-                        }
-                        keepSeriesWithinLimit(sma5Series, indicatorMaxPoints);
-                        keepSeriesWithinLimit(sma10Series, indicatorMaxPoints);
-                        keepSeriesWithinLimit(ema12Series, indicatorMaxPoints);
-                        // 同步更新多週期分圖的對應均線數據（若當前 minutes 對應到子圖）
-                        try {
-                            XYSeries s5 = periodToSMA5.get(currentKlineMinutes);
-                            XYSeries s10 = periodToSMA10.get(currentKlineMinutes);
-                            XYSeries e12 = periodToEMA12.get(currentKlineMinutes);
-                            if (s5!=null){ s5.clear(); for(int i=0;i<n;i++){ org.jfree.data.time.ohlc.OHLCItem item=(org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i); long x=item.getPeriod().getFirstMillisecond(); double sum=0; int cnt=0; for(int j=i-(sma5Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } } double val=cnt>0?sum/cnt:closes.get(i); s5.add(x,val);} }
-                            if (s10!=null){ s10.clear(); for(int i=0;i<n;i++){ org.jfree.data.time.ohlc.OHLCItem item=(org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i); long x=item.getPeriod().getFirstMillisecond(); double sum=0; int cnt=0; for(int j=i-(sma10Period-1); j<=i; j++){ if(j>=0){ sum+=closes.get(j); cnt++; } } double val=cnt>0?sum/cnt:closes.get(i); s10.add(x,val);} }
-                            if (e12!=null){ e12.clear(); double k2 = 2.0/(ema12Period+1); double ema2 = closes.get(0); for (int i=0;i<n;i++){ double c=closes.get(i); if(i==0) ema2=c; else ema2=c*k2+ema2*(1-k2); org.jfree.data.time.ohlc.OHLCItem item=(org.jfree.data.time.ohlc.OHLCItem)s.getDataItem(i); long x=item.getPeriod().getFirstMillisecond(); e12.add(x,ema2);} }
-                        } catch (Exception ignore) {}
+                        updateKOverlayIncremental(s);
                     }
                 } catch (Exception ignore) {}
 
@@ -2820,46 +2813,13 @@ public class MainView extends JFrame {
                 } catch (Exception ignore) {}
             }
 
-            // 依最新 K 線即時重算覆蓋指標，確保完全對齊目前時間窗
-            recomputeOverlayFromOHLC();
-            
-            // [K線自動跟隨] 如果啟用自動跟隨，則應用域窗口
+            // [K線自動跟隨] 節流域軸更新：只在新K線或間隔到期時調整，避免長時間 setRange 造成卡頓
             if (autoFollowLatest) {
-                applyCandleDomainWindow();
+                try { maybeApplyCandleDomainWindow(); } catch (Exception ignore) {}
             }
             
             // === TradingView 風格：更新 OHLC 信息面板（顯示最新K線） ===
-            try {
-                if (ohlcInfoLabel != null) {
-                    OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
-                    if (series != null && series.getItemCount() > 0) {
-                        int lastIndex = series.getItemCount() - 1;
-                        OHLCItem item = (OHLCItem) series.getDataItem(lastIndex);
-                        double open = item.getOpenValue();
-                        double high = item.getHighValue();
-                        double low = item.getLowValue();
-                        double close = item.getCloseValue();
-                        double change = close - open;
-                        double changePct = (open != 0) ? (change / open * 100.0) : 0.0;
-                        
-                        String timeStr = new SimpleDateFormat("HH:mm:ss").format(
-                            new Date(item.getPeriod().getFirstMillisecond())
-                        );
-                        
-                        String color = (close >= open) ? "#26a69a" : "#ef5350";
-                        String changeStr = String.format("%+.2f (%+.2f%%)", change, changePct);
-                        
-                        ohlcInfoLabel.setText(String.format(
-                            "<html><div style='font-family: Monospaced; font-size: 11px;'>" +
-                            "<b>%s</b>  <span style='color: %s;'>%s</span><br/>" +
-                            "O: %.2f  H: %.2f  L: %.2f  C: <span style='color: %s; font-weight: bold;'>%.2f</span>" +
-                            "</div></html>",
-                            timeStr, color, changeStr,
-                            open, high, low, color, close
-                        ));
-                    }
-                }
-            } catch (Exception ignore) {}
+            try { maybeUpdateOhlcInfoLabel(); } catch (Exception ignore) {}
             
             // === [TradingView] 更新信號指示器面板 ===
             try {
@@ -2885,6 +2845,10 @@ public class MainView extends JFrame {
     private void updateOhlcForKey(double price, long nowMs, int key){
         OHLCSeries series = minuteToSeries.get(key);
         if (series == null) return;
+        boolean prevNotify = true;
+        try {
+            prevNotify = series.getNotify();
+            series.setNotify(false);
         RegularTimePeriod p;
         if (key < 0) {
             int s = -key;
@@ -2915,6 +2879,234 @@ public class MainView extends JFrame {
             double newLow = Math.min(newOpen, price);
             series.add(p, newOpen, newHigh, newLow, price);
         }
+        } finally {
+            try { series.setNotify(prevNotify); } catch (Exception ignore) {}
+        }
+    }
+
+    // [PERF] 將 marker 系列裁切到目前 OHLCSeries 的可用時間窗（避免K線前面殘留符號）
+    private void trimSignalMarkersToOhlcWindow(OHLCSeries ohlc) {
+        if (ohlc == null || ohlc.getItemCount() == 0) return;
+        long minX = ohlcXMs((OHLCItem) ohlc.getDataItem(0));
+        // 這些 series 對應到圖上的「標誌符號」（點/三角形/大單/失衡）而不是連線指標
+        trimXYSeriesBeforeX(bullSignals, minX);
+        trimXYSeriesBeforeX(bearSignals, minX);
+        trimXYSeriesBeforeX(bigBuySeries, minX);
+        trimXYSeriesBeforeX(bigSellSeries, minX);
+        trimXYSeriesBeforeX(tickImbBuySeries, minX);
+        trimXYSeriesBeforeX(tickImbSellSeries, minX);
+    }
+
+    private void trimXYSeriesBeforeX(XYSeries s, long minXInclusive) {
+        if (s == null) return;
+        try {
+            // 由於資料是按時間遞增加入，直接從頭 while remove(0) 即可
+            while (s.getItemCount() > 0) {
+                Number x0 = s.getX(0);
+                if (x0 == null) { s.remove(0); continue; }
+                if (x0.longValue() < minXInclusive) s.remove(0);
+                else break;
+            }
+        } catch (Exception ignore) {}
+    }
+
+    // [PERF] 取得 OHLCItem 的 X（毫秒）
+    private long ohlcXMs(OHLCItem item) {
+        try { return item.getPeriod().getFirstMillisecond(); } catch (Exception e) { return System.currentTimeMillis(); }
+    }
+
+    // [PERF] 計算某一根 K 線（以 idx 結尾）的 SMA（period<=60 的小窗）
+    private double computeSMAAt(OHLCSeries s, int period, int idxInclusive) {
+        if (s == null) return Double.NaN;
+        int n = s.getItemCount();
+        if (n <= 0) return Double.NaN;
+        int end = Math.min(n - 1, Math.max(0, idxInclusive));
+        int p = Math.max(1, period);
+        int start = Math.max(0, end - (p - 1));
+        double sum = 0.0;
+        int cnt = 0;
+        for (int i = start; i <= end; i++) {
+            try {
+                OHLCItem it = (OHLCItem) s.getDataItem(i);
+                sum += it.getCloseValue();
+                cnt++;
+            } catch (Exception ignore) {}
+        }
+        if (cnt <= 0) {
+            try { return ((OHLCItem) s.getDataItem(end)).getCloseValue(); } catch (Exception e) { return Double.NaN; }
+        }
+        return sum / cnt;
+    }
+
+    // [PERF] XYSeries：若最後一筆 X 相同則更新，否則追加（不觸發過多通知）
+    private void updateOrAddXY(XYSeries series, long x, double y) {
+        if (series == null || Double.isNaN(y) || Double.isInfinite(y)) return;
+        try {
+            int c = series.getItemCount();
+            if (c > 0) {
+                Number lastX = series.getX(c - 1);
+                if (lastX != null && lastX.longValue() == x) {
+                    series.updateByIndex(c - 1, y);
+                    return;
+                }
+            }
+            series.add(x, y, false);
+        } catch (Exception ignore) {}
+    }
+
+    // [PERF] 增量更新 SMA/EMA（僅更新最後一根，且在新K線時回填上一根的最終值）
+    private void updateKOverlayIncremental(OHLCSeries s) {
+        if (s == null) return;
+        int n = s.getItemCount();
+        if (n <= 0) return;
+
+        long nowMs = System.currentTimeMillis();
+        int lastIdx = n - 1;
+        OHLCItem lastItem = (OHLCItem) s.getDataItem(lastIdx);
+        long xMs = ohlcXMs(lastItem);
+        double close = lastItem.getCloseValue();
+
+        boolean isNewCandle = (xMs != overlayLastXMs);
+        // 只在新K線或間隔到期才更新當前K線的指標點，避免每 tick 觸發多個 dataset 事件
+        boolean allowUpdateCurrent = isNewCandle || (nowMs - kOverlayLastRecomputeMs >= Math.max(50, kOverlayMinIntervalMs));
+
+        // 批次關閉 notify，避免同一輪更新觸發多次重繪
+        try { toggleOverlayNotify(false); } catch (Exception ignore) {}
+        try {
+            // 新K線：回填「上一根」的最終值（避免節流導致上一根指標停留在舊 close）
+            if (isNewCandle && n >= 2) {
+                int prevIdx = n - 2;
+                OHLCItem prevItem = (OHLCItem) s.getDataItem(prevIdx);
+                long prevX = ohlcXMs(prevItem);
+                double prevClose = prevItem.getCloseValue();
+
+                // SMA 回填（以 prevIdx 結尾）
+                updateOrAddXY(sma5Series, prevX, computeSMAAt(s, sma5Period, prevIdx));
+                updateOrAddXY(sma10Series, prevX, computeSMAAt(s, sma10Period, prevIdx));
+
+                // EMA 回填：用「前前根」EMA + prevClose 重算 prevEMA，再更新上一根點
+                double k = 2.0 / (Math.max(1, ema12Period) + 1.0);
+                double emaPrevPrev = Double.NaN;
+                try {
+                    int ec = ema12Series.getItemCount();
+                    if (ec >= 2) {
+                        emaPrevPrev = ema12Series.getY(ec - 2).doubleValue();
+                    } else if (ec == 1) {
+                        emaPrevPrev = ema12Series.getY(0).doubleValue();
+                    }
+                } catch (Exception ignore) {}
+                if (Double.isNaN(emaPrevPrev)) emaPrevPrev = prevClose;
+                double prevEma = prevClose * k + emaPrevPrev * (1.0 - k);
+                updateOrAddXY(ema12Series, prevX, prevEma);
+
+                // 同步多週期 overlay（若存在）
+                try {
+                    XYSeries s5 = periodToSMA5.get(currentKlineMinutes);
+                    XYSeries s10 = periodToSMA10.get(currentKlineMinutes);
+                    XYSeries e12 = periodToEMA12.get(currentKlineMinutes);
+                    if (s5 != null) updateOrAddXY(s5, prevX, computeSMAAt(s, sma5Period, prevIdx));
+                    if (s10 != null) updateOrAddXY(s10, prevX, computeSMAAt(s, sma10Period, prevIdx));
+                    if (e12 != null) updateOrAddXY(e12, prevX, prevEma);
+                } catch (Exception ignore) {}
+
+                // 設定當前K線要使用的「前一根EMA」
+                ema12PrevForCurrent = prevEma;
+            }
+
+            if (isNewCandle) {
+                // 新K線但沒有 prevIdx（n==1）時，初始化 prev EMA
+                if (n == 1 || Double.isNaN(ema12PrevForCurrent)) {
+                    // 以當前 close 作為起始
+                    ema12PrevForCurrent = close;
+                }
+                overlayLastXMs = xMs;
+            }
+
+            if (allowUpdateCurrent) {
+                // SMA（以 lastIdx 結尾）
+                updateOrAddXY(sma5Series, xMs, computeSMAAt(s, sma5Period, lastIdx));
+                updateOrAddXY(sma10Series, xMs, computeSMAAt(s, sma10Period, lastIdx));
+
+                // EMA（以「前一根EMA」+ 當前 close 計算，對同一根K線可反覆更新）
+                double k = 2.0 / (Math.max(1, ema12Period) + 1.0);
+                double ema = close * k + ema12PrevForCurrent * (1.0 - k);
+                updateOrAddXY(ema12Series, xMs, ema);
+
+                // 同步多週期 overlay（若存在）
+                try {
+                    XYSeries s5 = periodToSMA5.get(currentKlineMinutes);
+                    XYSeries s10 = periodToSMA10.get(currentKlineMinutes);
+                    XYSeries e12 = periodToEMA12.get(currentKlineMinutes);
+                    if (s5 != null) updateOrAddXY(s5, xMs, computeSMAAt(s, sma5Period, lastIdx));
+                    if (s10 != null) updateOrAddXY(s10, xMs, computeSMAAt(s, sma10Period, lastIdx));
+                    if (e12 != null) updateOrAddXY(e12, xMs, ema);
+                } catch (Exception ignore) {}
+
+                keepSeriesWithinLimit(sma5Series, indicatorMaxPoints);
+                keepSeriesWithinLimit(sma10Series, indicatorMaxPoints);
+                keepSeriesWithinLimit(ema12Series, indicatorMaxPoints);
+                kOverlayLastRecomputeMs = nowMs;
+            }
+        } finally {
+            try { toggleOverlayNotify(true); } catch (Exception ignore) {}
+        }
+    }
+
+    // [PERF] 節流域軸更新（避免長時間 setRange 重複執行）
+    private void maybeApplyCandleDomainWindow() {
+        long now = System.currentTimeMillis();
+        // 先讀出最新K線的 X（若沒資料就跳過）
+        try {
+            OHLCSeries s = minuteToSeries.get(currentKlineMinutes);
+            if (s == null || s.getItemCount() == 0) return;
+            OHLCItem last = (OHLCItem) s.getDataItem(s.getItemCount() - 1);
+            long xMs = ohlcXMs(last);
+
+            // 新K線一定更新；否則最多每 250ms 更新一次
+            if (xMs != domainLastXMs || (now - domainLastUpdateMs) >= 250) {
+                domainLastXMs = xMs;
+                domainLastUpdateMs = now;
+                applyCandleDomainWindow();
+            }
+        } catch (Exception ignore) {}
+    }
+
+    // [PERF] 節流 OHLC info label 更新（HTML setText 很吃 GC）
+    private void maybeUpdateOhlcInfoLabel() {
+        if (ohlcInfoLabel == null) return;
+        long now = System.currentTimeMillis();
+        try {
+            OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+            if (series == null || series.getItemCount() == 0) return;
+            int lastIndex = series.getItemCount() - 1;
+            OHLCItem item = (OHLCItem) series.getDataItem(lastIndex);
+            long xMs = ohlcXMs(item);
+
+            // 新K線必更新；否則每 200ms 更新一次
+            if (xMs == ohlcInfoLastXMs && (now - ohlcInfoLastUpdateMs) < 200) return;
+            ohlcInfoLastXMs = xMs;
+            ohlcInfoLastUpdateMs = now;
+
+            double open = item.getOpenValue();
+            double high = item.getHighValue();
+            double low = item.getLowValue();
+            double close = item.getCloseValue();
+            double change = close - open;
+            double changePct = (open != 0) ? (change / open * 100.0) : 0.0;
+
+            String timeStr = new SimpleDateFormat("HH:mm:ss").format(new Date(xMs));
+            String color = (close >= open) ? "#26a69a" : "#ef5350";
+            String changeStr = String.format("%+.2f (%+.2f%%)", change, changePct);
+
+            ohlcInfoLabel.setText(String.format(
+                "<html><div style='font-family: Monospaced; font-size: 11px;'>" +
+                "<b>%s</b>  <span style='color: %s;'>%s</span><br/>" +
+                "O: %.2f  H: %.2f  L: %.2f  C: <span style='color: %s; font-weight: bold;'>%.2f</span>" +
+                "</div></html>",
+                timeStr, color, changeStr,
+                open, high, low, color, close
+            ));
+        } catch (Exception ignore) {}
     }
 
     // [限制式週期切換] 切換到指定週期索引
