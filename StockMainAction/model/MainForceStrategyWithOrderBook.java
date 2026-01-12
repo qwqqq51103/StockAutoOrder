@@ -334,7 +334,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             InOutTapeSignal sig = computeInOutAndSpeed();
             WallInfo wall = computeOrderBookWalls();
 
-            // 顯示當前撮合模式
+            // 顯示當前撮合模式（台股固定）
             MatchingMode currentMode = orderBook.getMatchingMode();
             logger.info(String.format("當前撮合模式: %s", currentMode), "MAIN_FORCE_DECISION");
 
@@ -484,7 +484,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                     int maxCancel = Math.min(3, orderBook.getSellOrders().size());
                                     for (int i = 0; i < maxCancel; i++) {
                                         Order so = orderBook.getSellOrders().get(i);
-                                        if (so != null && so.getPrice() <= currentPrice * 1.01) {
+                                        // 重要：主力不應該撤掉「其他交易者」的掛單（例如 PERSONAL）
+                                        // 這裡只允許主力撤自己的賣單，避免誤傷用戶掛單
+                                        if (so != null && so.getTrader() == this && so.getPrice() <= currentPrice * 1.01) {
                                             boolean ok = orderBook.cancelOrder(so.getId());
                                             if (ok) {
                                                 decisionLog.append(String.format("【MARKUP】撤銷賣單ID=%s 價格=%.2f 量=%d\n", so.getId(), so.getPrice(), so.getVolume()));
@@ -562,20 +564,13 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     }
                 }
 
-                // 1. 動量交易策略（追漲買入） — 保留：與階段行為並存但影響較小
+                // 1. 動量交易策略（追漲買入） — 台股撮合固定模式下，僅決定下單類型（不再依撮合模式分歧）
                 if (actionProbability < 0.1 && currentPrice > sma && volatility > 0.02) {
                     int momentumVolume = calculateMomentumVolume(volatility);
 
-                    // 根據撮合模式選擇不同的訂單類型
-                    if (currentMode == MatchingMode.MARKET_PRESSURE || currentMode == MatchingMode.RANDOM) {
-                        // 市場壓力或隨機模式下，使用市價單快速追漲
-                        decisionLog.append("【動量交易-市價追漲】");
-                        拉抬操作(momentumVolume);
-                    } else {
-                        // 其他撮合模式下，使用限價單吸籌
-                        decisionLog.append("【動量交易-限價吸籌】");
-                        吸籌操作(momentumVolume);
-                    }
+                    // 台股：追漲用市價（或靠檔限價），此處沿用既有「拉抬操作」的門檻化邏輯
+                    decisionLog.append("【動量交易-追漲】");
+                    拉抬操作(momentumVolume);
 
                     // 2. 均值回歸策略
                 } else if (actionProbability < 0.15 && Math.abs(priceDifferenceRatio) > 0.1) {
@@ -588,12 +583,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             // 極度偏離，使用市價單快速賣出
                             decisionLog.append("【均值回歸-市價賣出】極度高於均線");
                             市價賣出操作(revertSellVolume);
-                        } else if (currentMode == MatchingMode.PRICE_TIME) {
-                            // 價格時間優先模式下，使用FOK單確保完整成交
-                            decisionLog.append("【均值回歸-FOK賣出】高於均線");
-                            精確控制賣出操作(revertSellVolume, currentPrice);
                         } else {
-                            // 常規情況，使用限價單
+                            // 台股固定撮合：是否用 FOK 取決於你的策略需求；此處保留原本的限價賣出較貼近實務
                             decisionLog.append("【均值回歸-限價賣出】高於均線");
                             賣出操作(revertSellVolume);
                         }
@@ -602,15 +593,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                         int revertBuyVolume = calculateRevertBuyVolume(priceDifferenceRatio);
 
                         // 根據偏離程度和撮合模式決定訂單類型
-                        if (priceDifferenceRatio < -0.2 && currentMode != MatchingMode.VOLUME_WEIGHTED) {
-                            // 極度低於均線，且不在成交量加權模式下，使用FOK單確保完整買入
-                            decisionLog.append("【均值回歸-FOK買入】極度低於均線");
-                            精確控制買入操作(revertBuyVolume, currentPrice);
-                        } else {
-                            // 常規情況，使用限價單
-                            decisionLog.append("【均值回歸-限價買入】低於均線");
-                            吸籌操作(revertBuyVolume);
-                        }
+                        // 台股固定撮合：極度偏離時可用 FOK，但更常見是分批限價低接
+                        decisionLog.append("【均值回歸-限價買入】低於均線");
+                        吸籌操作(revertBuyVolume);
                     }
 
                     // 3. 價值投資策略（低估買入）
@@ -640,13 +625,12 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     int buyQuantity = calculateLiftVolume();
 
                     // 根據撮合模式和波動性決定如何拉抬
-                    if (volatility > 0.03 && currentMode == MatchingMode.MARKET_PRESSURE) {
-                        // 高波動 + 市場壓力模式，使用較大量的市價單快速拉抬
-                        decisionLog.append("【強力拉抬-市價買入】高波動環境");
+                    // 台股固定撮合：是否加大拉抬量僅看波動，不再依撮合模式分歧
+                    if (volatility > 0.03) {
+                        decisionLog.append("【強力拉抬】高波動環境");
                         拉抬操作(buyQuantity * 2);
                     } else {
-                        // 常規拉抬
-                        decisionLog.append("【常規拉抬-市價買入】");
+                        decisionLog.append("【常規拉抬】");
                         拉抬操作(buyQuantity);
                     }
 
@@ -670,15 +654,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     int washVolume = calculateWashVolume(volatility);
 
                     // 根據當前撮合模式選擇洗盤策略
-                    if (currentMode == MatchingMode.VOLUME_WEIGHTED) {
-                        // 在成交量加權模式下，洗盤效果更好，使用更大量
-                        decisionLog.append("【加強洗盤】成交量加權模式");
-                        洗盤操作(washVolume * 2);
-                    } else {
-                        // 常規洗盤
-                        decisionLog.append("【常規洗盤】");
-                        洗盤操作(washVolume);
-                    }
+                    // 台股固定撮合：洗盤量不再依撮合模式分歧
+                    decisionLog.append("【常規洗盤】");
+                    洗盤操作(washVolume);
 
                     // 8. 隨機取消掛單
                 } else if (actionProbability < 0.4) {
@@ -712,50 +690,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
                     // 10. 新增：撮合模式特殊策略
                 } else if (actionProbability < 0.5) {
-                    // 根據不同撮合模式採取特殊策略
-                    switch (currentMode) {
-                        case PRICE_TIME:
-                            // 價格時間優先模式下，快速掛單搶先機
-                            if (availableFunds > currentPrice * 100 && random.nextBoolean()) {
-                                decisionLog.append("【時間優先策略】快速掛買單");
-                                吸籌操作(50);
-                            }
-                            break;
-
-                        case VOLUME_WEIGHTED:
-                            // 成交量加權模式下，大單有優勢
-                            if (availableFunds > currentPrice * 500 && random.nextBoolean()) {
-                                decisionLog.append("【大單策略】大量買入獲取優勢");
-                                吸籌操作(500);
-                            }
-                            break;
-
-                        case MARKET_PRESSURE:
-                            // 市場壓力模式下，順勢而為
-                            if (recentTrend > 0.02 && availableFunds > currentPrice * 200) {
-                                decisionLog.append("【順勢策略】上漲趨勢中買入");
-                                拉抬操作(200);
-                            } else if (recentTrend < -0.02 && getAccumulatedStocks() > 100) {
-                                decisionLog.append("【順勢策略】下跌趨勢中賣出");
-                                市價賣出操作(100);
-                            }
-                            break;
-
-                        case RANDOM:
-                            // 隨機模式下，增加FOK單使用頻率
-                            if (random.nextBoolean() && availableFunds > currentPrice * 100) {
-                                decisionLog.append("【隨機模式策略】FOK買入");
-                                精確控制買入操作(100, currentPrice);
-                            }
-                            break;
-
-                        default:
-                            // 標準模式，使用常規策略
-                            if (availableFunds > currentPrice * 100 && getAccumulatedStocks() < 500) {
-                                decisionLog.append("【標準策略】常規買入");
-                                吸籌操作(100);
-                            }
-                            break;
+                    // 台股固定撮合：保留一個「常規策略」分支即可
+                    if (availableFunds > currentPrice * 100 && getAccumulatedStocks() < 500) {
+                        decisionLog.append("【常規策略】常規買入");
+                        吸籌操作(100);
                     }
                 }
 
@@ -1541,6 +1479,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     private boolean shouldCancelByPhase(Order order, double currentPrice) {
         switch (phase) {
+            case 吸籌:
+            case 待機:
+                // 這些階段不額外加取消條件（交由通用規則處理）
+                break;
             case 拉抬:
                 // 拉抬階段：取消過低的買單和過高的賣單
                 if (order.getType().equals("buy") && order.getPrice() < currentPrice * 0.92) {
@@ -1566,6 +1508,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.20) {
                     return true;
                 }
+                break;
+            default:
                 break;
         }
         return false;

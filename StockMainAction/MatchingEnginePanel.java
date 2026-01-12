@@ -1,11 +1,11 @@
 package StockMainAction;
 
-import StockMainAction.model.core.MatchingMode;
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.awt.event.ActionListener;
 import java.util.Hashtable;
+import StockMainAction.model.core.MatchingMode;
 
 /**
  * 撮合引擎面板 - 用於控制和顯示撮合引擎的狀態和設置
@@ -36,7 +36,7 @@ public class MatchingEnginePanel extends JPanel {
 
         // 1. 當前模式標籤
         JPanel currentPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        currentModeLabel = new JLabel("當前撮合模式: 標準 (價格優先時間優先)");
+        currentModeLabel = new JLabel("當前撮合模式: 台股撮合（價格時間優先）");
         currentPanel.add(currentModeLabel);
 
         // 2. 撮合模式選擇
@@ -53,7 +53,8 @@ public class MatchingEnginePanel extends JPanel {
         JPanel randomPanel = new JPanel(new BorderLayout());
         JPanel randomCheckPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
 
-        randomModeCheckbox = new JCheckBox("隨機切換模式", false);
+        // 台股撮合固定模式：停用舊的隨機切換功能
+        randomModeCheckbox = new JCheckBox("隨機切換模式（已停用）", false);
         JLabel probabilityLabel = new JLabel("切換概率:");
 
         randomCheckPanel.add(randomModeCheckbox);
@@ -66,10 +67,8 @@ public class MatchingEnginePanel extends JPanel {
         probabilitySlider.setPaintLabels(true);
         probabilitySlider.setEnabled(false);
 
-        randomModeCheckbox.addActionListener(e -> {
-            boolean selected = randomModeCheckbox.isSelected();
-            probabilitySlider.setEnabled(selected);
-        });
+        randomModeCheckbox.setEnabled(false);
+        probabilitySlider.setEnabled(false);
 
         randomPanel.add(randomCheckPanel, BorderLayout.NORTH);
         randomPanel.add(probabilitySlider, BorderLayout.CENTER);
@@ -94,6 +93,8 @@ public class MatchingEnginePanel extends JPanel {
         labelTable.put(150, new JLabel("高"));
         labelTable.put(200, new JLabel("極高"));
         liquiditySlider.setLabelTable(labelTable);
+        // 台股撮合：此版本不以「流動性滑桿」改變撮合規則（避免偏離交易所邏輯）
+        liquiditySlider.setEnabled(false);
 
         liquidityPanel.add(liquidityLabelPanel, BorderLayout.NORTH);
         liquidityPanel.add(liquiditySlider, BorderLayout.CENTER);
@@ -144,16 +145,10 @@ public class MatchingEnginePanel extends JPanel {
      */
     private String getDescriptionForMode(MatchingMode mode) {
         switch (mode) {
-            case PRICE_TIME:
-                return "價格優先、時間優先模式：優先撮合價格最優的訂單，如有多個價格相同的訂單，則優先撮合較早提交的訂單。這是最標準的撮合機制。";
-            case VOLUME_WEIGHTED:
-                return "成交量加權模式：在價格優先的基礎上，對大單進行一定程度的優先處理，使大單更容易成交。";
-            case MARKET_PRESSURE:
-                return "市場壓力模式：根據市場買賣力量的對比來調整撮合優先級，當買壓大時優先執行買單，賣壓大時優先執行賣單。";
-            case RANDOM:
-                return "隨機撮合模式：在滿足價格條件的訂單中隨機選擇進行撮合，模擬市場的不確定性。";
+            case TWSE_STRICT:
+                return "台股撮合（連續交易）：價格優先、時間優先；成交必須交叉（買價≥賣價）；成交價以被動方（簿內較早者）的委託價為準；並遵守價格跳動單位（tick size）。";
             default:
-                return "標準模式：使用傳統的價格優先、時間優先撮合機制。";
+                return "台股撮合（固定模式）。";
         }
     }
 
@@ -163,16 +158,13 @@ public class MatchingEnginePanel extends JPanel {
     private void showHelpDialog() {
         String helpText
                 = "撮合機制說明：\n\n"
-                + "1. 標準撮合：最基本的撮合方式，買價≥賣價即成交，成交價取中間。\n\n"
-                + "2. 價格時間優先：同等價格下先到先得，成交價格會偏向先到訂單。\n\n"
-                + "3. 成交量加權：大單具有議價能力，大單優先且影響成交價的加權比例。\n\n"
-                + "4. 市場壓力模式：考慮整體買賣壓力失衡，買單多時賣方有議價優勢。\n\n"
-                + "5. 隨機模式：增加一定的市場噪聲和不確定性，偶爾允許小幅價差交易。\n\n"
-                + "流動性設置：\n"
-                + "- 低：交易量較小，每次成交數量有限\n"
-                + "- 中：正常流動性\n"
-                + "- 高：流動性好，大筆訂單較易成交\n"
-                + "- 極高：幾乎所有訂單都能快速成交";
+                + "本版本已固定使用『台股撮合（連續交易）』，並停用舊的模擬撮合模式。\n\n"
+                + "台股撮合要點：\n"
+                + "1. 成交必須交叉：買價 ≥ 賣價\n"
+                + "2. 價格優先、時間優先\n"
+                + "3. 成交價以被動方（簿內較早者）的委託價為準\n"
+                + "4. 價格遵守 tick size（跳動單位）\n\n"
+                + "備註：『隨機切換』與『流動性滑桿』不再影響撮合規則（避免偏離交易所邏輯）。";
 
         JTextArea textArea = new JTextArea(helpText);
         textArea.setEditable(false);

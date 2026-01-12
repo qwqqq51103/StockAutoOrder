@@ -1,16 +1,16 @@
 package StockMainAction.model.core;
 
-import java.util.Random;
-
 /**
  * 撮合模式枚舉 - 定義不同的撮合算法
  */
 public enum MatchingMode {
-    STANDARD("標準撮合"), // 標準撮合 - 買價>=賣價即成交，價格取中間
-    PRICE_TIME("價格時間優先"), // 價格優先時間優先 - 考慮訂單時間因素
-    VOLUME_WEIGHTED("成交量加權"), // 成交量加權 - 價格按成交量加權計算
-    MARKET_PRESSURE("市場壓力"), // 市場壓力模式 - 考慮供需不平衡
-    RANDOM("隨機模式");         // 隨機模式 - 增加一定的隨機性
+    /**
+     * 台股（連續交易）撮合：價格優先、時間優先；成交必須交叉（買價 >= 賣價），
+     * 成交價以「被動方（簿內較早者）」委託價為準，並遵守 tick size。
+     *
+     * 舊的「標準/加權/市場壓力/隨機」等模式已停用（避免產生不符合台股的成交行為）。
+     */
+    TWSE_STRICT("台股撮合（價格時間優先）");
 
     private final String displayName;
 
@@ -25,8 +25,7 @@ public enum MatchingMode {
 
     // 取得隨機撮合模式 (可用於每次交易時隨機選擇模式)
     public static MatchingMode getRandom() {
-        Random random = new Random();
-        MatchingMode[] modes = values();
-        return modes[random.nextInt(modes.length)];
+        // 舊模式已停用；一律回傳台股撮合
+        return TWSE_STRICT;
     }
 }

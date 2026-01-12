@@ -18,6 +18,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 import javax.swing.SwingUtilities;
+import StockMainAction.model.user.UserAccount;
 
 /**
  * 股票市場模型 - 包含核心業務邏輯 作為MVC架構中的Model組件
@@ -28,10 +29,13 @@ public class StockMarketModel {
     private Stock stock;
     private OrderBook orderBook;
     private MarketAnalyzer marketAnalyzer;
-    private MarketBehavior marketBehavior;
+    // 多個做市商（提供雙邊流動性）
+    private List<MarketBehavior> marketMakers;
     private MainForceStrategyWithOrderBook mainForce;
     private List<RetailInvestorAI> retailInvestors;
     private PersonalAI userInvestor;
+    // 小額噪音交易者（主動吃單/侵略性掛單，增加成交與波動）
+    private List<NoiseTraderAI> noiseTraders;
 
     // 模擬控制
     private int timeStep;
@@ -40,10 +44,18 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 300000, initialMainForceCash = 3000000;
-    private int initialRetails = 1;
-    private int marketBehaviorStock = 100000;
+    private double initialRetailCash = 300000, initialMainForceCash = 300000;
+    private int initialRetails = 5;
+    private int marketBehaviorStock = 30000;
     private double marketBehaviorGash = -9999999.0;
+
+    // === 玩法參數（可自行調整）===
+    private int marketMakerCount = 5;     // 建議 2~5
+    private int noiseTraderCount = 10;     // 建議 3~10
+    private double marketMakerInitialCash = 300000; // 每個做市商初始現金
+    private int marketMakerInitialStocks = 2000;     // 每個做市商初始持股
+    private double noiseTraderInitialCash = 300000;   // 每個噪音交易者初始現金
+    private int noiseTraderInitialStocks = 500;      // 每個噪音交易者初始持股
 
     // 🆕 成交記錄列表
     private List<Transaction> transactionHistory;
@@ -108,6 +120,134 @@ public class StockMarketModel {
         void onOrderBookChanged();
     }
 
+    /**
+     * 交易者快照（提供 UI 顯示用）
+     */
+    public static class TraderSnapshot {
+        public final String traderType;   // 例如 PERSONAL / MAIN_FORCE / MarketBehavior / NoiseTrader1...
+        public final String role;         // 類別：個人 / 主力 / 做市 / 噪音 / 散戶
+        public final double availableFunds;
+        public final double frozenFunds;
+        public final int availableStocks;
+        public final int frozenStocks;
+        public final double totalAssets;
+        public final String extra;        // 例如主力 Phase
+
+        public TraderSnapshot(String traderType, String role,
+                              double availableFunds, double frozenFunds,
+                              int availableStocks, int frozenStocks,
+                              double totalAssets, String extra) {
+            this.traderType = traderType;
+            this.role = role;
+            this.availableFunds = availableFunds;
+            this.frozenFunds = frozenFunds;
+            this.availableStocks = availableStocks;
+            this.frozenStocks = frozenStocks;
+            this.totalAssets = totalAssets;
+            this.extra = extra;
+        }
+    }
+
+    /**
+     * 提供給 UI：列出所有市場參與者（主力/做市商/噪音/散戶/個人）的資金與持股快照
+     */
+    public List<TraderSnapshot> getTraderSnapshots() {
+        List<TraderSnapshot> out = new ArrayList<>();
+        double px = (stock != null ? stock.getPrice() : 0.0);
+
+        // 主力
+        if (mainForce != null && mainForce.getAccount() != null) {
+            UserAccount acc = mainForce.getAccount();
+            double assets = acc.getTotalFunds() + acc.getTotalStocks() * px;
+            out.add(new TraderSnapshot(
+                    mainForce.getTraderType(),
+                    "主力",
+                    acc.getAvailableFunds(),
+                    acc.getFrozenFunds(),
+                    acc.getStockInventory(),
+                    acc.getFrozenStocks(),
+                    assets,
+                    mainForce.getPhaseName()
+            ));
+        }
+
+        // 做市商（多個）
+        if (marketMakers != null) {
+            for (int i = 0; i < marketMakers.size(); i++) {
+                MarketBehavior mm = marketMakers.get(i);
+                if (mm == null || mm.getAccount() == null) continue;
+                UserAccount acc = mm.getAccount();
+                double assets = acc.getTotalFunds() + acc.getTotalStocks() * px;
+                out.add(new TraderSnapshot(
+                        "MarketMaker" + (i + 1),
+                        "做市",
+                        acc.getAvailableFunds(),
+                        acc.getFrozenFunds(),
+                        acc.getStockInventory(),
+                        acc.getFrozenStocks(),
+                        assets,
+                        ""
+                ));
+            }
+        }
+
+        // 噪音交易者（多個）
+        if (noiseTraders != null) {
+            for (NoiseTraderAI nt : noiseTraders) {
+                if (nt == null || nt.getAccount() == null) continue;
+                UserAccount acc = nt.getAccount();
+                double assets = acc.getTotalFunds() + acc.getTotalStocks() * px;
+                out.add(new TraderSnapshot(
+                        nt.getTraderType(),
+                        "噪音",
+                        acc.getAvailableFunds(),
+                        acc.getFrozenFunds(),
+                        acc.getStockInventory(),
+                        acc.getFrozenStocks(),
+                        assets,
+                        ""
+                ));
+            }
+        }
+
+        // 散戶（多個）
+        if (retailInvestors != null) {
+            for (RetailInvestorAI ri : retailInvestors) {
+                if (ri == null || ri.getAccount() == null) continue;
+                UserAccount acc = ri.getAccount();
+                double assets = acc.getTotalFunds() + acc.getTotalStocks() * px;
+                out.add(new TraderSnapshot(
+                        ri.getTraderType(),
+                        "散戶",
+                        acc.getAvailableFunds(),
+                        acc.getFrozenFunds(),
+                        acc.getStockInventory(),
+                        acc.getFrozenStocks(),
+                        assets,
+                        ""
+                ));
+            }
+        }
+
+        // 個人
+        if (userInvestor != null && userInvestor.getAccount() != null) {
+            UserAccount acc = userInvestor.getAccount();
+            double assets = acc.getTotalFunds() + acc.getTotalStocks() * px;
+            out.add(new TraderSnapshot(
+                    userInvestor.getTraderType(),
+                    "個人",
+                    acc.getAvailableFunds(),
+                    acc.getFrozenFunds(),
+                    acc.getStockInventory(),
+                    acc.getFrozenStocks(),
+                    assets,
+                    ""
+            ));
+        }
+
+        return out;
+    }
+
     public List<ModelListener> listeners = new ArrayList<>();
 
     // 成交紀錄監聽器介面 - 用於通知View更新
@@ -169,14 +309,14 @@ public class StockMarketModel {
             // 初始化訂單簿
             orderBook = new OrderBook(this);
             logger.info("OrderBook 初始化完成", "MODEL_INIT");
-            // 設置默認撮合模式
-            orderBook.setMatchingMode(MatchingMode.PRICE_TIME);
+            // 設置默認撮合模式（台股固定）
+            orderBook.setMatchingMode(MatchingMode.TWSE_STRICT);
             logger.info("設置默認撮合模式：" + orderBook.getMatchingMode(), "MODEL_INIT");
 
             stock = new Stock("台積電", 10, 1000);
 
-            // 初始化市場行為
-            this.marketBehavior = new MarketBehavior(10.0, marketBehaviorGash, marketBehaviorStock, this, orderBook);
+            // 初始化做市商（多個）
+            initializeMarketMakers(marketMakerCount);
 
             timeStep = 0;
             marketAnalyzer = new MarketAnalyzer(2); // 設定適當的SMA週期
@@ -190,10 +330,68 @@ public class StockMarketModel {
             // 初始化用戶投資者
             userInvestor = new PersonalAI(initialRetailCash, "Personal", this, orderBook, stock);
 
+            // 初始化噪音交易者（多個）
+            initializeNoiseTraders(noiseTraderCount);
+
             logger.info("市場模型初始化完成", "MODEL_INIT");
         } catch (Exception e) {
             logger.error("市場模型初始化失敗: " + e.getMessage(), "MODEL_INIT");
             e.printStackTrace();
+        }
+    }
+
+    private void initializeMarketMakers(int count) {
+        marketMakers = new ArrayList<>();
+        int n = Math.max(0, count);
+        for (int i = 0; i < n; i++) {
+            // 注意：舊的 marketBehaviorGash 可能是負值（會導致無法掛買單），改用正的初始資金/持股
+            MarketBehavior mm = new MarketBehavior(
+                    stock != null ? stock.getPrice() : 10.0,
+                    marketMakerInitialCash,
+                    marketMakerInitialStocks,
+                    this,
+                    orderBook
+            );
+            marketMakers.add(mm);
+        }
+    }
+
+    private double getMarketMakersTotalFunds() {
+        if (marketMakers == null) return 0.0;
+        double sum = 0.0;
+        for (MarketBehavior mm : marketMakers) {
+            if (mm != null && mm.getAccount() != null) {
+                sum += mm.getAccount().getAvailableFunds();
+            }
+        }
+        return sum;
+    }
+
+    private int getMarketMakersTotalStocks() {
+        if (marketMakers == null) return 0;
+        int sum = 0;
+        for (MarketBehavior mm : marketMakers) {
+            if (mm != null && mm.getAccount() != null) {
+                sum += mm.getAccount().getStockInventory();
+                sum += mm.getAccount().getFrozenStocks();
+            }
+        }
+        return sum;
+    }
+
+    private void initializeNoiseTraders(int count) {
+        noiseTraders = new ArrayList<>();
+        int n = Math.max(0, count);
+        for (int i = 0; i < n; i++) {
+            NoiseTraderAI nt = new NoiseTraderAI(
+                    noiseTraderInitialCash,
+                    noiseTraderInitialStocks,
+                    "NoiseTrader" + (i + 1),
+                    this,
+                    orderBook,
+                    stock
+            );
+            noiseTraders.add(nt);
         }
     }
 
@@ -228,11 +426,26 @@ public class StockMarketModel {
 
                 // 1. 市場行為：模擬市場的訂單提交
                 try {
-                    marketBehavior.marketFluctuation(
-                            stock,
-                            orderBook,
-                            marketAnalyzer.calculateVolatility(),
-                            (int) marketAnalyzer.getRecentAverageVolume());
+                    double vol = marketAnalyzer.calculateVolatility();
+                    int recentVol = (int) marketAnalyzer.getRecentAverageVolume();
+
+                    // 1a. 多個做市商：提供雙邊掛單
+                    if (marketMakers != null) {
+                        for (MarketBehavior mm : marketMakers) {
+                            try {
+                                mm.marketFluctuation(stock, orderBook, vol, recentVol);
+                            } catch (Exception ignore) {}
+                        }
+                    }
+
+                    // 1b. 噪音交易者：小額主動吃單/侵略性掛單，增加成交機會
+                    if (noiseTraders != null) {
+                        for (NoiseTraderAI nt : noiseTraders) {
+                            try {
+                                nt.makeDecision();
+                            } catch (Exception ignore) {}
+                        }
+                    }
                     logger.info(String.format("市場行為模擬：時間步長 %d", timeStep), "MARKET_BEHAVIOR");
                 } catch (Exception e) {
                     logger.error("市場行為模擬發生錯誤：" + e.getMessage(), "MARKET_BEHAVIOR");
@@ -354,8 +567,8 @@ public class StockMarketModel {
                     mainForce.getAccount().getStockInventory(),
                     mainForce.getTargetPrice(),
                     mainForce.getAverageCostPrice(),
-                    marketBehavior.getAvailableFunds(),
-                    marketBehavior.getStockInventory()
+                    getMarketMakersTotalFunds(),
+                    getMarketMakersTotalStocks()
             );
             listener.onUserAccountUpdated(
                     userInvestor.getAccount().getStockInventory(),
@@ -473,10 +686,10 @@ public class StockMarketModel {
      */
     public void validateMarketInventory() {
         int calculatedInventory = calculateMarketInventory();
-        int initialInventory = marketBehaviorStock;
+        int initialInventory = Math.max(0, marketMakerCount) * Math.max(0, marketMakerInitialStocks);
         if (calculatedInventory != initialInventory) {
-            String msg = "初始化市場庫存檢查: 設定值=" + marketBehaviorStock
-                    + "，市場行為持股=" + marketBehavior.getStockInventory()
+            String msg = "初始化市場庫存檢查: 設定值(做市商合計)=" + initialInventory
+                    + "，做市商合計持股=" + getMarketMakersTotalStocks()
                     + "，總計算庫存=" + calculatedInventory;
             logger.error(msg, "MODEL_INIT");
             LogicAudit.warn("INVENTORY_CHECK", msg);
@@ -509,9 +722,17 @@ public class StockMarketModel {
             totalInventory += userInvestor.getAccount().getFrozenStocks();
         }
 
-        // 市場行為帳戶
-        int marketAvail = marketBehavior.getStockInventory();
-        int marketFrozen = marketBehavior.getAccount().getFrozenStocks();
+        // 做市商帳戶（合計）
+        int marketAvail = 0;
+        int marketFrozen = 0;
+        if (marketMakers != null) {
+            for (MarketBehavior mm : marketMakers) {
+                if (mm != null && mm.getAccount() != null) {
+                    marketAvail += mm.getAccount().getStockInventory();
+                    marketFrozen += mm.getAccount().getFrozenStocks();
+                }
+            }
+        }
         totalInventory += marketAvail + marketFrozen;
 
         // 稽核分解

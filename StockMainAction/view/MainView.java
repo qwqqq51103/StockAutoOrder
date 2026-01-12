@@ -1,7 +1,7 @@
 package StockMainAction.view;
 
-import StockMainAction.model.core.MatchingMode;
-import StockMainAction.model.core.Order;
+// import StockMainAction.model.core.MatchingMode; // 已停用舊撮合模式 UI
+// import StockMainAction.model.core.Order;        // 目前此檔案未使用
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Transaction;
 import StockMainAction.model.StockMarketModel;
@@ -255,6 +255,9 @@ public class MainView extends JFrame {
     // 散戶資訊表
     private JTable retailInfoTable;
     private javax.swing.table.DefaultTableModel retailInfoTableModel;
+    // 市場參與者資訊表（主力/做市/噪音/散戶/個人）
+    private JTable traderInfoTable;
+    private javax.swing.table.DefaultTableModel traderInfoTableModel;
 
     // 儲存最後一次更新的時間步長
     private int lastTimeStep = -1;
@@ -377,6 +380,10 @@ public class MainView extends JFrame {
         // 新增：散戶資訊分頁
         JPanel retailPanel = createRetailInfoPanel();
         tabbedPane.addTab("散戶資訊", retailPanel);
+
+        // 新增：市場參與者分頁（包含主力/做市商/噪音/散戶/個人）
+        JPanel traderPanel = createTraderInfoPanel();
+        tabbedPane.addTab("市場參與者", traderPanel);
 
         // 精簡：移除技術指標分頁
 
@@ -1188,6 +1195,40 @@ public class MainView extends JFrame {
         retailInfoTable.setRowHeight(28);
         retailInfoTable.getTableHeader().setReorderingAllowed(false);
         JScrollPane sp = new JScrollPane(retailInfoTable);
+        panel.add(sp, BorderLayout.CENTER);
+        return panel;
+    }
+
+    // 新增：市場參與者分頁（表格）
+    private JPanel createTraderInfoPanel() {
+        JPanel panel = new JPanel(new BorderLayout());
+        String[] columns = new String[]{"身分", "類別", "可用現金", "凍結現金", "可用持股", "凍結持股", "總資產", "備註"};
+        traderInfoTableModel = new javax.swing.table.DefaultTableModel(columns, 0) {
+            @Override
+            public boolean isCellEditable(int row, int column) {
+                return false;
+            }
+
+            @Override
+            public Class<?> getColumnClass(int columnIndex) {
+                switch (columnIndex) {
+                    case 2:
+                    case 3:
+                    case 6:
+                        return Double.class;
+                    case 4:
+                    case 5:
+                        return Integer.class;
+                    default:
+                        return String.class;
+                }
+            }
+        };
+
+        traderInfoTable = new JTable(traderInfoTableModel);
+        traderInfoTable.setRowHeight(28);
+        traderInfoTable.getTableHeader().setReorderingAllowed(false);
+        JScrollPane sp = new JScrollPane(traderInfoTable);
         panel.add(sp, BorderLayout.CENTER);
         return panel;
     }
@@ -2541,6 +2582,32 @@ public class MainView extends JFrame {
                 int stocks = inv.getAccumulatedStocks();
                 double profit = cash + stocks * stockPrice - inv.getInitialCash();
                 retailInfoTableModel.addRow(new Object[]{id, cash, stocks, profit});
+            }
+        });
+    }
+
+    // 新增：更新市場參與者資訊表
+    public void updateTraderInfoTable(java.util.List<StockMainAction.model.StockMarketModel.TraderSnapshot> snapshots) {
+        SwingUtilities.invokeLater(() -> {
+            if (traderInfoTableModel == null) return;
+            // 清空
+            while (traderInfoTableModel.getRowCount() > 0) {
+                traderInfoTableModel.removeRow(0);
+            }
+            if (snapshots == null) return;
+
+            for (StockMainAction.model.StockMarketModel.TraderSnapshot s : snapshots) {
+                if (s == null) continue;
+                traderInfoTableModel.addRow(new Object[]{
+                    s.traderType,
+                    s.role,
+                    s.availableFunds,
+                    s.frozenFunds,
+                    s.availableStocks,
+                    s.frozenStocks,
+                    s.totalAssets,
+                    s.extra == null ? "" : s.extra
+                });
             }
         });
     }

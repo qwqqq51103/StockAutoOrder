@@ -4,7 +4,6 @@ import StockMainAction.model.StockMarketModel;
 import StockMainAction.model.core.Transaction;
 import StockMainAction.util.logging.MarketLogger;
 import javax.swing.*;
-import javax.swing.border.*;
 import javax.swing.table.*;
 import java.awt.*;
 import java.awt.event.*;
@@ -16,8 +15,6 @@ import javax.swing.Timer;
 import java.awt.BasicStroke;
 import java.util.Map;
 import java.util.HashMap;
-// [CHART]
-import StockMainAction.view.MainView;
 
 /**
  * 完整的成交記錄視窗 - 支持限價單和市價單的詳細顯示
@@ -1030,8 +1027,8 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
             return trans.isBuyerInitiated() ? "市價買" : "市價賣";
         }
 
-        // 默認為限價單
-        return "限價單";
+        // 默認為限價單：用「買/賣方主動」標記，讓 UI 可用顏色區分
+        return trans.isBuyerInitiated() ? "限價單-買方主動" : "限價單-賣方主動";
     }
 
     /**

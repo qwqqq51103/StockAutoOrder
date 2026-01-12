@@ -593,6 +593,14 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             mainView.updateRetailProfitChart(investors, model.getStock().getPrice(), model.getInitialRetailCash());
         }
 
+        // 新增：更新「市場參與者」表格（主力/做市/噪音/散戶/個人）
+        // 為避免 UI 過度頻繁刷新，這裡每 2 tick 更新一次即可
+        try {
+            if (model.getTimeStep() % 2 == 0) {
+                mainView.updateTraderInfoTable(model.getTraderSnapshots());
+            }
+        } catch (Exception ignore) {}
+
         // 新增：更新主力階段與近期趨勢顯示
         try {
             double recentTrend = model.getMarketAnalyzer().getRecentPriceTrend();

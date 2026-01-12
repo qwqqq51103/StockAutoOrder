@@ -427,34 +427,8 @@ public class MarketBehavior implements Trader {
                     oldMarketTrend, marketTrend
             ), "MARKET_BEHAVIOR");
 
-            // 以「受限漂移」更新參考價格：模擬報價微動，避免大幅飄移
-            double lastPrice = stock.getPrice();
-            double targetPrice = newOrderPrice;
-
-            // 每步允許最大漂移（預設 0.2%），同時提供最小步長避免卡住
-            double maxDriftRatioPerStep = 0.002; // 0.2%
-            double minStep = 0.005;             // 最小 0.5 分（視 tick）
-            double maxStep = Math.max(minStep, lastPrice * maxDriftRatioPerStep);
-
-            double delta = targetPrice - lastPrice;
-            double clampedDelta = Math.max(-maxStep, Math.min(maxStep, delta));
-            double newPrice = lastPrice + clampedDelta;
-
-            // 寫回受限的新價格（屬於報價驅動的細微變動，而非成交）
-            double oldPrice = lastPrice;
-            stock.setPrice(newPrice);
-
-            logger.info(String.format(
-                    "市場報價微動：舊=%.3f -> 新=%.3f (Δ=%.3f, %.3f%%)",
-                    oldPrice, newPrice, newPrice - oldPrice,
-                    oldPrice > 0 ? (newPrice - oldPrice) / oldPrice * 100 : 0
-            ), "MARKET_BEHAVIOR");
-
-            LogicAudit.checkPriceJump("QUOTE_DRIFT", oldPrice, newPrice, 0.02);
-            LogicAudit.info("QUOTE_DRIFT", String.format("old=%.4f new=%.4f", oldPrice, newPrice));
-
-            // 推進價格序列供指標與策略判斷使用（非成交量驅動）
-            model.getMarketAnalyzer().addPrice(newPrice);
+            // 台股撮合：股價（last price）應由「成交」決定，不應由 MarketBehavior 直接 setPrice 造價。
+            // 這裡保留 newOrderPrice 作為下單參考，但不直接改寫 stock.price，也不推進非成交的價格序列。
 
             logger.debug(String.format(
                     "市場波動結束：時間步=%d",
