@@ -3,11 +3,9 @@
 package StockMainAction.view.components;
 
 import StockMainAction.model.core.QuickTradeConfig;
-import StockMainAction.controller.QuickTradeManager;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.util.List;
@@ -29,6 +27,8 @@ public class QuickTradePanel extends JPanel {
     private JTextArea previewArea;
     private JButton executeButton;
     private JButton configButton;
+    private JButton pumpButton;
+    private JButton dumpButton;
 
     // 狀態變數
     private QuickTradeConfig selectedConfig;
@@ -36,7 +36,6 @@ public class QuickTradePanel extends JPanel {
     private double availableFunds = 0.0;
     private int currentHoldings = 0;
 
-    private boolean autoExecute = false;  // 是否自動執行
 
     // 事件監聽器接口
     public interface QuickTradePanelListener {
@@ -46,6 +45,13 @@ public class QuickTradePanel extends JPanel {
         void onConfigureQuickTrade();
 
         void onPreviewQuickTrade(QuickTradeConfig config);
+
+        // 市場介入（主力/個人戶）：以「分批市價吃單」推動成交價
+        void onPumpPrice(int totalQty, int slices, boolean useMainForce,
+                boolean enableLiquidity, int depthLevels, double depthSpanPct);
+
+        void onDumpPrice(int totalQty, int slices, boolean useMainForce,
+                boolean enableLiquidity, int depthLevels, double depthSpanPct);
     }
 
     private QuickTradePanelListener listener;
@@ -65,7 +71,11 @@ public class QuickTradePanel extends JPanel {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
         // 上部：快捷按鈕區
+        JPanel northPanel = new JPanel(new BorderLayout());
         JPanel quickButtonPanel = createQuickButtonPanel();
+        JPanel interventionPanel = createInterventionPanel();
+        northPanel.add(quickButtonPanel, BorderLayout.CENTER);
+        northPanel.add(interventionPanel, BorderLayout.SOUTH);
 
         // 中部：當前狀態和預覽
         JPanel statusAndPreviewPanel = createStatusAndPreviewPanel();
@@ -73,7 +83,7 @@ public class QuickTradePanel extends JPanel {
         // 下部：配置列表和控制按鈕
         JPanel configPanel = createConfigPanel();
 
-        mainPanel.add(quickButtonPanel, BorderLayout.NORTH);
+        mainPanel.add(northPanel, BorderLayout.NORTH);
         mainPanel.add(statusAndPreviewPanel, BorderLayout.CENTER);
         mainPanel.add(configPanel, BorderLayout.SOUTH);
 
@@ -117,6 +127,100 @@ public class QuickTradePanel extends JPanel {
         }
 
         return panel;
+    }
+
+    /**
+     * 市場介入（實驗/教學用途）：拉抬/出貨（打壓）
+     * 注意：價格推動必須靠「成交」，所以這裡以「分批市價單」做為主要推動手段。
+     */
+    private JPanel createInterventionPanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createTitledBorder("市場介入（實驗）"));
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(2, 4, 2, 4);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+        gc.weightx = 1.0;
+
+        pumpButton = new JButton("拉抬(分批市價買)");
+        pumpButton.setBackground(new Color(210, 255, 210));
+        pumpButton.setForeground(new Color(0, 90, 0));
+
+        dumpButton = new JButton("出貨/打壓(分批市價賣)");
+        dumpButton.setBackground(new Color(255, 210, 210));
+        dumpButton.setForeground(new Color(140, 0, 0));
+
+        pumpButton.addActionListener(e -> showInterventionDialog(true));
+        dumpButton.addActionListener(e -> showInterventionDialog(false));
+
+        gc.gridx = 0;
+        gc.gridy = 0;
+        panel.add(pumpButton, gc);
+        gc.gridx = 1;
+        panel.add(dumpButton, gc);
+
+        return panel;
+    }
+
+    private void showInterventionDialog(boolean pump) {
+        try {
+            JPanel p = new JPanel(new GridBagLayout());
+            GridBagConstraints gc = new GridBagConstraints();
+            gc.insets = new Insets(4, 6, 4, 6);
+            gc.anchor = GridBagConstraints.WEST;
+            gc.fill = GridBagConstraints.HORIZONTAL;
+            gc.weightx = 1.0;
+
+            JSpinner qty = new JSpinner(new SpinnerNumberModel(5000, 1, 1_000_000, 100));
+            JSpinner slices = new JSpinner(new SpinnerNumberModel(10, 1, 200, 1));
+            JCheckBox useMainForce = new JCheckBox("使用主力帳戶（建議）", true);
+            JCheckBox enableLiquidity = new JCheckBox("先補深度(掛牆/墊腳石)", true);
+            JSpinner depthLevels = new JSpinner(new SpinnerNumberModel(5, 1, 20, 1));
+            JSpinner depthSpan = new JSpinner(new SpinnerNumberModel(1.0, 0.1, 10.0, 0.1)); // %
+
+            gc.gridx = 0; gc.gridy = 0;
+            p.add(new JLabel("總量(股):"), gc);
+            gc.gridx = 1;
+            p.add(qty, gc);
+
+            gc.gridx = 0; gc.gridy = 1;
+            p.add(new JLabel("分批數:"), gc);
+            gc.gridx = 1;
+            p.add(slices, gc);
+
+            gc.gridx = 0; gc.gridy = 2; gc.gridwidth = 2;
+            p.add(useMainForce, gc);
+
+            gc.gridx = 0; gc.gridy = 3; gc.gridwidth = 2;
+            p.add(enableLiquidity, gc);
+
+            gc.gridwidth = 1;
+            gc.gridx = 0; gc.gridy = 4;
+            p.add(new JLabel("補深度檔數:"), gc);
+            gc.gridx = 1;
+            p.add(depthLevels, gc);
+
+            gc.gridx = 0; gc.gridy = 5;
+            p.add(new JLabel("補深度跨度(%):"), gc);
+            gc.gridx = 1;
+            p.add(depthSpan, gc);
+
+            String title = pump ? "拉抬設定" : "出貨/打壓設定";
+            int ok = JOptionPane.showConfirmDialog(this, p, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (ok != JOptionPane.OK_OPTION) return;
+
+            int totalQty = ((Number) qty.getValue()).intValue();
+            int nSlices = ((Number) slices.getValue()).intValue();
+            boolean useMF = useMainForce.isSelected();
+            boolean enLiq = enableLiquidity.isSelected();
+            int lvl = ((Number) depthLevels.getValue()).intValue();
+            double spanPct = ((Number) depthSpan.getValue()).doubleValue() / 100.0;
+
+            if (listener == null) return;
+            if (pump) listener.onPumpPrice(totalQty, nSlices, useMF, enLiq, lvl, spanPct);
+            else listener.onDumpPrice(totalQty, nSlices, useMF, enLiq, lvl, spanPct);
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, "介入操作失敗：" + ex.getMessage(), "錯誤", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     /**

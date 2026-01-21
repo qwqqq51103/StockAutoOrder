@@ -18,6 +18,7 @@ import StockMainAction.model.core.PersonalStatistics;
 import StockMainAction.model.core.QuickTradeConfig;
 import StockMainAction.model.core.Transaction;
 import StockMainAction.model.user.UserAccount;
+import StockMainAction.model.core.Trader;
 import StockMainAction.view.TransactionHistoryViewer;
 import java.awt.Dimension;
 import java.awt.Font;
@@ -47,6 +48,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     // 初始資金配置（用於損益計算）—統一由模型提供
     public final double initialRetailCash;
     private final double initialMainForceCash;
+    private final double initialPersonalCash;
 
     /**
      * 構造函數（修正版）
@@ -68,6 +70,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         this.initialMainForceCash = model.getMainForce() != null
                 ? model.getMainForce().getAccount().getAvailableFunds()
                 : 3698000;
+        this.initialPersonalCash = model.getInitialPersonalCash();
 
         // 初始化快捷交易功能
         this.quickTradeManager = new QuickTradeManager();
@@ -85,7 +88,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             UserAccount userAccount = model.getUserInvestor().getAccount();
             // 保留未來擴充點位：如果需要拿到 PersonalAI 實例，可在此處取得
             // 初始化統計管理器（使用簡化版建構函數）
-            this.personalStatsManager = new PersonalStatisticsManager(userAccount, initialRetailCash);
+            this.personalStatsManager = new PersonalStatisticsManager(userAccount, initialPersonalCash);
 
             logger.info("個人統計管理器初始化成功", "CONTROLLER_INIT");
 
@@ -182,16 +185,16 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         controlView.getStopButton().addActionListener(e -> {
             if (model.isRunning()) {
                 model.stopAutoPriceFluctuation();
-                controlView.getStopButton().setText("開始");
-                mainView.appendToInfoArea("模擬已停止。");
+                controlView.getStopButton().setText("繼續");
+                mainView.appendToInfoArea("模擬已暫停。");
                 // 禁用快捷交易
                 if (quickTradePanel != null) {
                     quickTradePanel.setQuickTradeEnabled(false);
                 }
             } else {
                 model.startAutoPriceFluctuation();
-                controlView.getStopButton().setText("停止");
-                mainView.appendToInfoArea("模擬已開始。");
+                controlView.getStopButton().setText("暫停");
+                mainView.appendToInfoArea("模擬已繼續。");
                 // 啟用快捷交易
                 if (quickTradePanel != null) {
                     quickTradePanel.setQuickTradeEnabled(true);
@@ -1021,6 +1024,164 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     public void onPreviewQuickTrade(QuickTradeConfig config) {
         // 預覽功能已經在 QuickTradePanel 內部實現
         logger.info("預覽快捷交易：" + config.getName(), "QUICK_TRADE");
+    }
+
+    @Override
+    public void onPumpPrice(int totalQty, int slices, boolean useMainForce,
+            boolean enableLiquidity, int depthLevels, double depthSpanPct) {
+        runMarketIntervention(true, totalQty, slices, useMainForce, enableLiquidity, depthLevels, depthSpanPct);
+    }
+
+    @Override
+    public void onDumpPrice(int totalQty, int slices, boolean useMainForce,
+            boolean enableLiquidity, int depthLevels, double depthSpanPct) {
+        runMarketIntervention(false, totalQty, slices, useMainForce, enableLiquidity, depthLevels, depthSpanPct);
+    }
+
+    private void runMarketIntervention(boolean pump, int totalQty, int slices, boolean useMainForce,
+            boolean enableLiquidity, int depthLevels, double depthSpanPct) {
+        try {
+            if (model == null || model.getOrderBook() == null || model.getStock() == null) {
+                mainView.showErrorMessage("模型/訂單簿未初始化", "介入失敗");
+                return;
+            }
+            if (totalQty <= 0) return;
+            int n = Math.max(1, Math.min(500, slices));
+
+            Trader actor = null;
+            if (useMainForce) {
+                actor = model.getMainForce();
+            } else {
+                actor = model.getUserInvestor();
+            }
+            if (actor == null) {
+                mainView.showErrorMessage("找不到交易者(主力/個人戶)", "介入失敗");
+                return;
+            }
+
+            final Trader fActor = actor;
+            final int fTotal = totalQty;
+            final int fSlices = n;
+            final boolean fPump = pump;
+            final boolean fEnableLiquidity = enableLiquidity;
+            final int fDepthLevels = Math.max(1, Math.min(30, depthLevels));
+            final double fDepthSpanPct = Math.max(0.0, Math.min(0.15, depthSpanPct)); // 上限 15%
+
+            // 避免卡住 EDT：背景執行
+            new Thread(() -> {
+                try {
+                    // 0) 先補深度（掛牆/墊腳石）
+                    if (fEnableLiquidity) {
+                        seedLiquidity(fActor, fPump, fTotal, fDepthLevels, fDepthSpanPct);
+                        try {
+                            Thread.sleep(50);
+                        } catch (Exception ignore) {
+                        }
+                    }
+
+                    int remain = fTotal;
+                    int chunkMin = Math.max(1, fTotal / fSlices);
+                    for (int i = 0; i < fSlices && remain > 0; i++) {
+                        int chunk = (i == fSlices - 1) ? remain : Math.min(remain, chunkMin);
+                        if (chunk <= 0) break;
+                        if (fPump) {
+                            model.getOrderBook().marketBuy(fActor, chunk);
+                        } else {
+                            model.getOrderBook().marketSell(fActor, chunk);
+                        }
+                        remain -= chunk;
+                        try {
+                            Thread.sleep(30);
+                        } catch (Exception ignore) {
+                        }
+                    }
+
+                    final int executed = fTotal - Math.max(0, remain);
+                    SwingUtilities.invokeLater(() -> {
+                        try {
+                            String who = useMainForce ? "主力" : "個人戶";
+                            String act = fPump ? "拉抬(補深度+分批市價買)" : "出貨/打壓(補深度+分批市價賣)";
+                            mainView.appendToInfoArea(String.format("【市場介入】%s %s：總量=%d，分批=%d，補深度=%b(檔=%d,跨度=%.2f%%)，嘗試執行=%d",
+                                    who, act, fTotal, fSlices, fEnableLiquidity, fDepthLevels, fDepthSpanPct * 100.0, executed));
+                        } catch (Exception ignore) {
+                        }
+                    });
+                } catch (Exception e) {
+                    SwingUtilities.invokeLater(() -> mainView.showErrorMessage("介入失敗：" + e.getMessage(), "錯誤"));
+                }
+            }, pump ? "PumpPrice" : "DumpPrice").start();
+
+        } catch (Exception e) {
+            mainView.showErrorMessage("介入失敗：" + e.getMessage(), "錯誤");
+        }
+    }
+
+    /**
+     * 補深度（掛牆/墊腳石）
+     * - pump(拉抬)：補買盤（提供支撐/降低向上掃單滑價）
+     * - dump(打壓)：補買盤「墊腳石」（仍是買盤，但掛在保護帶內較低檔，讓市價賣可持續成交而不被 minPx 擋住）
+     *
+     * 注意：這裡只負責掛限價單提供深度，不保證成交。
+     */
+    private void seedLiquidity(Trader actor, boolean pump, int totalQty, int depthLevels, double spanPct) {
+        try {
+            final StockMainAction.model.core.OrderBook ob = model.getOrderBook();
+            final double last = model.getStock().getPrice();
+            if (last <= 0) return;
+
+            final double slip = ob.getMaxMarketSlippageRatio();
+            final double minPx = ob.adjustPriceToUnit(last * (1.0 - slip));
+            final double maxPx = ob.adjustPriceToUnit(last * (1.0 + slip));
+
+            // 補深度總量：用總量的一部分（預設 30%），避免完全把倉位用在掛牆
+            int depthTotal = Math.max(0, (int) Math.round(totalQty * 0.30));
+            if (depthTotal <= 0) return;
+
+            // 價格區間：以 spanPct 決定，且限制在保護帶內
+            double span = Math.max(0.0, spanPct);
+            if (span <= 0) span = 0.01; // 預設 1%
+
+            // pump：買牆靠近現價下方；dump：買墊腳石偏向更低（靠近 minPx）
+            double hiBuy = pump ? last * (1.0 - 0.001) : last * (1.0 - Math.min(0.02, slip * 0.6));
+            double loBuy = pump ? last * (1.0 - span) : last * (1.0 - Math.min(span + 0.02, slip * 0.95));
+
+            hiBuy = Math.max(minPx, Math.min(maxPx, ob.adjustPriceToUnit(hiBuy)));
+            loBuy = Math.max(minPx, Math.min(maxPx, ob.adjustPriceToUnit(loBuy)));
+            if (loBuy > hiBuy) {
+                double t = loBuy;
+                loBuy = hiBuy;
+                hiBuy = t;
+            }
+
+            int lv = Math.max(1, depthLevels);
+            int per = Math.max(1, depthTotal / lv);
+
+            double px = hiBuy;
+            for (int i = 0; i < lv; i++) {
+                int q = (i == lv - 1) ? (depthTotal - per * (lv - 1)) : per;
+                if (q <= 0) break;
+
+                // 線性往下分層，並調整到 tick
+                double t = (lv == 1) ? 0.0 : (i / (double) (lv - 1));
+                double raw = hiBuy + (loBuy - hiBuy) * t;
+                px = ob.adjustPriceToUnit(raw);
+                px = Math.max(minPx, Math.min(maxPx, px));
+
+                // 資金檢查（避免拋例外打斷整段流程）
+                if (actor.getAccount() == null) break;
+                double need = px * q;
+                if (actor.getAccount().getAvailableFunds() < need) {
+                    // 資金不足就縮量
+                    int q2 = (int) Math.floor(actor.getAccount().getAvailableFunds() / Math.max(0.01, px));
+                    if (q2 <= 0) break;
+                    q = q2;
+                }
+
+                StockMainAction.model.core.Order o = StockMainAction.model.core.Order.createLimitBuyOrder(px, q, actor);
+                ob.submitBuyOrder(o, px);
+            }
+        } catch (Exception ignore) {
+        }
     }
 
     /**

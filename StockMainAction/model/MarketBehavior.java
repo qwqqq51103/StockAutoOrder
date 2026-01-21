@@ -308,26 +308,27 @@ public class MarketBehavior implements Trader {
                 ), "MARKET_BEHAVIOR");
             }
 
+            // 先計算本步的 bestBid/bestAsk/mid/makerOffset，供下單與撤單共同使用
+            List<Order> bestBids = orderBook.getTopBuyOrders(1);
+            List<Order> bestAsks = orderBook.getTopSellOrders(1);
+
+            double bestBid = bestBids.isEmpty() ? 0 : bestBids.get(0).getPrice();
+            double bestAsk = bestAsks.isEmpty() ? 0 : bestAsks.get(0).getPrice();
+
+            double mid;
+            if (bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk) {
+                mid = (bestBid + bestAsk) / 2.0;
+            } else {
+                mid = currentPrice;
+            }
+
+            double spreadRatio = (bestBid > 0 && bestAsk > 0 && mid > 0)
+                    ? (bestAsk - bestBid) / mid : 0.01;
+
+            double makerOffset = Math.max(0.001, Math.min(0.02, 0.25 * spreadRatio + 0.3 * Math.abs(volatility)));
+
             // 只有在通過防抖檢查後才執行下單操作
             if (shouldPlaceOrder) {
-                List<Order> bestBids = orderBook.getTopBuyOrders(1);
-                List<Order> bestAsks = orderBook.getTopSellOrders(1);
-
-                double bestBid = bestBids.isEmpty() ? 0 : bestBids.get(0).getPrice();
-                double bestAsk = bestAsks.isEmpty() ? 0 : bestAsks.get(0).getPrice();
-
-                double mid;
-                if (bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk) {
-                    mid = (bestBid + bestAsk) / 2.0;
-                } else {
-                    mid = currentPrice;
-                }
-
-                double spreadRatio = (bestBid > 0 && bestAsk > 0 && mid > 0)
-                        ? (bestAsk - bestBid) / mid : 0.01;
-
-                double makerOffset = Math.max(0.001, Math.min(0.02, 0.25 * spreadRatio + 0.3 * Math.abs(volatility)));
-
                 double rawBuyPrice = mid * (1 - makerOffset);
                 double rawSellPrice = mid * (1 + makerOffset);
 
@@ -370,43 +371,44 @@ public class MarketBehavior implements Trader {
                 } else {
                     lastOrderTime = currentTime;
                 }
-
-                // 做市撤單：移除遠離中間價的自家掛單，保持五檔緊跟報價
-                try {
-                    List<Order> myBuys = orderBook.getBuyOrdersByTraderType(getTraderType());
-                    List<Order> mySells = orderBook.getSellOrdersByTraderType(getTraderType());
-
-                    double replaceThreshold = makerOffset * 2.0 + 0.002; // 超出此比率則撤單重掛
-
-                    for (Order ob : myBuys) {
-                        if (ob != null && ob.getPrice() > 0 && mid > 0) {
-                            double diff = (mid - ob.getPrice()) / mid; // 買單價低於 mid 太多
-                            if (diff > replaceThreshold) {
-                                boolean ok = orderBook.cancelOrder(ob.getId());
-                                if (ok) {
-                                    LogicAudit.info("MM_CANCEL", String.format("buy id=%s px=%.4f mid=%.4f diff=%.4f",
-                                            ob.getId(), ob.getPrice(), mid, diff));
-                                    logger.debug(String.format("撤買單以貼近mid：%.2f -> mid=%.2f (diff=%.3f)", ob.getPrice(), mid, diff), "MARKET_BEHAVIOR_MM");
-                                }
-                            }
-                        }
-                    }
-
-                    for (Order os : mySells) {
-                        if (os != null && os.getPrice() > 0 && mid > 0) {
-                            double diff = (os.getPrice() - mid) / mid; // 賣單價高於 mid 太多
-                            if (diff > replaceThreshold) {
-                                boolean ok = orderBook.cancelOrder(os.getId());
-                                if (ok) {
-                                    LogicAudit.info("MM_CANCEL", String.format("sell id=%s px=%.4f mid=%.4f diff=%.4f",
-                                            os.getId(), os.getPrice(), mid, diff));
-                                    logger.debug(String.format("撤賣單以貼近mid：%.2f -> mid=%.2f (diff=%.3f)", os.getPrice(), mid, diff), "MARKET_BEHAVIOR_MM");
-                                }
-                            }
-                        }
-                    }
-                } catch (Exception ignore) {}
             }
+
+            // 做市撤單：不論本步是否下單，都移除遠離中間價的自家掛單，保持緊跟報價
+            try {
+                double replaceThreshold = makerOffset * 2.0 + 0.002; // 超出此比率則撤單重掛
+
+                java.util.List<Order> buys = orderBook.getBuyOrders();
+                for (int i = buys.size() - 1; i >= 0; i--) {
+                    Order ob = buys.get(i);
+                    if (ob == null || ob.getTrader() != this) continue;
+                    if (ob.getPrice() > 0 && mid > 0) {
+                        double diff = (mid - ob.getPrice()) / mid; // 買單價低於 mid 太多
+                        if (diff > replaceThreshold) {
+                            boolean ok = orderBook.cancelOrder(ob.getId());
+                            if (ok) {
+                                LogicAudit.info("MM_CANCEL", String.format("buy id=%s px=%.4f mid=%.4f diff=%.4f",
+                                        ob.getId(), ob.getPrice(), mid, diff));
+                            }
+                        }
+                    }
+                }
+
+                java.util.List<Order> sells = orderBook.getSellOrders();
+                for (int i = sells.size() - 1; i >= 0; i--) {
+                    Order os = sells.get(i);
+                    if (os == null || os.getTrader() != this) continue;
+                    if (os.getPrice() > 0 && mid > 0) {
+                        double diff = (os.getPrice() - mid) / mid; // 賣單價高於 mid 太多
+                        if (diff > replaceThreshold) {
+                            boolean ok = orderBook.cancelOrder(os.getId());
+                            if (ok) {
+                                LogicAudit.info("MM_CANCEL", String.format("sell id=%s px=%.4f mid=%.4f diff=%.4f",
+                                        os.getId(), os.getPrice(), mid, diff));
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignore) {}
 
             // 更新長期平均價格
             double oldLongTermMeanPrice = longTermMeanPrice;

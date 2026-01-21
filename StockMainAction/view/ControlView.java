@@ -7,8 +7,6 @@ import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.view.components.QuickTradePanel;
 import javax.swing.*;
 import java.awt.*;
-// [PERF] 新增引用以呼叫效能模式
-import StockMainAction.view.MainView;
 
 /**
  * 控制視圖 - 分頁式設計
@@ -113,7 +111,7 @@ public class ControlView extends JFrame {
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)
         ));
 
-        stopButton = new JButton("停止");
+        stopButton = new JButton("暫停");
         stopButton.setPreferredSize(new Dimension(120, 35));
         stopButton.setFont(new Font("Microsoft JhengHei", Font.BOLD, 14));
         stopButton.setBackground(new Color(255, 100, 100));

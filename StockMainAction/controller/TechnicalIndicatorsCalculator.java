@@ -43,10 +43,10 @@ public class TechnicalIndicatorsCalculator {
 
         // 限制歷史數據大小，保持性能
         int maxHistorySize = 1000;
-        if (priceHistory.size() > maxHistorySize) {
-            priceHistory.remove(0);
-            highHistory.remove(0);
-            lowHistory.remove(0);
+        while (priceHistory.size() > maxHistorySize || highHistory.size() > maxHistorySize || lowHistory.size() > maxHistorySize) {
+            if (!priceHistory.isEmpty()) priceHistory.remove(0);
+            if (!highHistory.isEmpty()) highHistory.remove(0);
+            if (!lowHistory.isEmpty()) lowHistory.remove(0);
         }
     }
 
@@ -106,23 +106,26 @@ public class TechnicalIndicatorsCalculator {
      * @return [kValue, dValue, jValue] 或 null 如果數據不足
      */
     public double[] calculateKDJ() {
-        if (priceHistory.size() < kdjPeriod || highHistory.size() < kdjPeriod || lowHistory.size() < kdjPeriod) {
+        int n = Math.min(priceHistory.size(), Math.min(highHistory.size(), lowHistory.size()));
+        if (n < kdjPeriod) {
             return null; // 數據不足
         }
 
         // 計算RSV (Raw Stochastic Value)
-        double currentPrice = priceHistory.get(priceHistory.size() - 1);
+        double currentPrice = priceHistory.get(n - 1);
         double highestHigh = getHighestHigh(kdjPeriod);
         double lowestLow = getLowestLow(kdjPeriod);
 
-        double rsv = 0;
-        if (highestHigh != lowestLow) {
+        double rsv = 50.0; // 預設中性，避免極端值造成後續J失真
+        if (highestHigh > 0 && lowestLow != Double.MAX_VALUE && highestHigh != lowestLow) {
             rsv = ((currentPrice - lowestLow) / (highestHigh - lowestLow)) * 100;
         }
 
         // 簡化版KDJ計算（實際應用中會使用更複雜的平滑算法）
         double kValue = rsv; // 簡化：K = RSV
-        double dValue = calculateSMA(getKHistory(), dPeriod); // D = K的移動平均
+        List<Double> kHist = getKHistory();
+        // 若樣本不足，先用 K 當作 D，避免 0 造成 J 爆衝
+        double dValue = (kHist.size() >= dPeriod) ? calculateSMA(kHist, dPeriod) : kValue;
         double jValue = 3 * kValue - 2 * dValue; // J = 3K - 2D
 
         return new double[]{kValue, dValue, jValue};
@@ -236,8 +239,10 @@ public class TechnicalIndicatorsCalculator {
     private List<Double> getKHistory() {
         // 簡化實作：返回最近幾個RSV值
         List<Double> kHistory = new ArrayList<>();
+        int n = Math.min(priceHistory.size(), Math.min(highHistory.size(), lowHistory.size()));
+        if (n <= 0) return kHistory;
 
-        for (int i = Math.max(0, priceHistory.size() - dPeriod); i < priceHistory.size(); i++) {
+        for (int i = Math.max(0, n - dPeriod); i < n; i++) {
             if (i >= kdjPeriod - 1) {
                 // 計算該點的RSV
                 double price = priceHistory.get(i);
@@ -256,18 +261,22 @@ public class TechnicalIndicatorsCalculator {
     }
 
     private double getHighestHighAt(int index, int period) {
-        int start = Math.max(0, index - period + 1);
+        if (highHistory.isEmpty()) return 0.0;
+        int safeIndex = Math.min(index, highHistory.size() - 1);
+        int start = Math.max(0, safeIndex - period + 1);
         double highest = highHistory.get(start);
-        for (int i = start + 1; i <= index; i++) {
+        for (int i = start + 1; i <= safeIndex; i++) {
             highest = Math.max(highest, highHistory.get(i));
         }
         return highest;
     }
 
     private double getLowestLowAt(int index, int period) {
-        int start = Math.max(0, index - period + 1);
+        if (lowHistory.isEmpty()) return Double.MAX_VALUE;
+        int safeIndex = Math.min(index, lowHistory.size() - 1);
+        int start = Math.max(0, safeIndex - period + 1);
         double lowest = lowHistory.get(start);
-        for (int i = start + 1; i <= index; i++) {
+        for (int i = start + 1; i <= safeIndex; i++) {
             lowest = Math.min(lowest, lowHistory.get(i));
         }
         return lowest;

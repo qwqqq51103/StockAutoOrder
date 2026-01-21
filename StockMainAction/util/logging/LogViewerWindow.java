@@ -23,20 +23,108 @@ import java.util.regex.Pattern;
  */
 public class LogViewerWindow extends JFrame implements MarketLogger.LogListener {
 
+    // 單例視窗：避免使用者一直重複開很多個
+    private static volatile LogViewerWindow INSTANCE;
+
+    /** 在 EDT 安全開啟（或聚焦）日誌查看器視窗 */
+    public static void openOrFocus() {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                LogViewerWindow w = INSTANCE;
+                if (w == null || !w.isDisplayable()) {
+                    w = new LogViewerWindow();
+                    INSTANCE = w;
+                }
+                w.setVisible(true);
+                w.toFront();
+                w.requestFocus();
+            } catch (Exception ignore) {}
+        });
+    }
+
     private DefaultTableModel logTableModel;
     private JTable logTable;
     private TableRowSorter<DefaultTableModel> sorter;
 
     private JComboBox<String> levelFilterCombo;
-    private JComboBox<String> categoryFilterCombo;
+    private JComboBox<Object> categoryFilterCombo;
     private JTextField messageFilterField;
     private JButton clearButton;
     private JButton exportButton;
+    private JComboBox<String> outputLevelCombo;
+    private JCheckBox consoleToggle;
 
     private Set<String> knownCategories = new HashSet<>();
     private Set<String> knownLevels = new HashSet<>();
 
     private static final int MAX_LOGS = 50000; // 最大顯示的日誌條數
+
+    // 類別中文化：UI 顯示用（不改底層 logger 的 category 代碼）
+    private static final class CategoryItem {
+        final String raw;
+        final String display;
+        CategoryItem(String raw, String display) {
+            this.raw = raw;
+            this.display = display;
+        }
+        @Override public String toString() { return display; }
+    }
+
+    private static final java.util.Map<String, String> CATEGORY_ZH = new java.util.HashMap<>();
+    static {
+        // 依目前專案常見分類做對照（未知分類會回退顯示原文）
+        CATEGORY_ZH.put("APPLICATION_START", "程式啟動");
+        CATEGORY_ZH.put("MODEL_INIT", "模型初始化");
+        CATEGORY_ZH.put("MARKET_SIMULATION", "市場模擬");
+        CATEGORY_ZH.put("MARKET_MODEL", "市場模型");
+        CATEGORY_ZH.put("MARKET_ANALYSIS", "市場分析");
+
+        CATEGORY_ZH.put("ORDER_BOOK", "訂單簿");
+        CATEGORY_ZH.put("ORDER_SUBMIT", "訂單提交");
+        CATEGORY_ZH.put("ORDER_PROCESSING", "訂單撮合");
+        CATEGORY_ZH.put("ORDER_PROCESSING_ANOMALY", "撮合異常");
+        CATEGORY_ZH.put("ORDER_FOK", "FOK 訂單");
+        CATEGORY_ZH.put("ORDER_CANCEL", "撤單");
+
+        CATEGORY_ZH.put("MARKET_BUY", "市價買入");
+        CATEGORY_ZH.put("MARKET_SELL", "市價賣出");
+
+        CATEGORY_ZH.put("CONTROLLER_INIT", "控制器初始化");
+        CATEGORY_ZH.put("MATCHING_ENGINE", "撮合引擎");
+        CATEGORY_ZH.put("PRICE_ALERT", "價格提醒");
+
+        CATEGORY_ZH.put("PERSONAL_STATS", "個人統計");
+        CATEGORY_ZH.put("STATS_MANAGER", "統計管理");
+        CATEGORY_ZH.put("STATS_RESET", "統計重置");
+
+        CATEGORY_ZH.put("QUICK_TRADE", "快捷交易");
+
+        CATEGORY_ZH.put("RETAIL_INVESTOR_INIT", "散戶初始化");
+        CATEGORY_ZH.put("RETAIL_INVESTOR_DECISION", "散戶決策");
+        CATEGORY_ZH.put("RETAIL_INVESTOR_BUY", "散戶買入");
+        CATEGORY_ZH.put("RETAIL_INVESTOR_SELL", "散戶賣出");
+        CATEGORY_ZH.put("RETAIL_INVESTOR_VOLUME", "散戶下單量");
+        CATEGORY_ZH.put("RETAIL_INVESTOR_STOP_LOSS", "散戶停損");
+        CATEGORY_ZH.put("RETAIL_INVESTOR_TAKE_PROFIT", "散戶止盈");
+
+        CATEGORY_ZH.put("MAIN_FORCE_PANEL", "主力面板");
+        CATEGORY_ZH.put("MAIN_FORCE_DECISION", "主力決策");
+        CATEGORY_ZH.put("MAIN_FORCE_WASH", "主力洗盤");
+        CATEGORY_ZH.put("TRANSACTION_UPDATE", "成交更新");
+
+        CATEGORY_ZH.put("MARKET_BEHAVIOR_INIT", "做市初始化");
+        CATEGORY_ZH.put("MARKET_BEHAVIOR_MM", "做市掛單");
+        CATEGORY_ZH.put("MARKET_BEHAVIOR_ANALYSIS", "做市分析");
+
+        CATEGORY_ZH.put("RETAIL_CONFIG", "散戶策略設定");
+    }
+
+    private static String toZhCategory(String raw) {
+        if (raw == null) return "";
+        String hit = CATEGORY_ZH.get(raw);
+        if (hit != null) return hit;
+        return raw; // fallback：未知分類保留原文
+    }
 
     /**
      * 創建日誌查看視窗
@@ -75,6 +163,11 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
             @Override
             public void windowClosing(WindowEvent e) {
                 MarketLogger.getInstance().removeLogListener(LogViewerWindow.this);
+                try {
+                    if (INSTANCE == LogViewerWindow.this) {
+                        INSTANCE = null;
+                    }
+                } catch (Exception ignore) {}
             }
         });
 
@@ -136,6 +229,49 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
         levelFilterCombo.addActionListener(e -> applyFilters());
         categoryFilterCombo.addActionListener(e -> applyFilters());
         messageFilterField.addActionListener(e -> applyFilters());
+
+        // ====== 輸出控制（直接影響 MarketLogger）======
+        gbc.gridx = 0;
+        gbc.gridy = 1;
+        gbc.weightx = 0;
+        panel.add(new JLabel("輸出級別:"), gbc);
+
+        gbc.gridx = 1;
+        gbc.weightx = 0.2;
+        outputLevelCombo = new JComboBox<>(new String[]{"DEBUG", "INFO", "WARN", "ERROR"});
+        // 讀取目前 logger 狀態
+        try {
+            int lv = MarketLogger.getInstance().getLogLevel();
+            if (lv == MarketLogger.LEVEL_DEBUG) outputLevelCombo.setSelectedItem("DEBUG");
+            else if (lv == MarketLogger.LEVEL_INFO) outputLevelCombo.setSelectedItem("INFO");
+            else if (lv == MarketLogger.LEVEL_WARN) outputLevelCombo.setSelectedItem("WARN");
+            else outputLevelCombo.setSelectedItem("ERROR");
+        } catch (Exception ignore) {}
+        outputLevelCombo.addActionListener(e -> {
+            try {
+                String v = (String) outputLevelCombo.getSelectedItem();
+                int lv = MarketLogger.LEVEL_INFO;
+                if ("DEBUG".equals(v)) lv = MarketLogger.LEVEL_DEBUG;
+                else if ("INFO".equals(v)) lv = MarketLogger.LEVEL_INFO;
+                else if ("WARN".equals(v)) lv = MarketLogger.LEVEL_WARN;
+                else if ("ERROR".equals(v)) lv = MarketLogger.LEVEL_ERROR;
+                MarketLogger.getInstance().setLogLevel(lv);
+            } catch (Exception ignore) {}
+        });
+        panel.add(outputLevelCombo, gbc);
+
+        gbc.gridx = 2;
+        gbc.weightx = 0;
+        panel.add(new JLabel("Console:"), gbc);
+
+        gbc.gridx = 3;
+        gbc.weightx = 0.3;
+        consoleToggle = new JCheckBox("輸出到Console");
+        try { consoleToggle.setSelected(MarketLogger.getInstance().isConsoleEnabled()); } catch (Exception ignore) {}
+        consoleToggle.addActionListener(e -> {
+            try { MarketLogger.getInstance().setConsoleEnabled(consoleToggle.isSelected()); } catch (Exception ignore) {}
+        });
+        panel.add(consoleToggle, gbc);
 
         return panel;
     }
@@ -205,9 +341,12 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
         }
 
         // 分類過濾
-        String selectedCategory = (String) categoryFilterCombo.getSelectedItem();
+        Object selectedCategory = categoryFilterCombo.getSelectedItem();
         if (selectedCategory != null && !selectedCategory.equals("全部")) {
-            filters.add(RowFilter.regexFilter("^" + Pattern.quote(selectedCategory) + "$", 2));
+            String raw = (selectedCategory instanceof CategoryItem)
+                    ? ((CategoryItem) selectedCategory).raw
+                    : selectedCategory.toString();
+            filters.add(RowFilter.regexFilter("^" + Pattern.quote(raw) + "$", 2));
         }
 
         // 消息過濾
@@ -293,7 +432,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
             // 檢查並添加新的分類
             if (!knownCategories.contains(category)) {
                 knownCategories.add(category);
-                categoryFilterCombo.addItem(category);
+                categoryFilterCombo.addItem(new CategoryItem(category, toZhCategory(category)));
             }
 
             // 檢查並添加新的級別
@@ -324,6 +463,12 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
                 boolean isSelected, boolean hasFocus, int row, int column) {
             Component c = super.getTableCellRendererComponent(
                     table, value, isSelected, hasFocus, row, column);
+
+            // 類別欄（第3欄）：顯示中文，但保留底層值為 raw（方便過濾/導出）
+            if (column == 2 && value != null) {
+                setText(toZhCategory(value.toString()));
+                setToolTipText(value.toString());
+            }
 
             if (!isSelected) {
                 int modelRow = table.convertRowIndexToModel(row);
