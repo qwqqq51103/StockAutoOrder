@@ -15,6 +15,7 @@ import javax.swing.Timer;
 import java.awt.BasicStroke;
 import java.util.Map;
 import java.util.HashMap;
+import java.io.*;
 
 /**
  * 完整的成交記錄視窗 - 支持限價單和市價單的詳細顯示
@@ -1520,16 +1521,156 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
         detailDialog.setVisible(true);
     }
 
+    // ─── 滑價分析 ────────────────────────────────────────────
     private void analyzeSlippage(JTable table) {
-        JOptionPane.showMessageDialog(this, "滑價分析功能開發中...", "提示", JOptionPane.INFORMATION_MESSAGE);
+        DefaultTableModel m = (DefaultTableModel) table.getModel();
+        if (m.getRowCount() == 0) {
+            JOptionPane.showMessageDialog(this, "目前沒有資料可供分析", "提示", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        final int SLIP_COL = 10, TYPE_COL = 1;
+        List<Double> slippages = new ArrayList<>();
+        double sumBuy = 0, sumSell = 0;
+        int cntBuy = 0, cntSell = 0;
+        double maxSlip = Double.NEGATIVE_INFINITY, minSlip = Double.POSITIVE_INFINITY;
+
+        for (int i = 0; i < m.getRowCount(); i++) {
+            double slip = parseDoubleOrZero(m.getValueAt(i, SLIP_COL));
+            if (m.getValueAt(i, SLIP_COL) == null) continue;
+            slippages.add(slip);
+            String type = String.valueOf(m.getValueAt(i, TYPE_COL));
+            if (type.contains("買")) { sumBuy += slip; cntBuy++; }
+            else                     { sumSell += slip; cntSell++; }
+            if (slip > maxSlip) maxSlip = slip;
+            if (slip < minSlip) minSlip = slip;
+        }
+
+        if (slippages.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "此分頁沒有可分析的滑價欄位數據", "提示", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+
+        double avg = slippages.stream().mapToDouble(Double::doubleValue).average().orElse(0);
+        double variance = slippages.stream().mapToDouble(v -> Math.pow(v - avg, 2)).average().orElse(0);
+        double stdDev = Math.sqrt(variance);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 滑價分析報告 ===\n\n");
+        sb.append(String.format("分析筆數     : %d 筆%n", slippages.size()));
+        sb.append(String.format("平均滑價     : %.4f%%%n", avg));
+        sb.append(String.format("最大滑價     : %.4f%%%n", maxSlip == Double.NEGATIVE_INFINITY ? 0 : maxSlip));
+        sb.append(String.format("最小滑價     : %.4f%%%n", minSlip == Double.POSITIVE_INFINITY ? 0 : minSlip));
+        sb.append(String.format("標準差       : %.4f%%%n%n", stdDev));
+        if (cntBuy  > 0) sb.append(String.format("買方平均滑價 : %.4f%% (%d筆)%n", sumBuy  / cntBuy,  cntBuy));
+        if (cntSell > 0) sb.append(String.format("賣方平均滑價 : %.4f%% (%d筆)%n", sumSell / cntSell, cntSell));
+        sb.append("\n說明：滑價越高代表市場衝擊成本越大（主要發生在市價單）");
+        showAnalysisDialog("滑價分析", sb.toString());
     }
 
+    // ─── 填單比較 ────────────────────────────────────────────
     private void compareFills(JTable table) {
-        JOptionPane.showMessageDialog(this, "填單比較功能開發中...", "提示", JOptionPane.INFORMATION_MESSAGE);
+        DefaultTableModel m = (DefaultTableModel) table.getModel();
+        if (m.getRowCount() == 0) {
+            JOptionPane.showMessageDialog(this, "目前沒有資料可供比較", "提示", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        final int TYPE_COL = 1, PRICE_COL = 5, VOL_COL = 6, SLIP_COL = 10, TIME_COL = 11;
+        double sumLimitP = 0, sumMarketP = 0, sumLimitSlip = 0, sumMarketSlip = 0;
+        double sumLimitTime = 0, sumMarketTime = 0;
+        long sumLimitVol = 0, sumMarketVol = 0;
+        int cntLimit = 0, cntMarket = 0;
+
+        for (int i = 0; i < m.getRowCount(); i++) {
+            String type = String.valueOf(m.getValueAt(i, TYPE_COL));
+            boolean isMarket = type.contains("市價");
+            try {
+                double p   = parseDoubleOrZero(m.getValueAt(i, PRICE_COL));
+                int    v   = (int) parseDoubleOrZero(m.getValueAt(i, VOL_COL));
+                double sl  = parseDoubleOrZero(m.getValueAt(i, SLIP_COL));
+                double t   = parseDoubleOrZero(m.getValueAt(i, TIME_COL));
+                if (isMarket) { sumMarketP += p; sumMarketVol += v; sumMarketSlip += sl; sumMarketTime += t; cntMarket++; }
+                else          { sumLimitP  += p; sumLimitVol  += v; sumLimitSlip  += sl; sumLimitTime  += t; cntLimit++;  }
+            } catch (Exception ignore) {}
+        }
+
+        String fmt = "%-20s %-14s %-14s%n";
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 限價單 vs 市價單 填單比較 ===\n\n");
+        sb.append(String.format(fmt, "", "限價單", "市價單"));
+        sb.append(String.format(fmt, "筆數",          cntLimit, cntMarket));
+        sb.append(String.format(fmt, "總成交量",       volumeFormat.format(sumLimitVol), volumeFormat.format(sumMarketVol)));
+        sb.append(String.format(fmt, "平均成交價",
+                cntLimit  > 0 ? priceFormat.format(sumLimitP  / cntLimit)  : "N/A",
+                cntMarket > 0 ? priceFormat.format(sumMarketP / cntMarket) : "N/A"));
+        sb.append(String.format(fmt, "平均滑價",
+                cntLimit  > 0 ? String.format("%.4f%%", sumLimitSlip  / cntLimit)  : "N/A",
+                cntMarket > 0 ? String.format("%.4f%%", sumMarketSlip / cntMarket) : "N/A"));
+        sb.append(String.format(fmt, "平均執行時間(ms)",
+                cntLimit  > 0 ? String.format("%.0f", sumLimitTime  / cntLimit)  : "N/A",
+                cntMarket > 0 ? String.format("%.0f", sumMarketTime / cntMarket) : "N/A"));
+        sb.append("\n說明：\n• 限價單：保證成交價格，但不保證成交時間\n• 市價單：保證立即成交，但可能產生滑價");
+        showAnalysisDialog("填單比較", sb.toString());
     }
 
+    // ─── 深度分析 ────────────────────────────────────────────
     private void performDeepAnalysis() {
-        JOptionPane.showMessageDialog(this, "深度分析功能開發中...", "提示", JOptionPane.INFORMATION_MESSAGE);
+        if (transactionHistory.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "目前沒有成交記錄可供深度分析", "提示", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // VWAP
+        double sumPV = 0;
+        long   totalVol = 0;
+        for (Transaction t : transactionHistory) {
+            sumPV    += t.getPrice() * t.getVolume();
+            totalVol += t.getVolume();
+        }
+        double vwap = totalVol > 0 ? sumPV / totalVol : 0;
+
+        // 買賣力道
+        long buyVol  = transactionHistory.stream().filter(Transaction::isBuyerInitiated).mapToLong(Transaction::getVolume).sum();
+        long sellVol = transactionHistory.stream().filter(t -> !t.isBuyerInitiated()).mapToLong(Transaction::getVolume).sum();
+        long allVol  = Math.max(1, buyVol + sellVol);
+
+        // 價格四分位
+        double[] prices = transactionHistory.stream().mapToDouble(Transaction::getPrice).sorted().toArray();
+        int len = prices.length;
+        double q1     = len > 3 ? prices[len / 4]     : prices[0];
+        double median = len > 1 ? prices[len / 2]     : prices[0];
+        double q3     = len > 3 ? prices[len * 3 / 4] : prices[len - 1];
+
+        // 最活躍時段
+        Map<Integer, Long> hourCount = new HashMap<>();
+        for (Transaction t : transactionHistory) {
+            Calendar cal = Calendar.getInstance();
+            cal.setTimeInMillis(t.getTimestamp());
+            hourCount.merge(cal.get(Calendar.HOUR_OF_DAY), 1L, Long::sum);
+        }
+        int peakHour = hourCount.entrySet().stream()
+                .max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey).orElse(-1);
+
+        // 價格走勢
+        double firstP = transactionHistory.get(0).getPrice();
+        double lastP  = transactionHistory.get(transactionHistory.size() - 1).getPrice();
+        double pctChg = firstP > 0 ? (lastP - firstP) / firstP * 100 : 0;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== 深度分析報告 ===\n\n");
+        sb.append(String.format("【VWAP（量加權均價）】%n  %.2f%n%n", vwap));
+        sb.append(String.format("【買賣力道】%n  買方量: %,d (%.1f%%)%n  賣方量: %,d (%.1f%%)%n  淨 Delta: %+,d%n%n",
+                buyVol, buyVol * 100.0 / allVol, sellVol, sellVol * 100.0 / allVol, buyVol - sellVol));
+        sb.append(String.format("【價格分佈（四分位）】%n  Q1: %.2f  中位數: %.2f  Q3: %.2f  IQR: %.2f%n%n", q1, median, q3, q3 - q1));
+        sb.append(String.format("【價格走勢】%n  開始: %.2f  結束: %.2f  漲跌幅: %+.2f%%%n%n", firstP, lastP, pctChg));
+        if (peakHour >= 0) {
+            sb.append(String.format("【最活躍時段】%n  %02d:00-%02d:00 (%d 筆)%n%n", peakHour, peakHour + 1, hourCount.get(peakHour)));
+        }
+        sb.append(String.format("【總計】%n  總筆數: %,d  總成交量: %,d  總成交額: %s",
+                transactionHistory.size(), totalVol, priceFormat.format(sumPV)));
+        showAnalysisDialog("深度分析", sb.toString());
     }
 
     private void copyTableRow(JTable table) {
@@ -1562,16 +1703,118 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
     private void exportSelectedRows(JTable table) {
         int[] selectedRows = table.getSelectedRows();
         if (selectedRows.length == 0) {
-            JOptionPane.showMessageDialog(this, "請先選擇要導出的行", "提示",
-                    JOptionPane.WARNING_MESSAGE);
+            JOptionPane.showMessageDialog(this, "請先選擇要導出的行", "提示", JOptionPane.WARNING_MESSAGE);
             return;
         }
-        // 簡化實現
-        JOptionPane.showMessageDialog(this, "導出功能開發中...", "提示", JOptionPane.INFORMATION_MESSAGE);
+        exportToCSV(table, selectedRows);
     }
 
     private void exportAllTransactions() {
-        JOptionPane.showMessageDialog(this, "導出功能開發中...", "提示", JOptionPane.INFORMATION_MESSAGE);
+        JTable activeTable = getActiveTable();
+        if (activeTable == null || activeTable.getRowCount() == 0) {
+            JOptionPane.showMessageDialog(this, "目前沒有成交記錄可以導出", "提示", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        int[] allRows = new int[activeTable.getRowCount()];
+        for (int i = 0; i < allRows.length; i++) allRows[i] = i;
+        exportToCSV(activeTable, allRows);
+    }
+
+    // ─── 輔助：取得當前活躍分頁的表格 ──────────────────────────
+    private JTable getActiveTable() {
+        int idx = tabbedPane.getSelectedIndex();
+        switch (idx) {
+            case 0:  return allTransactionsTable;
+            case 1:  return buyTransactionsTable;
+            case 2:  return sellTransactionsTable;
+            case 3:  return myTransactionsTable;
+            case 4:  return marketOrderTable;
+            case 5:  return limitOrderTable;
+            default: return allTransactionsTable;
+        }
+    }
+
+    // ─── 輔助：CSV 導出 ──────────────────────────────────────
+    private void exportToCSV(JTable table, int[] rows) {
+        JFileChooser fc = new JFileChooser();
+        fc.setSelectedFile(new File("成交記錄_" + new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date()) + ".csv"));
+        fc.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("CSV 檔案 (*.csv)", "csv"));
+        if (fc.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return;
+
+        File file = fc.getSelectedFile();
+        if (!file.getName().endsWith(".csv")) file = new File(file.getPath() + ".csv");
+
+        try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(file), "UTF-8"))) {
+            // UTF-8 BOM（讓 Excel 正確識別中文）
+            pw.print('\uFEFF');
+            DefaultTableModel model = (DefaultTableModel) table.getModel();
+            // 標題列
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < model.getColumnCount(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(escapeCsv(model.getColumnName(i)));
+            }
+            pw.println(sb);
+            // 資料列
+            for (int row : rows) {
+                sb = new StringBuilder();
+                for (int col = 0; col < model.getColumnCount(); col++) {
+                    if (col > 0) sb.append(',');
+                    Object v = model.getValueAt(row, col);
+                    sb.append(escapeCsv(v != null ? v.toString() : ""));
+                }
+                pw.println(sb);
+            }
+            JOptionPane.showMessageDialog(this,
+                    "已成功導出 " + rows.length + " 筆記錄到：\n" + file.getAbsolutePath(),
+                    "導出成功", JOptionPane.INFORMATION_MESSAGE);
+        } catch (Exception e) {
+            logger.error("CSV 導出失敗: " + e.getMessage(), "EXPORT");
+            JOptionPane.showMessageDialog(this, "導出失敗：" + e.getMessage(), "錯誤", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private static String escapeCsv(String value) {
+        if (value.contains(",") || value.contains("\"") || value.contains("\n")) {
+            return "\"" + value.replace("\"", "\"\"") + "\"";
+        }
+        return value;
+    }
+
+    // ─── 輔助：解析數值（容錯） ───────────────────────────────
+    private double parseDoubleOrZero(Object v) {
+        try {
+            return Double.parseDouble(String.valueOf(v).replace("%", "").replace("ms", "").trim());
+        } catch (Exception e) { return 0.0; }
+    }
+
+    // ─── 輔助：分析結果對話框 ────────────────────────────────
+    private void showAnalysisDialog(String title, String content) {
+        JDialog dialog = new JDialog(this, title, false);
+        dialog.setSize(540, 420);
+        dialog.setLocationRelativeTo(this);
+
+        JTextArea area = new JTextArea(content);
+        area.setEditable(false);
+        area.setFont(new Font("Monospaced", Font.PLAIN, 13));
+        area.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
+
+        JButton copyBtn = new JButton("複製到剪貼板");
+        copyBtn.addActionListener(e -> {
+            java.awt.datatransfer.StringSelection ss = new java.awt.datatransfer.StringSelection(content);
+            java.awt.Toolkit.getDefaultToolkit().getSystemClipboard().setContents(ss, null);
+            JOptionPane.showMessageDialog(dialog, "已複製", "成功", JOptionPane.INFORMATION_MESSAGE);
+        });
+        JButton closeBtn = new JButton("關閉");
+        closeBtn.addActionListener(e -> dialog.dispose());
+
+        JPanel btnPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
+        btnPanel.add(copyBtn);
+        btnPanel.add(closeBtn);
+
+        dialog.add(new JScrollPane(area), BorderLayout.CENTER);
+        dialog.add(btnPanel, BorderLayout.SOUTH);
+        dialog.setVisible(true);
     }
 
     /**

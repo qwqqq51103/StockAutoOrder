@@ -108,6 +108,32 @@ public class OrderBookTable {
         try { return Integer.parseInt(String.valueOf(v)); } catch (Exception e) { return 0; }
     }
 
+    /**
+     * [UX] 套用 RowFilter 搜尋（regex 不分大小寫）
+     */
+    @SuppressWarnings("unchecked")
+    public void setFilter(String query) {
+        TableRowSorter<OrderBookTableModel> sorter =
+                (TableRowSorter<OrderBookTableModel>) table.getRowSorter();
+        if (sorter == null) return;
+        if (query == null || query.trim().isEmpty()) {
+            sorter.setRowFilter(null);
+        } else {
+            try {
+                sorter.setRowFilter(RowFilter.regexFilter("(?i)" + java.util.regex.Pattern.quote(query.trim())));
+            } catch (Exception e) {
+                sorter.setRowFilter(null);
+            }
+        }
+    }
+
+    /**
+     * [UX] 直接存取 model 中指定列的整數值（供外部安全取用，不繞道 scrollPane）
+     */
+    public int getModelValueAt(int row, int col) {
+        try { return safeInt(model.getValueAt(row, col)); } catch (Exception e) { return 0; }
+    }
+
     // ===================== Model =====================
 
     private static class OrderBookTableModel extends AbstractTableModel {

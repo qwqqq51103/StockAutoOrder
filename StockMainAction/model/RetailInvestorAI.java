@@ -1248,10 +1248,10 @@ public class RetailInvestorAI implements Trader {
             // 10% 機率使用FOK訂單
             boolean success = orderBook.submitFokBuyOrder(finalPrice, amount, this);
             if (success) {
-                System.out.println("提交FOK買單成功: " + amount + "股，價格 " + finalPrice);
+                logger.info("提交FOK買單成功：" + amount + " 股，價格 " + finalPrice, "RETAIL_INVESTOR_DECISION");
                 return amount;
             } else {
-                System.out.println("提交FOK買單失敗: 無法完全滿足");
+                logger.info("提交FOK買單失敗：無法完全滿足，quantity=" + amount, "RETAIL_INVESTOR_DECISION");
                 return 0;
             }
         } else {
@@ -1445,10 +1445,10 @@ public class RetailInvestorAI implements Trader {
             // 10% 機率使用FOK訂單
             boolean success = orderBook.submitFokSellOrder(finalPrice, amount, this);
             if (success) {
-                System.out.println("提交FOK賣單成功: " + amount + "股，價格 " + finalPrice);
+                logger.info("提交FOK賣單成功：" + amount + " 股，價格 " + finalPrice, "RETAIL_INVESTOR_DECISION");
                 return amount;
             } else {
-                System.out.println("提交FOK賣單失敗: 無法完全滿足");
+                logger.info("提交FOK賣單失敗：無法完全滿足，quantity=" + amount, "RETAIL_INVESTOR_DECISION");
                 return 0;
             }
         } else {
@@ -1480,7 +1480,7 @@ public class RetailInvestorAI implements Trader {
                     hold
             );
 
-            System.out.println("AI限價賣出操作：" + message);
+            logger.info("AI限價賣出操作：" + message, "RETAIL_INVESTOR_DECISION");
 
             String inputPrice = JOptionPane.showInputDialog(null, message, decimalFormat.format(suggestedPrice));
 

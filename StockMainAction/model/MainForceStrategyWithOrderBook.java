@@ -18,6 +18,7 @@ import java.util.Arrays;
 import StockMainAction.model.core.Transaction;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -34,6 +35,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private UserAccount account;        // 主力的 UserAccount
     private int initStock = 0;
     private StockMarketModel model;
+    private double peakTotalAssets = -1.0; // 風險回撤計算用
 
     // 目標價的期望利潤率（例如 50%）
     private static final double EXPECTED_PROFIT_MARGIN = 0.5;
@@ -61,11 +63,11 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private int phaseTicks = 0;          // 當前階段已持續的時間步
     private int cooldownTicks = 0;       // 行動冷卻，避免每步都大量出手
 
-    // 每階段最短/最長持續時間（以 time step 計）
-    private static final int ACCUMULATE_MIN = 50, ACCUMULATE_MAX = 400;
-    private static final int MARKUP_MIN = 20, MARKUP_MAX = 150;
-    private static final int DISTRIBUTE_MIN = 30, DISTRIBUTE_MAX = 300;
-    private static final int WASH_MIN = 10, WASH_MAX = 100;
+    // 每階段最短/最長持續時間（以 time step 計）- 可由 UI 調整
+    private int accumulateMinTicks = 50, accumulateMaxTicks = 400;
+    private int markupMinTicks = 20, markupMaxTicks = 150;
+    private int distributeMinTicks = 30, distributeMaxTicks = 300;
+    private int washMinTicks = 10, washMaxTicks = 100;
 
     // 撤單統計與參數化的撤換間隔
     private int replaceIntervalTicks = 10;
@@ -74,20 +76,20 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
     private int getMinTicksForPhase(Phase p) {
         switch (p) {
-            case 吸籌: return ACCUMULATE_MIN;
-            case 拉抬: return MARKUP_MIN;
-            case 出貨: return DISTRIBUTE_MIN;
-            case 洗盤: return WASH_MIN;
+            case 吸籌: return accumulateMinTicks;
+            case 拉抬: return markupMinTicks;
+            case 出貨: return distributeMinTicks;
+            case 洗盤: return washMinTicks;
             default: return 0;
         }
     }
 
     private int getMaxTicksForPhase(Phase p) {
         switch (p) {
-            case 吸籌: return ACCUMULATE_MAX;
-            case 拉抬: return MARKUP_MAX;
-            case 出貨: return DISTRIBUTE_MAX;
-            case 洗盤: return WASH_MAX;
+            case 吸籌: return accumulateMaxTicks;
+            case 拉抬: return markupMaxTicks;
+            case 出貨: return distributeMaxTicks;
+            case 洗盤: return washMaxTicks;
             default: return Integer.MAX_VALUE;
         }
     }
@@ -105,11 +107,158 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private boolean manualLock = false;
     private Phase manualPhase = Phase.待機;
     
-    // 訂單管理相關
+    // 訂單管理相關（可由 UI 調整）
     private Map<String, Long> orderCreationTime = new HashMap<>();
     private int orderManagementCounter = 0;
-    private static final int ORDER_MANAGEMENT_INTERVAL = 20; // 每20個週期檢查一次
-    private static final long MAX_ORDER_AGE_MS = 300000; // 5分鐘
+    private int orderManagementIntervalTicks = 20; // 每 N 個週期檢查一次
+
+    // 訂單管理限制（可由 UI 調整）
+    private double maxDeviationIdle = 0.05;
+    private double maxDeviationAccumulate = 0.08;
+    private double maxDeviationMarkup = 0.15;
+    private double maxDeviationDistribute = 0.12;
+    private double maxDeviationWash = 0.10;
+    private long maxAgeIdleMs = 900000;
+    private long maxAgeAccumulateMs = 600000;
+    private long maxAgeMarkupMs = 180000;
+    private long maxAgeDistributeMs = 240000;
+    private long maxAgeWashMs = 300000;
+    private double markupCancelBuyBelowRatio = 0.92;
+    private double markupCancelSellAboveRatio = 1.15;
+    private double distributeCancelSellAboveRatio = 1.08;
+    private double washCancelBuyBelowRatio = 0.85;
+    private double washCancelSellAboveRatio = 1.20;
+    // 風險模型參數（可由 UI 調整）
+    private double riskExposureWeight = 0.35;
+    private double riskUnrealizedWeight = 0.25;
+    private double riskDrawdownWeight = 0.20;
+    private double riskVolatilityWeight = 0.15;
+    private double riskTrendWeight = 0.05;
+    private double riskUnrealizedLossFull = 0.12;
+    private double riskDrawdownFull = 0.20;
+    private double riskVolatilityFull = 0.06;
+    private double riskTrendDownFull = 0.05;
+    private double riskProfitReliefMax = 0.12;
+    private double riskProfitReliefSlope = 0.40;
+
+    /**
+     * 主力參數快照 DTO。
+     * captureFrom / applyTo 方法集中管理欄位同步，新增欄位時只需在此類修改一處。
+     * 靜態巢狀類可存取外部類的 private 成員（Java 規範 JLS §6.6.1）。
+     */
+    public static class MainForceLimitConfig {
+        public int accumulateMinTicks, accumulateMaxTicks;
+        public int markupMinTicks, markupMaxTicks;
+        public int distributeMinTicks, distributeMaxTicks;
+        public int washMinTicks, washMaxTicks;
+        public int replaceIntervalTicks;
+        public int orderManagementIntervalTicks;
+        public double maxDeviationIdle, maxDeviationAccumulate, maxDeviationMarkup, maxDeviationDistribute, maxDeviationWash;
+        public long maxAgeIdleMs, maxAgeAccumulateMs, maxAgeMarkupMs, maxAgeDistributeMs, maxAgeWashMs;
+        public double markupCancelBuyBelowRatio, markupCancelSellAboveRatio, distributeCancelSellAboveRatio, washCancelBuyBelowRatio, washCancelSellAboveRatio;
+        public double riskExposureWeight, riskUnrealizedWeight, riskDrawdownWeight, riskVolatilityWeight, riskTrendWeight;
+        public double riskUnrealizedLossFull, riskDrawdownFull, riskVolatilityFull, riskTrendDownFull;
+        public double riskProfitReliefMax, riskProfitReliefSlope;
+
+        /** 從策略實例抓取當前所有參數快照 */
+        public MainForceLimitConfig captureFrom(MainForceStrategyWithOrderBook src) {
+            accumulateMinTicks = src.accumulateMinTicks;
+            accumulateMaxTicks = src.accumulateMaxTicks;
+            markupMinTicks = src.markupMinTicks;
+            markupMaxTicks = src.markupMaxTicks;
+            distributeMinTicks = src.distributeMinTicks;
+            distributeMaxTicks = src.distributeMaxTicks;
+            washMinTicks = src.washMinTicks;
+            washMaxTicks = src.washMaxTicks;
+            replaceIntervalTicks = src.replaceIntervalTicks;
+            orderManagementIntervalTicks = src.orderManagementIntervalTicks;
+            maxDeviationIdle = src.maxDeviationIdle;
+            maxDeviationAccumulate = src.maxDeviationAccumulate;
+            maxDeviationMarkup = src.maxDeviationMarkup;
+            maxDeviationDistribute = src.maxDeviationDistribute;
+            maxDeviationWash = src.maxDeviationWash;
+            maxAgeIdleMs = src.maxAgeIdleMs;
+            maxAgeAccumulateMs = src.maxAgeAccumulateMs;
+            maxAgeMarkupMs = src.maxAgeMarkupMs;
+            maxAgeDistributeMs = src.maxAgeDistributeMs;
+            maxAgeWashMs = src.maxAgeWashMs;
+            markupCancelBuyBelowRatio = src.markupCancelBuyBelowRatio;
+            markupCancelSellAboveRatio = src.markupCancelSellAboveRatio;
+            distributeCancelSellAboveRatio = src.distributeCancelSellAboveRatio;
+            washCancelBuyBelowRatio = src.washCancelBuyBelowRatio;
+            washCancelSellAboveRatio = src.washCancelSellAboveRatio;
+            riskExposureWeight = src.riskExposureWeight;
+            riskUnrealizedWeight = src.riskUnrealizedWeight;
+            riskDrawdownWeight = src.riskDrawdownWeight;
+            riskVolatilityWeight = src.riskVolatilityWeight;
+            riskTrendWeight = src.riskTrendWeight;
+            riskUnrealizedLossFull = src.riskUnrealizedLossFull;
+            riskDrawdownFull = src.riskDrawdownFull;
+            riskVolatilityFull = src.riskVolatilityFull;
+            riskTrendDownFull = src.riskTrendDownFull;
+            riskProfitReliefMax = src.riskProfitReliefMax;
+            riskProfitReliefSlope = src.riskProfitReliefSlope;
+            return this;
+        }
+
+        /** 將快照參數（含邊界驗證）套用回策略實例 */
+        public void applyTo(MainForceStrategyWithOrderBook dst) {
+            dst.accumulateMinTicks = Math.max(1, accumulateMinTicks);
+            dst.accumulateMaxTicks = Math.max(dst.accumulateMinTicks, accumulateMaxTicks);
+            dst.markupMinTicks = Math.max(1, markupMinTicks);
+            dst.markupMaxTicks = Math.max(dst.markupMinTicks, markupMaxTicks);
+            dst.distributeMinTicks = Math.max(1, distributeMinTicks);
+            dst.distributeMaxTicks = Math.max(dst.distributeMinTicks, distributeMaxTicks);
+            dst.washMinTicks = Math.max(1, washMinTicks);
+            dst.washMaxTicks = Math.max(dst.washMinTicks, washMaxTicks);
+            dst.setReplaceIntervalTicks(replaceIntervalTicks);
+            dst.orderManagementIntervalTicks = Math.max(1, orderManagementIntervalTicks);
+            dst.maxDeviationIdle = clamp(maxDeviationIdle, 0.0, 0.5);
+            dst.maxDeviationAccumulate = clamp(maxDeviationAccumulate, 0.0, 0.5);
+            dst.maxDeviationMarkup = clamp(maxDeviationMarkup, 0.0, 0.5);
+            dst.maxDeviationDistribute = clamp(maxDeviationDistribute, 0.0, 0.5);
+            dst.maxDeviationWash = clamp(maxDeviationWash, 0.0, 0.5);
+            dst.maxAgeIdleMs = Math.max(1000L, maxAgeIdleMs);
+            dst.maxAgeAccumulateMs = Math.max(1000L, maxAgeAccumulateMs);
+            dst.maxAgeMarkupMs = Math.max(1000L, maxAgeMarkupMs);
+            dst.maxAgeDistributeMs = Math.max(1000L, maxAgeDistributeMs);
+            dst.maxAgeWashMs = Math.max(1000L, maxAgeWashMs);
+            dst.markupCancelBuyBelowRatio = clamp(markupCancelBuyBelowRatio, 0.5, 1.5);
+            dst.markupCancelSellAboveRatio = clamp(markupCancelSellAboveRatio, 0.5, 2.0);
+            dst.distributeCancelSellAboveRatio = clamp(distributeCancelSellAboveRatio, 0.5, 2.0);
+            dst.washCancelBuyBelowRatio = clamp(washCancelBuyBelowRatio, 0.5, 1.5);
+            dst.washCancelSellAboveRatio = clamp(washCancelSellAboveRatio, 0.5, 2.0);
+            dst.riskExposureWeight = clamp(riskExposureWeight, 0.0, 1.0);
+            dst.riskUnrealizedWeight = clamp(riskUnrealizedWeight, 0.0, 1.0);
+            dst.riskDrawdownWeight = clamp(riskDrawdownWeight, 0.0, 1.0);
+            dst.riskVolatilityWeight = clamp(riskVolatilityWeight, 0.0, 1.0);
+            dst.riskTrendWeight = clamp(riskTrendWeight, 0.0, 1.0);
+            dst.riskUnrealizedLossFull = clamp(riskUnrealizedLossFull, 0.01, 1.0);
+            dst.riskDrawdownFull = clamp(riskDrawdownFull, 0.01, 1.0);
+            dst.riskVolatilityFull = clamp(riskVolatilityFull, 0.005, 1.0);
+            dst.riskTrendDownFull = clamp(riskTrendDownFull, 0.005, 1.0);
+            dst.riskProfitReliefMax = clamp(riskProfitReliefMax, 0.0, 1.0);
+            dst.riskProfitReliefSlope = clamp(riskProfitReliefSlope, 0.0, 2.0);
+        }
+
+        private static double clamp(double v, double lo, double hi) {
+            return Math.max(lo, Math.min(hi, v));
+        }
+    }
+
+    /** 取得當前參數快照（供 UI 讀取） */
+    public MainForceLimitConfig getLimitConfig() {
+        return new MainForceLimitConfig().captureFrom(this);
+    }
+
+    /** 套用 UI 傳入的參數快照（含邊界驗證） */
+    public void applyLimitConfig(MainForceLimitConfig c) {
+        if (c != null) c.applyTo(this);
+    }
+
+    private static double clamp(double v, double lo, double hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
 
     public void setManualPhase(String phaseName, boolean lock) {
         try {
@@ -145,7 +294,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     try {
                         p = Phase.valueOf(phaseName);
                     } catch (Exception e) {
-                        System.out.println("無法識別的階段名稱: " + phaseName + "，保持當前階段");
+                        logger.warn("無法識別的階段名稱: " + phaseName + "，保持當前階段", "MAIN_FORCE_PHASE");
                         return;
                     }
                     break;
@@ -156,13 +305,12 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 this.phase = p;
                 this.phaseTicks = 0;
                 LogicAudit.info("MAIN_FORCE_PHASE", "manual lock -> " + p.name());
-                System.out.println(String.format("[主力手動控制] 階段已鎖定為：%s (來源：%s)", p.name(), phaseName));
+                logger.info(String.format("[主力手動控制] 階段已鎖定為：%s (來源：%s)", p.name(), phaseName), "MAIN_FORCE_PHASE");
             } else {
-                System.out.println(String.format("[主力手動控制] 設定手動階段為：%s (未鎖定，來源：%s)", p.name(), phaseName));
+                logger.info(String.format("[主力手動控制] 設定手動階段為：%s (未鎖定，來源：%s)", p.name(), phaseName), "MAIN_FORCE_PHASE");
             }
         } catch (Exception e) {
-            System.err.println("設定主力手動階段時發生錯誤：" + e.getMessage());
-            e.printStackTrace();
+            logger.error("設定主力手動階段時發生錯誤：" + e.getMessage(), "MAIN_FORCE_PHASE");
         }
     }
 
@@ -229,8 +377,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             averageCostPrice = totalInvestment / getAccumulatedStocks();
             // 更新目標價
             calculateTargetPrice();
-            System.out.println(String.format("【限價買入後更新】主力買入 %d 股，成交價 %.2f，更新後平均成本價 %.2f",
-                    volume, price, averageCostPrice));
+            logger.info(String.format("【限價買入後更新】主力買入 %d 股，成交價 %.2f，更新後平均成本價 %.2f",
+                    volume, price, averageCostPrice), "TRANSACTION_UPDATE");
         } else if ("sell".equals(type)) {
             // 限價單賣出：增加現金
             account.incrementFunds(transactionAmount);
@@ -238,8 +386,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
             }
-            System.out.println(String.format("【限價賣出後更新】主力賣出 %d 股，成交價 %.2f，更新後持股 %d 股",
-                    volume, price, getAccumulatedStocks()));
+            logger.info(String.format("【限價賣出後更新】主力賣出 %d 股，成交價 %.2f，更新後持股 %d 股",
+                    volume, price, getAccumulatedStocks()), "TRANSACTION_UPDATE");
         }
 
         // 更新界面上的標籤
@@ -275,8 +423,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             averageCostPrice = totalInvestment / getAccumulatedStocks();
 
             calculateTargetPrice();
-            System.out.println(String.format("【市價買入後更新】主力買入 %d 股，成交價 %.2f，更新後平均成本價 %.2f",
-                    volume, price, averageCostPrice));
+            logger.info(String.format("【市價買入後更新】主力買入 %d 股，成交價 %.2f，更新後平均成本價 %.2f",
+                    volume, price, averageCostPrice), "TRANSACTION_UPDATE");
 
         } else if ("sell".equals(type)) {
             // 扣股並加款
@@ -286,8 +434,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
             }
-            System.out.println(String.format("【市價賣出後更新】主力賣出 %d 股，成交價 %.2f，更新後持股 %d 股",
-                    volume, price, getAccumulatedStocks()));
+            logger.info(String.format("【市價賣出後更新】主力賣出 %d 股，成交價 %.2f，更新後持股 %d 股",
+                    volume, price, getAccumulatedStocks()), "TRANSACTION_UPDATE");
         }
 
         if (model != null) {
@@ -303,7 +451,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
     public void makeDecision() {
         // 定期執行訂單管理
         orderManagementCounter++;
-        if (orderManagementCounter >= ORDER_MANAGEMENT_INTERVAL) {
+        if (orderManagementCounter >= Math.max(1, orderManagementIntervalTicks)) {
             orderManagementCounter = 0;
             manageOutdatedOrders();
         }
@@ -416,6 +564,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 }
 
                 // ====== 主力階段行為 ======
+                // phaseActed：若階段機本 tick 已執行交易，則跳過下方機率策略區，避免雙路徑疊加
+                boolean phaseActed = false;
                 if (cooldownTicks == 0) {
                     switch (phase) {
                         case 吸籌: {
@@ -457,6 +607,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             } catch (Exception ignore) {}
                             decisionLog.append(String.format("【ACCUMULATE】分層吸籌下單共 %d 股\n", placed));
                             cooldownTicks = 2;
+                            phaseActed = true;
                             break;
                         }
                         case 拉抬: {
@@ -480,12 +631,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             // 撤掉靠近買一之上的賣單（減少上方阻力）
                             try {
                                 if (!orderBook.getSellOrders().isEmpty()) {
-                                    // 找到最靠近現價的前幾筆賣單撤掉
                                     int maxCancel = Math.min(3, orderBook.getSellOrders().size());
                                     for (int i = 0; i < maxCancel; i++) {
                                         Order so = orderBook.getSellOrders().get(i);
-                                        // 重要：主力不應該撤掉「其他交易者」的掛單（例如 PERSONAL）
-                                        // 這裡只允許主力撤自己的賣單，避免誤傷用戶掛單
+                                        // 只允許主力撤自己的賣單，避免誤傷用戶掛單
                                         if (so != null && so.getTrader() == this && so.getPrice() <= currentPrice * 1.01) {
                                             boolean ok = orderBook.cancelOrder(so.getId());
                                             if (ok) {
@@ -497,6 +646,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                 }
                             } catch (Exception ignore) { }
                             cooldownTicks = 1;
+                            phaseActed = true;
                             break;
                         }
                         case 出貨: {
@@ -541,6 +691,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                 } catch (Exception ignore) {}
                                 decisionLog.append(String.format("【DISTRIBUTE】分層出貨下單共 %d 股\n", placed));
                                 cooldownTicks = 2;
+                                phaseActed = true;
                             }
                             break;
                         }
@@ -550,6 +701,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             洗盤操作(wash);
                             decisionLog.append(String.format("【WASH】洗盤賣出 %d 股\n", wash));
                             cooldownTicks = 2;
+                            phaseActed = true;
                             break;
                         }
                         case 待機:
@@ -559,147 +711,119 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                 吸籌操作(30);
                                 decisionLog.append("【IDLE】偵測性吸籌 30 股\n");
                                 cooldownTicks = 3;
+                                phaseActed = true;
                             }
                             break;
                     }
                 }
 
-                // 1. 動量交易策略（追漲買入） — 台股撮合固定模式下，僅決定下單類型（不再依撮合模式分歧）
-                if (actionProbability < 0.1 && currentPrice > sma && volatility > 0.02) {
-                    int momentumVolume = calculateMomentumVolume(volatility);
-
-                    // 台股：追漲用市價（或靠檔限價），此處沿用既有「拉抬操作」的門檻化邏輯
-                    decisionLog.append("【動量交易-追漲】");
-                    拉抬操作(momentumVolume);
+                // 機率策略區（動量/均值回歸/價值投資等）：
+                // 用 !phaseActed 整體保護，確保階段機已行動的 tick 不再疊加機率策略
+                if (!phaseActed) {
+                    // 1. 動量交易策略（追漲買入）
+                    if (actionProbability < 0.1 && currentPrice > sma && volatility > 0.02) {
+                        int momentumVolume = calculateMomentumVolume(volatility);
+                        decisionLog.append("【動量交易-追漲】");
+                        拉抬操作(momentumVolume);
 
                     // 2. 均值回歸策略
-                } else if (actionProbability < 0.15 && Math.abs(priceDifferenceRatio) > 0.1) {
-                    if (priceDifferenceRatio > 0) {
-                        // 股價高於均線一定幅度 -> 逢高賣出
-                        int revertSellVolume = calculateRevertSellVolume(priceDifferenceRatio);
-
-                        // 根據偏離程度決定使用哪種訂單類型
-                        if (priceDifferenceRatio > 0.2) {
-                            // 極度偏離，使用市價單快速賣出
-                            decisionLog.append("【均值回歸-市價賣出】極度高於均線");
-                            市價賣出操作(revertSellVolume);
+                    } else if (actionProbability < 0.15 && Math.abs(priceDifferenceRatio) > 0.1) {
+                        if (priceDifferenceRatio > 0) {
+                            int revertSellVolume = calculateRevertSellVolume(priceDifferenceRatio);
+                            if (priceDifferenceRatio > 0.2) {
+                                decisionLog.append("【均值回歸-市價賣出】極度高於均線");
+                                市價賣出操作(revertSellVolume);
+                            } else {
+                                decisionLog.append("【均值回歸-限價賣出】高於均線");
+                                賣出操作(revertSellVolume);
+                            }
                         } else {
-                            // 台股固定撮合：是否用 FOK 取決於你的策略需求；此處保留原本的限價賣出較貼近實務
-                            decisionLog.append("【均值回歸-限價賣出】高於均線");
-                            賣出操作(revertSellVolume);
+                            int revertBuyVolume = calculateRevertBuyVolume(priceDifferenceRatio);
+                            decisionLog.append("【均值回歸-限價買入】低於均線");
+                            吸籌操作(revertBuyVolume);
                         }
-                    } else {
-                        // 股價低於均線一定幅度 -> 逢低買入
-                        int revertBuyVolume = calculateRevertBuyVolume(priceDifferenceRatio);
-
-                        // 根據偏離程度和撮合模式決定訂單類型
-                        // 台股固定撮合：極度偏離時可用 FOK，但更常見是分批限價低接
-                        decisionLog.append("【均值回歸-限價買入】低於均線");
-                        吸籌操作(revertBuyVolume);
-                    }
 
                     // 3. 價值投資策略（低估買入）
-                } else if (currentPrice < sma * 0.9 && actionProbability < 0.2) {
-                    int valueBuyVolume = calculateValueBuyVolume();
-
-                    // 根據價格趨勢選擇訂單類型
-                    if (recentTrend < -0.05) {
-                        // 下跌趨勢明顯，謹慎買入，使用少量的FOK單
-                        int reducedVolume = valueBuyVolume / 3;
-                        decisionLog.append("【價值投資-謹慎FOK買入】下跌趨勢中");
-                        精確控制買入操作(reducedVolume, currentPrice * 0.98);
-                    } else {
-                        // 常規情況，使用限價單
-                        decisionLog.append("【價值投資-限價買入】價格低估");
-                        吸籌操作(valueBuyVolume);
-                    }
+                    } else if (currentPrice < sma * 0.9 && actionProbability < 0.2) {
+                        int valueBuyVolume = calculateValueBuyVolume();
+                        if (recentTrend < -0.05) {
+                            decisionLog.append("【價值投資-謹慎FOK買入】下跌趨勢中");
+                            精確控制買入操作(valueBuyVolume / 3, currentPrice * 0.98);
+                        } else {
+                            decisionLog.append("【價值投資-限價買入】價格低估");
+                            吸籌操作(valueBuyVolume);
+                        }
 
                     // 4. 風險控制策略（風險過高時暫停操作）
-                } else if (riskFactor > 0.8) {
-                    decisionLog.append(String.format("【風險管控】風險係數 %.2f 過高，主力暫停操作", riskFactor));
-                    System.out.println(decisionLog.toString());
-                    return;
+                    } else if (riskFactor > 0.8) {
+                        decisionLog.append(String.format("【風險管控】風險係數 %.2f 過高，主力暫停操作", riskFactor));
+                        logger.info(decisionLog.toString(), "MAIN_FORCE_DECISION");
+                        return;
 
                     // 5. 市價拉抬（追蹤市場流動性）
-                } else if (actionProbability < 0.25 && availableFunds > currentPrice * 100) {
-                    int buyQuantity = calculateLiftVolume();
-
-                    // 根據撮合模式和波動性決定如何拉抬
-                    // 台股固定撮合：是否加大拉抬量僅看波動，不再依撮合模式分歧
-                    if (volatility > 0.03) {
-                        decisionLog.append("【強力拉抬】高波動環境");
-                        拉抬操作(buyQuantity * 2);
-                    } else {
-                        decisionLog.append("【常規拉抬】");
-                        拉抬操作(buyQuantity);
-                    }
+                    } else if (actionProbability < 0.25 && availableFunds > currentPrice * 100) {
+                        int buyQuantity = calculateLiftVolume();
+                        if (volatility > 0.03) {
+                            decisionLog.append("【強力拉抬】高波動環境");
+                            拉抬操作(buyQuantity * 2);
+                        } else {
+                            decisionLog.append("【常規拉抬】");
+                            拉抬操作(buyQuantity);
+                        }
 
                     // 6. 市價減倉（降低風險）
-                } else if (actionProbability < 0.3 && getAccumulatedStocks() > 0) {
-                    int sellQuantity = calculateSellVolume();
-
-                    // 根據RSI指標決定減倉方式
-                    if (rsi > 70) {
-                        // RSI高，超買狀態，大量減倉
-                        decisionLog.append("【超買減倉-市價賣出】RSI過高");
-                        市價賣出操作(sellQuantity * 2);
-                    } else {
-                        // 常規減倉
-                        decisionLog.append("【常規減倉-市價賣出】");
-                        市價賣出操作(sellQuantity);
-                    }
-
-                    // 7. 高風險行為：洗盤
-                } else if (actionProbability < 0.35 && getAccumulatedStocks() > 200) {
-                    int washVolume = calculateWashVolume(volatility);
-
-                    // 根據當前撮合模式選擇洗盤策略
-                    // 台股固定撮合：洗盤量不再依撮合模式分歧
-                    decisionLog.append("【常規洗盤】");
-                    洗盤操作(washVolume);
-
-                    // 8. 隨機取消掛單
-                } else if (actionProbability < 0.4) {
-                    if (!orderBook.getBuyOrders().isEmpty()) {
-                        Order orderToCancel = orderBook.getBuyOrders().get(0);
-                        //orderBook.cancelOrder(orderToCancel.getId());
-                        decisionLog.append(String.format("【隨機取消掛單】取消買單 ID: %s，數量: %d 股",
-                                orderToCancel.getId(), orderToCancel.getVolume()));
-                    }
-
-                    // 9. 新增：目標價附近的精確控制（確保利潤）
-                } else if (actionProbability < 0.45 && getTargetPrice() > 0
-                        && Math.abs(currentPrice - getTargetPrice()) / getTargetPrice() < 0.05) {
-
-                    // 接近目標價，精確控制持倉
-                    if (currentPrice >= getTargetPrice()) {
-                        // 已達目標價，開始獲利了結
-                        int profitVolume = (int) (getAccumulatedStocks() * 0.3); // 賣出30%持股
-                        if (profitVolume > 0) {
-                            decisionLog.append("【獲利了結-FOK賣出】已達目標價");
-                            精確控制賣出操作(profitVolume, currentPrice);
+                    } else if (actionProbability < 0.3 && getAccumulatedStocks() > 0) {
+                        int sellQuantity = calculateSellVolume();
+                        if (rsi > 70) {
+                            decisionLog.append("【超買減倉-市價賣出】RSI過高");
+                            市價賣出操作(sellQuantity * 2);
+                        } else {
+                            decisionLog.append("【常規減倉-市價賣出】");
+                            市價賣出操作(sellQuantity);
                         }
-                    } else {
-                        // 接近但未達目標價，可能再加碼一些
-                        int topupVolume = calculateValueBuyVolume() / 4; // 小量加碼
-                        if (topupVolume > 0 && availableFunds > currentPrice * topupVolume) {
-                            decisionLog.append("【目標布局-FOK買入】接近目標價");
-                            精確控制買入操作(topupVolume, currentPrice);
-                        }
-                    }
 
-                    // 10. 新增：撮合模式特殊策略
-                } else if (actionProbability < 0.5) {
-                    // 台股固定撮合：保留一個「常規策略」分支即可
-                    if (availableFunds > currentPrice * 100 && getAccumulatedStocks() < 500) {
-                        decisionLog.append("【常規策略】常規買入");
-                        吸籌操作(100);
+                    // 7. 洗盤
+                    } else if (actionProbability < 0.35 && getAccumulatedStocks() > 200) {
+                        decisionLog.append("【常規洗盤】");
+                        洗盤操作(calculateWashVolume(volatility));
+
+                    // 8. 隨機取消掛單（log only，實際 cancel 已注解）
+                    } else if (actionProbability < 0.4) {
+                        if (!orderBook.getBuyOrders().isEmpty()) {
+                            Order orderToCancel = orderBook.getBuyOrders().get(0);
+                            decisionLog.append(String.format("【隨機取消掛單】取消買單 ID: %s，數量: %d 股",
+                                    orderToCancel.getId(), orderToCancel.getVolume()));
+                        }
+
+                    // 9. 目標價附近精確控制
+                    } else if (actionProbability < 0.45 && getTargetPrice() > 0
+                            && Math.abs(currentPrice - getTargetPrice()) / getTargetPrice() < 0.05) {
+                        if (currentPrice >= getTargetPrice()) {
+                            int profitVolume = (int) (getAccumulatedStocks() * 0.3);
+                            if (profitVolume > 0) {
+                                decisionLog.append("【獲利了結-FOK賣出】已達目標價");
+                                精確控制賣出操作(profitVolume, currentPrice);
+                            }
+                        } else {
+                            int topupVolume = calculateValueBuyVolume() / 4;
+                            if (topupVolume > 0 && availableFunds > currentPrice * topupVolume) {
+                                decisionLog.append("【目標布局-FOK買入】接近目標價");
+                                精確控制買入操作(topupVolume, currentPrice);
+                            }
+                        }
+
+                    // 10. 常規補倉
+                    } else if (actionProbability < 0.5) {
+                        if (availableFunds > currentPrice * 100 && getAccumulatedStocks() < 500) {
+                            decisionLog.append("【常規策略】常規買入");
+                            吸籌操作(100);
+                        }
                     }
                 }
 
                 // 輸出決策日誌
                 if (decisionLog.length() > 0) {
-                    System.out.println(decisionLog.toString());
+                    logger.debug(decisionLog.toString(), "MAIN_FORCE_DECISION");
                 }
 
             } else {
@@ -1184,8 +1308,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     public int calculateRevertSellVolume(double priceDifferenceRatio) {
         int volume = (int) (getAccumulatedStocks() * priceDifferenceRatio * (0.5 + random.nextDouble() * 0.5));
-        volume = Math.min(volume, getAccumulatedStocks()); // 不可超過持股數
-        System.out.println(String.format("【計算均值回歸賣出量】建議賣出 %d 股 (價格差異比例 %.2f)", volume, priceDifferenceRatio));
+        volume = Math.min(volume, getAccumulatedStocks());
+        logger.debug(String.format("【計算均值回歸賣出量】建議賣出 %d 股 (價格差異比例 %.2f)", volume, priceDifferenceRatio), "MAIN_FORCE_CALC");
         return volume;
     }
 
@@ -1200,8 +1324,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double currentPrice = stock.getPrice();
         int maxAffordable = (int) (funds / currentPrice);
         int volume = (int) (maxAffordable * -priceDifferenceRatio * (0.5 + random.nextDouble() * 0.5));
-        System.out.println(String.format("【計算均值回歸買入量】建議買入 %d 股 (可用資金 %.2f, 價格差異 %.2f)",
-                volume, funds, priceDifferenceRatio));
+        logger.debug(String.format("【計算均值回歸買入量】建議買入 %d 股 (可用資金 %.2f, 價格差異 %.2f)",
+                volume, funds, priceDifferenceRatio), "MAIN_FORCE_CALC");
         return volume;
     }
 
@@ -1214,9 +1338,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
     public int calculateValueBuyVolume() {
         double funds = account.getAvailableFunds();
         double currentPrice = stock.getPrice();
-        int volume = (int) (funds / currentPrice * 0.5); // 資金的 50% 投入
-        System.out.println(String.format("【計算價值買入量】建議買入 %d 股 (資金 %.2f, 價格 %.2f)",
-                volume, funds, currentPrice));
+        int volume = (int) (funds / currentPrice * 0.5);
+        logger.debug(String.format("【計算價值買入量】建議買入 %d 股 (資金 %.2f, 價格 %.2f)",
+                volume, funds, currentPrice), "MAIN_FORCE_CALC");
         return volume;
     }
 
@@ -1252,7 +1376,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
         double ratio = 0.1 + 0.2 * random.nextDouble();
         int vol = (int) (hold * ratio);
         vol = Math.max(1, vol);
-        System.out.println(String.format("【計算市價賣出量】預計賣出 %d 股 (目前持股 %d)", vol, hold));
+        logger.debug(String.format("【計算市價賣出量】預計賣出 %d 股 (目前持股 %d)", vol, hold), "MAIN_FORCE_CALC");
         return vol;
     }
 
@@ -1299,12 +1423,68 @@ public class MainForceStrategyWithOrderBook implements Trader {
      * 計算風險係數
      */
     private double getRiskFactor() {
-        double totalAssets = account.getAvailableFunds() + stock.getPrice() * getAccumulatedStocks();
-        if (totalAssets <= 0) {
+        try {
+            double price = stock != null ? stock.getPrice() : 0.0;
+            int hold = Math.max(0, getAccumulatedStocks());
+            double cash = Math.max(0.0, account.getAvailableFunds());
+            double holdingValue = Math.max(0.0, price * hold);
+            double totalAssets = cash + holdingValue;
+            if (totalAssets <= 0.0) return 0.0;
+
+            // 1) 倉位曝險（滿倉時高，但不會單獨把風險推到 1）
+            double exposureRisk = clamp(holdingValue / totalAssets, 0.0, 1.0);
+
+            // 2) 浮虧風險（平均成本以下越深，風險越高；+12% 浮虧視為滿風險）
+            double unrealizedLossRisk = 0.0;
+            double unrealizedPnlRate = 0.0;
+            if (hold > 0 && averageCostPrice > 0.0) {
+                unrealizedPnlRate = (price - averageCostPrice) / averageCostPrice;
+                if (unrealizedPnlRate < 0.0) {
+                    unrealizedLossRisk = clamp((-unrealizedPnlRate) / Math.max(0.01, riskUnrealizedLossFull), 0.0, 1.0);
+                }
+            }
+
+            // 3) 回撤風險（相對歷史淨值峰值）
+            if (peakTotalAssets <= 0.0) peakTotalAssets = totalAssets;
+            peakTotalAssets = Math.max(peakTotalAssets, totalAssets);
+            double drawdownRisk = 0.0;
+            if (peakTotalAssets > 0.0) {
+                double dd = (peakTotalAssets - totalAssets) / peakTotalAssets;
+                drawdownRisk = clamp(dd / Math.max(0.01, riskDrawdownFull), 0.0, 1.0);
+            }
+
+            // 4) 波動風險（波動大時提高保守程度）
+            double vol = 0.0;
+            try {
+                if (model != null && model.getMarketAnalyzer() != null) {
+                    vol = Math.max(0.0, model.getMarketAnalyzer().calculateVolatility());
+                }
+            } catch (Exception ignore) {}
+            double volatilityRisk = clamp(vol / Math.max(0.005, riskVolatilityFull), 0.0, 1.0);
+
+            // 5) 下行趨勢風險（僅在持倉曝險高時加重）
+            double trendRisk = 0.0;
+            try {
+                if (model != null && model.getMarketAnalyzer() != null) {
+                    double trend = model.getMarketAnalyzer().getRecentPriceTrend();
+                    trendRisk = clamp((-trend) / Math.max(0.005, riskTrendDownFull), 0.0, 1.0) * exposureRisk;
+                }
+            } catch (Exception ignore) {}
+
+            double risk = riskExposureWeight * exposureRisk
+                    + riskUnrealizedWeight * unrealizedLossRisk
+                    + riskDrawdownWeight * drawdownRisk
+                    + riskVolatilityWeight * volatilityRisk
+                    + riskTrendWeight * trendRisk;
+
+            // 交易順風時給一點緩衝，避免「一滿倉就接近 1.0」
+            if (unrealizedPnlRate > 0.0) {
+                risk -= Math.min(riskProfitReliefMax, unrealizedPnlRate * riskProfitReliefSlope);
+            }
+            return clamp(risk, 0.0, 1.0);
+        } catch (Exception e) {
             return 0.0;
         }
-        double risk = 1 - (account.getAvailableFunds() / totalAssets);
-        return Math.max(0, Math.min(risk, 1));
     }
 
     // ===== 內外盤與 Tape 速度（簡化自模型交易記錄） =====
@@ -1377,7 +1557,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
     }
     
     /**
-     * 管理過時或不合理的訂單
+     * 管理過時或不合理的訂單，並同步清理已成交訂單的追蹤記錄，防止 orderCreationTime 無限增長。
      */
     private void manageOutdatedOrders() {
         if (orderBook == null || model == null) return;
@@ -1393,6 +1573,16 @@ public class MainForceStrategyWithOrderBook implements Trader {
         myOrders.addAll(orderBook.getSellOrders().stream()
             .filter(o -> o.getTrader() == this)
             .collect(Collectors.toList()));
+
+        // ── 清理已成交（從訂單簿消失）的追蹤記錄 ──────────────────────────
+        // 只保留目前仍存活於訂單簿的訂單 ID，避免「成交但未撤銷」的記錄無限累積
+        if (!orderCreationTime.isEmpty()) {
+            Set<String> activeIds = myOrders.stream()
+                .map(Order::getId)
+                .collect(Collectors.toSet());
+            orderCreationTime.keySet().retainAll(activeIds);
+        }
+        // ─────────────────────────────────────────────────────────────────
         
         for (Order order : myOrders) {
             boolean shouldCancel = false;
@@ -1418,11 +1608,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
             // 3. 與均線的關係（避免不利訂單）
             if (sma > 0) {
                 if (order.getType().equals("buy") && order.getPrice() > sma * 1.10) {
-                    // 買單價格高於均線10%太多
                     shouldCancel = true;
                     reason = "買單價格遠高於均線";
                 } else if (order.getType().equals("sell") && order.getPrice() < sma * 0.90) {
-                    // 賣單價格低於均線10%太多
                     shouldCancel = true;
                     reason = "賣單價格遠低於均線";
                 }
@@ -1438,10 +1626,10 @@ public class MainForceStrategyWithOrderBook implements Trader {
             if (shouldCancel) {
                 orderBook.cancelOrder(order.getId());
                 orderCreationTime.remove(order.getId());
-                System.out.println(String.format(
+                logger.info(String.format(
                     "[主力訂單管理] 取消%s訂單，價格=%.2f，原因=%s，階段=%s",
                     order.getType(), order.getPrice(), reason, phase.name()
-                ));
+                ), "ORDER_MANAGEMENT");
             }
         }
     }
@@ -1451,12 +1639,12 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     private double getMaxPriceDeviationForPhase() {
         switch (phase) {
-            case 吸籌: return 0.08; // 吸籌階段：8%
-            case 拉抬: return 0.15; // 拉抬階段：15%
-            case 出貨: return 0.12; // 出貨階段：12%
-            case 洗盤: return 0.10; // 洗盤階段：10%
-            case 待機: return 0.05; // 待機階段：5%
-            default: return 0.10;
+            case 吸籌: return maxDeviationAccumulate;
+            case 拉抬: return maxDeviationMarkup;
+            case 出貨: return maxDeviationDistribute;
+            case 洗盤: return maxDeviationWash;
+            case 待機: return maxDeviationIdle;
+            default: return maxDeviationIdle;
         }
     }
     
@@ -1465,12 +1653,12 @@ public class MainForceStrategyWithOrderBook implements Trader {
      */
     private long getMaxOrderAgeForPhase() {
         switch (phase) {
-            case 吸籌: return 600000; // 吸籌：10分鐘
-            case 拉抬: return 180000; // 拉抬：3分鐘（快速反應）
-            case 出貨: return 240000; // 出貨：4分鐘
-            case 洗盤: return 300000; // 洗盤：5分鐘
-            case 待機: return 900000; // 待機：15分鐘
-            default: return 300000;
+            case 吸籌: return maxAgeAccumulateMs;
+            case 拉抬: return maxAgeMarkupMs;
+            case 出貨: return maxAgeDistributeMs;
+            case 洗盤: return maxAgeWashMs;
+            case 待機: return maxAgeIdleMs;
+            default: return maxAgeIdleMs;
         }
     }
     
@@ -1485,27 +1673,27 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 break;
             case 拉抬:
                 // 拉抬階段：取消過低的買單和過高的賣單
-                if (order.getType().equals("buy") && order.getPrice() < currentPrice * 0.92) {
+                if (order.getType().equals("buy") && order.getPrice() < currentPrice * markupCancelBuyBelowRatio) {
                     return true;
                 }
-                if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.15) {
+                if (order.getType().equals("sell") && order.getPrice() > currentPrice * markupCancelSellAboveRatio) {
                     return true;
                 }
                 break;
                 
             case 出貨:
                 // 出貨階段：取消過高的賣單（需要快速出貨）
-                if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.08) {
+                if (order.getType().equals("sell") && order.getPrice() > currentPrice * distributeCancelSellAboveRatio) {
                     return true;
                 }
                 break;
                 
             case 洗盤:
                 // 洗盤階段：取消離譜的訂單
-                if (order.getType().equals("buy") && order.getPrice() < currentPrice * 0.85) {
+                if (order.getType().equals("buy") && order.getPrice() < currentPrice * washCancelBuyBelowRatio) {
                     return true;
                 }
-                if (order.getType().equals("sell") && order.getPrice() > currentPrice * 1.20) {
+                if (order.getType().equals("sell") && order.getPrice() > currentPrice * washCancelSellAboveRatio) {
                     return true;
                 }
                 break;

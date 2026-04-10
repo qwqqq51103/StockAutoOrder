@@ -5,6 +5,7 @@ import StockMainAction.MatchingEnginePanel;
 import StockMainAction.view.components.PriceAlertPanel;
 import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.view.components.QuickTradePanel;
+import StockMainAction.util.logging.MarketLogger;
 import javax.swing.*;
 import java.awt.*;
 
@@ -12,6 +13,8 @@ import java.awt.*;
  * 控制視圖 - 分頁式設計
  */
 public class ControlView extends JFrame {
+
+    private static final MarketLogger logger = MarketLogger.getInstance();
 
     // UI組件
     private JButton stopButton, limitBuyButton, limitSellButton;
@@ -41,6 +44,7 @@ public class ControlView extends JFrame {
         setTitle("股票市場模擬 - 控制視窗");
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         setSize(700, 750);
+        setMinimumSize(new Dimension(620, 650)); // [UX] 防止縮太小造成排版爆版
         setLocationRelativeTo(null);
 
         // 創建主面板
@@ -130,7 +134,7 @@ public class ControlView extends JFrame {
             try {
                 MainView.applyPerfMode(mode); // [PERF]
             } catch (Throwable t) {
-                System.err.println("applyPerfMode failed: " + t.getMessage());
+                logger.warn("applyPerfMode failed: " + t.getMessage(), "UI");
             }
         });
         panel.add(perfCombo);
@@ -326,32 +330,6 @@ public class ControlView extends JFrame {
     }
 
     /**
-     * 創建統一風格的交易按鈕
-     */
-    private JButton createTradeButton(String text, Color color) {
-        JButton button = new JButton(text);
-        button.setPreferredSize(new Dimension(150, 60));
-        button.setFont(new Font("Microsoft JhengHei", Font.BOLD, 16));
-        button.setBackground(color);
-        button.setForeground(Color.WHITE);
-        button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createRaisedBevelBorder());
-
-        // 添加滑鼠效果
-        button.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseEntered(java.awt.event.MouseEvent evt) {
-                button.setBackground(color.brighter());
-            }
-
-            public void mouseExited(java.awt.event.MouseEvent evt) {
-                button.setBackground(color);
-            }
-        });
-
-        return button;
-    }
-
-    /**
      * 設置分頁圖標（可選）
      */
     private void setTabIcons() {
@@ -366,6 +344,7 @@ public class ControlView extends JFrame {
         tabbedPane.setToolTipTextAt(2, "設置價格提醒");
         tabbedPane.setToolTipTextAt(3, "查看個人交易統計");
         tabbedPane.setToolTipTextAt(4, "調整撮合引擎參數");
+        tabbedPane.setToolTipTextAt(5, "查看並手動干預主力策略"); // [FIX] 補齊第6個分頁的提示
     }
 
     /**

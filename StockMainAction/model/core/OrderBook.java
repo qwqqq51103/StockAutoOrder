@@ -713,7 +713,7 @@ public class OrderBook {
                             if (model != null) {
                                 model.updateVolumeChart(txVolume);
                             } else {
-                                System.out.println("警告：無法更新 UI，updateVolumeChart 為 null");
+                                logger.warn("無法更新 UI，model 參考為 null（updateVolumeChart）", "ORDER_BOOK");
                             }
                             notifyListeners();
 
@@ -741,7 +741,7 @@ public class OrderBook {
                 model.updateLabels();
                 model.updateOrderBookDisplay();
             } else {
-                System.out.println("警告：無法更新 UI，updateLabels、updateOrderBookDisplay 為 null");
+                logger.warn("無法更新 UI，model 參考為 null（updateLabels / updateOrderBookDisplay）", "ORDER_BOOK");
             }
 
         } catch (IOException e) {
@@ -894,9 +894,9 @@ public class OrderBook {
             sellOrder.getTrader().updateAfterTransaction("sell", txVolume, finalPrice);
         }
 
-        // 12. 印出詳細日誌,包括撮合模式
-        System.out.printf("交易完成 [%s模式]:成交量 %d,成交價格 %.2f%n",
-                matchingMode, txVolume, finalPrice);
+        // 12. 記錄撮合成交日誌
+        logger.info(String.format("交易完成 [%s模式]：成交量 %d，成交價格 %.2f",
+                matchingMode, txVolume, finalPrice), "ORDER_TX");
 
         return txVolume;
     }
@@ -906,11 +906,11 @@ public class OrderBook {
      */
     private boolean validateTransaction(Order buyOrder, Order sellOrder, Stock stock) {
         if (stock == null) {
-            System.out.println("Error: Stock is null. Unable to update stock price.");
+            logger.error("validateTransaction：Stock 為 null，無法更新股價", "ORDER_BOOK");
             return false;
         }
         if (buyOrder.getTraderAccount() == null || sellOrder.getTraderAccount() == null) {
-            System.out.println("Error: Trader account is null for one of the orders.");
+            logger.error("validateTransaction：買方或賣方帳戶為 null", "ORDER_BOOK");
             return false;
         }
         return true;
@@ -949,7 +949,7 @@ public class OrderBook {
     public void setRandomModeSwitching(boolean useRandom, double probability) {
         // 台股固定模式：停用隨機切換
         this.randomModeChangeProbability = 0.0;
-        System.out.println("台股撮合固定模式：隨機切換已停用");
+        logger.info("台股撮合固定模式：隨機切換已停用", "ORDER_BOOK");
     }
 
     /**
@@ -1001,8 +1001,10 @@ public class OrderBook {
                         double can = Math.min(acc.getFrozenFunds(), refund);
                         if (can > 0) acc.unfreezeFunds(can);
                     }
-                } catch (Exception ignore) {}
-                System.out.println("移除無法完全滿足的FOK買單: " + fokOrder);
+                } catch (Exception e) {
+                    logger.warn("FOK買單解凍資金失敗：" + e.getMessage(), "ORDER_BOOK");
+                }
+                logger.info("FOK買單 Kill：無法完全滿足，已移除 " + fokOrder, "ORDER_BOOK");
             }
         }
 
@@ -1025,8 +1027,10 @@ public class OrderBook {
                         int can = Math.min(acc.getFrozenStocks(), refund);
                         if (can > 0) acc.unfreezeStocks(can);
                     }
-                } catch (Exception ignore) {}
-                System.out.println("移除無法完全滿足的FOK賣單: " + fokOrder);
+                } catch (Exception e) {
+                    logger.warn("FOK賣單解凍庫存失敗：" + e.getMessage(), "ORDER_BOOK");
+                }
+                logger.info("FOK賣單 Kill：無法完全滿足，已移除 " + fokOrder, "ORDER_BOOK");
             }
         }
     }

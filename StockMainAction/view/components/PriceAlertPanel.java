@@ -48,10 +48,13 @@ public class PriceAlertPanel extends JPanel {
         // 設置面板
         JPanel settingsPanel = createSettingsPanel();
 
-        // 列表面板
+        // [FIX] 列表面板 + 自訂渲染器
         alertListModel = new DefaultListModel<>();
         alertList = new JList<>(alertListModel);
+        alertList.setCellRenderer(new AlertListRenderer());
         JScrollPane listScrollPane = new JScrollPane(alertList);
+        listScrollPane.setPreferredSize(new Dimension(0, 160));
+        listScrollPane.setBorder(BorderFactory.createTitledBorder("目前提醒列表"));
 
         add(currentPriceLabel, BorderLayout.NORTH);
         add(settingsPanel, BorderLayout.CENTER);
@@ -179,5 +182,56 @@ public class PriceAlertPanel extends JPanel {
 
     public void setListener(PriceAlertPanelListener listener) {
         this.listener = listener;
+    }
+
+    /**
+     * [FIX] 自訂警示列表渲染器：依觸發狀態與類型著色，並附帶 Tooltip
+     */
+    private static class AlertListRenderer extends DefaultListCellRenderer {
+        private static final Color COLOR_UP   = new Color(0, 128, 0);
+        private static final Color COLOR_DOWN = new Color(200, 0, 0);
+        private static final Color COLOR_DONE = new Color(130, 130, 130);
+        private static final Color BG_DONE    = new Color(245, 245, 245);
+
+        @Override
+        public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                boolean isSelected, boolean cellHasFocus) {
+            super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+
+            if (value instanceof PriceAlert) {
+                PriceAlert alert = (PriceAlert) value;
+                setText(alert.toString());
+
+                if (!isSelected) {
+                    if (alert.isTriggered()) {
+                        setForeground(COLOR_DONE);
+                        setBackground(BG_DONE);
+                    } else {
+                        switch (alert.getType()) {
+                            case ABOVE:
+                            case CHANGE_UP:
+                                setForeground(COLOR_UP);
+                                break;
+                            case BELOW:
+                            case CHANGE_DOWN:
+                                setForeground(COLOR_DOWN);
+                                break;
+                            default:
+                                setForeground(Color.BLACK);
+                        }
+                    }
+                }
+
+                // Tooltip：顯示完整資訊
+                String modes = (alert.isSoundEnabled() ? "音效 " : "") +
+                               (alert.isPopupEnabled() ? "彈窗" : "");
+                setToolTipText(String.format("[%s] 目標: %.2f  提醒: %s  狀態: %s",
+                        alert.getType().getDisplayName(),
+                        alert.getTargetPrice(),
+                        modes.trim().isEmpty() ? "無" : modes.trim(),
+                        alert.isTriggered() ? "已觸發" : "等待中"));
+            }
+            return this;
+        }
     }
 }

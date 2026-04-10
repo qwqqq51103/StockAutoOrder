@@ -407,6 +407,7 @@ public class MainView extends JFrame {
             tabs.addTab("事件模式", owner.createSettingsTabEventMode());
             tabs.addTab("滑價", owner.createSettingsTabSlippage());
             tabs.addTab("撤換間隔", owner.createSettingsTabReplaceInterval());
+            tabs.addTab("主力限制", owner.createSettingsTabMainForceLimits());
             tabs.addTab("重置", owner.createSettingsTabReset());
             root.add(tabs, BorderLayout.CENTER);
 
@@ -1170,6 +1171,179 @@ public class MainView extends JFrame {
         });
         p.add(spRepl);
         p.add(btn);
+        return p;
+    }
+
+    private JPanel createSettingsTabMainForceLimits() {
+        JPanel p = new JPanel(new BorderLayout(8, 8));
+        JPanel form = new JPanel(new GridLayout(0, 4, 8, 6));
+
+        // 預設值（若模型未注入則使用）
+        int accMin = 50, accMax = 400, mkMin = 20, mkMax = 150, distMin = 30, distMax = 300, washMin = 10, washMax = 100;
+        int repl = 10, mgmt = 20;
+        double devIdle = 0.05, devAcc = 0.08, devMk = 0.15, devDist = 0.12, devWash = 0.10;
+        int ageIdleSec = 900, ageAccSec = 600, ageMkSec = 180, ageDistSec = 240, ageWashSec = 300;
+        double mkBuyBelow = 0.92, mkSellAbove = 1.15, distSellAbove = 1.08, washBuyBelow = 0.85, washSellAbove = 1.20;
+        double rwExp = 0.35, rwU = 0.25, rwDd = 0.20, rwVol = 0.15, rwTr = 0.05;
+        double fullU = 0.12, fullDd = 0.20, fullVol = 0.06, fullTr = 0.05;
+        double reliefMax = 0.12, reliefSlope = 0.40;
+        try {
+            if (model != null && model.getMainForce() != null) {
+                StockMainAction.model.MainForceStrategyWithOrderBook.MainForceLimitConfig c = model.getMainForce().getLimitConfig();
+                accMin = c.accumulateMinTicks; accMax = c.accumulateMaxTicks;
+                mkMin = c.markupMinTicks; mkMax = c.markupMaxTicks;
+                distMin = c.distributeMinTicks; distMax = c.distributeMaxTicks;
+                washMin = c.washMinTicks; washMax = c.washMaxTicks;
+                repl = c.replaceIntervalTicks; mgmt = c.orderManagementIntervalTicks;
+                devIdle = c.maxDeviationIdle; devAcc = c.maxDeviationAccumulate; devMk = c.maxDeviationMarkup;
+                devDist = c.maxDeviationDistribute; devWash = c.maxDeviationWash;
+                ageIdleSec = (int) (c.maxAgeIdleMs / 1000L); ageAccSec = (int) (c.maxAgeAccumulateMs / 1000L);
+                ageMkSec = (int) (c.maxAgeMarkupMs / 1000L); ageDistSec = (int) (c.maxAgeDistributeMs / 1000L); ageWashSec = (int) (c.maxAgeWashMs / 1000L);
+                mkBuyBelow = c.markupCancelBuyBelowRatio; mkSellAbove = c.markupCancelSellAboveRatio;
+                distSellAbove = c.distributeCancelSellAboveRatio;
+                washBuyBelow = c.washCancelBuyBelowRatio; washSellAbove = c.washCancelSellAboveRatio;
+                rwExp = c.riskExposureWeight; rwU = c.riskUnrealizedWeight; rwDd = c.riskDrawdownWeight;
+                rwVol = c.riskVolatilityWeight; rwTr = c.riskTrendWeight;
+                fullU = c.riskUnrealizedLossFull; fullDd = c.riskDrawdownFull;
+                fullVol = c.riskVolatilityFull; fullTr = c.riskTrendDownFull;
+                reliefMax = c.riskProfitReliefMax; reliefSlope = c.riskProfitReliefSlope;
+            }
+        } catch (Exception ignore) {}
+
+        JSpinner spAccMin = new JSpinner(new SpinnerNumberModel(accMin, 1, 5000, 1));
+        JSpinner spAccMax = new JSpinner(new SpinnerNumberModel(accMax, 1, 5000, 1));
+        JSpinner spMkMin = new JSpinner(new SpinnerNumberModel(mkMin, 1, 5000, 1));
+        JSpinner spMkMax = new JSpinner(new SpinnerNumberModel(mkMax, 1, 5000, 1));
+        JSpinner spDistMin = new JSpinner(new SpinnerNumberModel(distMin, 1, 5000, 1));
+        JSpinner spDistMax = new JSpinner(new SpinnerNumberModel(distMax, 1, 5000, 1));
+        JSpinner spWashMin = new JSpinner(new SpinnerNumberModel(washMin, 1, 5000, 1));
+        JSpinner spWashMax = new JSpinner(new SpinnerNumberModel(washMax, 1, 5000, 1));
+        JSpinner spRepl = new JSpinner(new SpinnerNumberModel(repl, 1, 2000, 1));
+        JSpinner spMgmt = new JSpinner(new SpinnerNumberModel(mgmt, 1, 2000, 1));
+        JSpinner spDevIdle = new JSpinner(new SpinnerNumberModel(devIdle, 0.0, 0.5, 0.01));
+        JSpinner spDevAcc = new JSpinner(new SpinnerNumberModel(devAcc, 0.0, 0.5, 0.01));
+        JSpinner spDevMk = new JSpinner(new SpinnerNumberModel(devMk, 0.0, 0.5, 0.01));
+        JSpinner spDevDist = new JSpinner(new SpinnerNumberModel(devDist, 0.0, 0.5, 0.01));
+        JSpinner spDevWash = new JSpinner(new SpinnerNumberModel(devWash, 0.0, 0.5, 0.01));
+        JSpinner spAgeIdle = new JSpinner(new SpinnerNumberModel(ageIdleSec, 1, 86400, 1));
+        JSpinner spAgeAcc = new JSpinner(new SpinnerNumberModel(ageAccSec, 1, 86400, 1));
+        JSpinner spAgeMk = new JSpinner(new SpinnerNumberModel(ageMkSec, 1, 86400, 1));
+        JSpinner spAgeDist = new JSpinner(new SpinnerNumberModel(ageDistSec, 1, 86400, 1));
+        JSpinner spAgeWash = new JSpinner(new SpinnerNumberModel(ageWashSec, 1, 86400, 1));
+        JSpinner spMkBuyBelow = new JSpinner(new SpinnerNumberModel(mkBuyBelow, 0.50, 1.50, 0.01));
+        JSpinner spMkSellAbove = new JSpinner(new SpinnerNumberModel(mkSellAbove, 0.50, 2.00, 0.01));
+        JSpinner spDistSellAbove = new JSpinner(new SpinnerNumberModel(distSellAbove, 0.50, 2.00, 0.01));
+        JSpinner spWashBuyBelow = new JSpinner(new SpinnerNumberModel(washBuyBelow, 0.50, 1.50, 0.01));
+        JSpinner spWashSellAbove = new JSpinner(new SpinnerNumberModel(washSellAbove, 0.50, 2.00, 0.01));
+        JSpinner spRwExp = new JSpinner(new SpinnerNumberModel(rwExp, 0.0, 1.0, 0.01));
+        JSpinner spRwU = new JSpinner(new SpinnerNumberModel(rwU, 0.0, 1.0, 0.01));
+        JSpinner spRwDd = new JSpinner(new SpinnerNumberModel(rwDd, 0.0, 1.0, 0.01));
+        JSpinner spRwVol = new JSpinner(new SpinnerNumberModel(rwVol, 0.0, 1.0, 0.01));
+        JSpinner spRwTr = new JSpinner(new SpinnerNumberModel(rwTr, 0.0, 1.0, 0.01));
+        JSpinner spFullU = new JSpinner(new SpinnerNumberModel(fullU, 0.01, 1.0, 0.01));
+        JSpinner spFullDd = new JSpinner(new SpinnerNumberModel(fullDd, 0.01, 1.0, 0.01));
+        JSpinner spFullVol = new JSpinner(new SpinnerNumberModel(fullVol, 0.005, 1.0, 0.005));
+        JSpinner spFullTr = new JSpinner(new SpinnerNumberModel(fullTr, 0.005, 1.0, 0.005));
+        JSpinner spReliefMax = new JSpinner(new SpinnerNumberModel(reliefMax, 0.0, 1.0, 0.01));
+        JSpinner spReliefSlope = new JSpinner(new SpinnerNumberModel(reliefSlope, 0.0, 2.0, 0.01));
+
+        form.add(new JLabel("吸籌最短/最長 ticks")); form.add(spAccMin); form.add(new JLabel("")); form.add(spAccMax);
+        form.add(new JLabel("拉抬最短/最長 ticks")); form.add(spMkMin); form.add(new JLabel("")); form.add(spMkMax);
+        form.add(new JLabel("出貨最短/最長 ticks")); form.add(spDistMin); form.add(new JLabel("")); form.add(spDistMax);
+        form.add(new JLabel("洗盤最短/最長 ticks")); form.add(spWashMin); form.add(new JLabel("")); form.add(spWashMax);
+        form.add(new JLabel("撤換間隔 ticks")); form.add(spRepl); form.add(new JLabel("訂單管理間隔 ticks")); form.add(spMgmt);
+        form.add(new JLabel("偏離上限 待機")); form.add(spDevIdle); form.add(new JLabel("偏離上限 吸籌")); form.add(spDevAcc);
+        form.add(new JLabel("偏離上限 拉抬")); form.add(spDevMk); form.add(new JLabel("偏離上限 出貨")); form.add(spDevDist);
+        form.add(new JLabel("偏離上限 洗盤")); form.add(spDevWash); form.add(new JLabel("")); form.add(new JLabel(""));
+        form.add(new JLabel("訂單最大秒數 待機")); form.add(spAgeIdle); form.add(new JLabel("訂單最大秒數 吸籌")); form.add(spAgeAcc);
+        form.add(new JLabel("訂單最大秒數 拉抬")); form.add(spAgeMk); form.add(new JLabel("訂單最大秒數 出貨")); form.add(spAgeDist);
+        form.add(new JLabel("訂單最大秒數 洗盤")); form.add(spAgeWash); form.add(new JLabel("")); form.add(new JLabel(""));
+        form.add(new JLabel("拉抬取消買單下界")); form.add(spMkBuyBelow); form.add(new JLabel("拉抬取消賣單上界")); form.add(spMkSellAbove);
+        form.add(new JLabel("出貨取消賣單上界")); form.add(spDistSellAbove); form.add(new JLabel("洗盤取消買單下界")); form.add(spWashBuyBelow);
+        form.add(new JLabel("洗盤取消賣單上界")); form.add(spWashSellAbove); form.add(new JLabel("")); form.add(new JLabel(""));
+        form.add(new JLabel("風險權重 曝險")); form.add(spRwExp); form.add(new JLabel("風險權重 浮虧")); form.add(spRwU);
+        form.add(new JLabel("風險權重 回撤")); form.add(spRwDd); form.add(new JLabel("風險權重 波動")); form.add(spRwVol);
+        form.add(new JLabel("風險權重 趨勢")); form.add(spRwTr); form.add(new JLabel("")); form.add(new JLabel(""));
+        form.add(new JLabel("浮虧滿風險比率")); form.add(spFullU); form.add(new JLabel("回撤滿風險比率")); form.add(spFullDd);
+        form.add(new JLabel("波動滿風險基準")); form.add(spFullVol); form.add(new JLabel("下行趨勢滿風險基準")); form.add(spFullTr);
+        form.add(new JLabel("浮盈減風險上限")); form.add(spReliefMax); form.add(new JLabel("浮盈減風險斜率")); form.add(spReliefSlope);
+
+        JComboBox<String> presetCombo = new JComboBox<>(new String[]{"保守", "平衡", "激進"});
+        JButton presetBtn = new JButton("套用預設組合");
+        presetBtn.addActionListener(e -> {
+            String preset = (String) presetCombo.getSelectedItem();
+            if ("保守".equals(preset)) {
+                spRwExp.setValue(0.20); spRwU.setValue(0.30); spRwDd.setValue(0.25); spRwVol.setValue(0.20); spRwTr.setValue(0.05);
+                spFullU.setValue(0.08); spFullDd.setValue(0.12); spFullVol.setValue(0.04); spFullTr.setValue(0.03);
+                spReliefMax.setValue(0.06); spReliefSlope.setValue(0.25);
+                spRepl.setValue(6); spMgmt.setValue(10);
+            } else if ("激進".equals(preset)) {
+                spRwExp.setValue(0.50); spRwU.setValue(0.18); spRwDd.setValue(0.12); spRwVol.setValue(0.10); spRwTr.setValue(0.10);
+                spFullU.setValue(0.18); spFullDd.setValue(0.30); spFullVol.setValue(0.10); spFullTr.setValue(0.08);
+                spReliefMax.setValue(0.20); spReliefSlope.setValue(0.60);
+                spRepl.setValue(14); spMgmt.setValue(30);
+            } else { // 平衡
+                spRwExp.setValue(0.35); spRwU.setValue(0.25); spRwDd.setValue(0.20); spRwVol.setValue(0.15); spRwTr.setValue(0.05);
+                spFullU.setValue(0.12); spFullDd.setValue(0.20); spFullVol.setValue(0.06); spFullTr.setValue(0.05);
+                spReliefMax.setValue(0.12); spReliefSlope.setValue(0.40);
+                spRepl.setValue(10); spMgmt.setValue(20);
+            }
+            appendToInfoArea("已載入主力風控預設：" + preset + "（請再按「套用主力限制」）", InfoType.SYSTEM);
+        });
+
+        JButton apply = new JButton("套用主力限制");
+        apply.addActionListener(e -> {
+            try {
+                if (model == null || model.getMainForce() == null) return;
+                StockMainAction.model.MainForceStrategyWithOrderBook.MainForceLimitConfig c
+                        = new StockMainAction.model.MainForceStrategyWithOrderBook.MainForceLimitConfig();
+                c.accumulateMinTicks = (Integer) spAccMin.getValue(); c.accumulateMaxTicks = (Integer) spAccMax.getValue();
+                c.markupMinTicks = (Integer) spMkMin.getValue(); c.markupMaxTicks = (Integer) spMkMax.getValue();
+                c.distributeMinTicks = (Integer) spDistMin.getValue(); c.distributeMaxTicks = (Integer) spDistMax.getValue();
+                c.washMinTicks = (Integer) spWashMin.getValue(); c.washMaxTicks = (Integer) spWashMax.getValue();
+                c.replaceIntervalTicks = (Integer) spRepl.getValue();
+                c.orderManagementIntervalTicks = (Integer) spMgmt.getValue();
+                c.maxDeviationIdle = ((Number) spDevIdle.getValue()).doubleValue();
+                c.maxDeviationAccumulate = ((Number) spDevAcc.getValue()).doubleValue();
+                c.maxDeviationMarkup = ((Number) spDevMk.getValue()).doubleValue();
+                c.maxDeviationDistribute = ((Number) spDevDist.getValue()).doubleValue();
+                c.maxDeviationWash = ((Number) spDevWash.getValue()).doubleValue();
+                c.maxAgeIdleMs = ((Integer) spAgeIdle.getValue()) * 1000L;
+                c.maxAgeAccumulateMs = ((Integer) spAgeAcc.getValue()) * 1000L;
+                c.maxAgeMarkupMs = ((Integer) spAgeMk.getValue()) * 1000L;
+                c.maxAgeDistributeMs = ((Integer) spAgeDist.getValue()) * 1000L;
+                c.maxAgeWashMs = ((Integer) spAgeWash.getValue()) * 1000L;
+                c.markupCancelBuyBelowRatio = ((Number) spMkBuyBelow.getValue()).doubleValue();
+                c.markupCancelSellAboveRatio = ((Number) spMkSellAbove.getValue()).doubleValue();
+                c.distributeCancelSellAboveRatio = ((Number) spDistSellAbove.getValue()).doubleValue();
+                c.washCancelBuyBelowRatio = ((Number) spWashBuyBelow.getValue()).doubleValue();
+                c.washCancelSellAboveRatio = ((Number) spWashSellAbove.getValue()).doubleValue();
+                c.riskExposureWeight = ((Number) spRwExp.getValue()).doubleValue();
+                c.riskUnrealizedWeight = ((Number) spRwU.getValue()).doubleValue();
+                c.riskDrawdownWeight = ((Number) spRwDd.getValue()).doubleValue();
+                c.riskVolatilityWeight = ((Number) spRwVol.getValue()).doubleValue();
+                c.riskTrendWeight = ((Number) spRwTr.getValue()).doubleValue();
+                c.riskUnrealizedLossFull = ((Number) spFullU.getValue()).doubleValue();
+                c.riskDrawdownFull = ((Number) spFullDd.getValue()).doubleValue();
+                c.riskVolatilityFull = ((Number) spFullVol.getValue()).doubleValue();
+                c.riskTrendDownFull = ((Number) spFullTr.getValue()).doubleValue();
+                c.riskProfitReliefMax = ((Number) spReliefMax.getValue()).doubleValue();
+                c.riskProfitReliefSlope = ((Number) spReliefSlope.getValue()).doubleValue();
+                model.getMainForce().applyLimitConfig(c);
+                appendToInfoArea("已套用主力限制參數", InfoType.SYSTEM);
+            } catch (Exception ex) {
+                appendToInfoArea("套用主力限制失敗: " + ex.getMessage(), InfoType.ERROR);
+            }
+        });
+
+        JPanel bottom = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        bottom.add(new JLabel("一鍵預設:"));
+        bottom.add(presetCombo);
+        bottom.add(presetBtn);
+        bottom.add(apply);
+
+        p.add(new JScrollPane(form), BorderLayout.CENTER);
+        p.add(bottom, BorderLayout.SOUTH);
         return p;
     }
 

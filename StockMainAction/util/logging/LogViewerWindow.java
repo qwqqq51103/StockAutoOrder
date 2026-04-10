@@ -417,7 +417,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
                         "導出失敗: " + e.getMessage(),
                         "導出錯誤",
                         JOptionPane.ERROR_MESSAGE);
-                e.printStackTrace();
+                // 錯誤已顯示在對話框，無需再列印 stacktrace
             }
         }
     }
@@ -499,7 +499,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
             // 設置界面外觀
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("設置系統外觀失敗（將使用預設外觀）：" + e.getMessage());
         }
 
         SwingUtilities.invokeLater(() -> {

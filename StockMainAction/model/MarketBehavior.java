@@ -89,11 +89,11 @@ public class MarketBehavior implements Trader {
                 account.decrementFunds(transactionAmount);
             }
             account.incrementStocks(volume);
-            System.out.println(String.format("【市場行為-限價買入後更新】買入 %d 股，成交價 %.2f", volume, price));
+            logger.info(String.format("限價買入後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
         } else if (type.equals("sell")) {
             // 限價單賣出：增加現金
             account.incrementFunds(transactionAmount);
-            System.out.println(String.format("【市場行為-限價賣出後更新】賣出 %d 股，成交價 %.2f", volume, price));
+            logger.info(String.format("限價賣出後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
         }
         // 可在此更新介面標籤或其他 UI
     }
@@ -103,10 +103,10 @@ public class MarketBehavior implements Trader {
         // 市價單的狀態更新，如需更細緻的平均成本計算，可在此實作
         double transactionAmount = price * volume;
         if ("buy".equals(type)) {
-            System.out.println(String.format("【市場行為-市價買入後更新】買入 %d 股，成交價 %.2f", volume, price));
+            logger.info(String.format("市價買入後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
             account.incrementStocks(volume);
         } else if ("sell".equals(type)) {
-            System.out.println(String.format("【市場行為-市價賣出後更新】賣出 %d 股，成交價 %.2f", volume, price));
+            logger.info(String.format("市價賣出後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
             account.incrementFunds(transactionAmount);
         }
     }

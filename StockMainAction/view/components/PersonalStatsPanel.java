@@ -149,6 +149,24 @@ public class PersonalStatsPanel extends JPanel {
         avgProfitLabel = new JLabel("0.00");
         panel.add(avgProfitLabel, gbc);
 
+        // [FIX] 第五行：補齊聲明但未初始化/顯示的標籤
+        gbc.gridx = 0;
+        gbc.gridy = 4;
+        panel.add(new JLabel("單筆最大獲利:"), gbc);
+        gbc.gridx = 1;
+        maxProfitLabel = new JLabel("0.00");
+        maxProfitLabel.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
+        maxProfitLabel.setForeground(new Color(0, 150, 0));
+        panel.add(maxProfitLabel, gbc);
+
+        gbc.gridx = 2;
+        panel.add(new JLabel("單筆最大虧損:"), gbc);
+        gbc.gridx = 3;
+        maxLossLabel = new JLabel("0.00");
+        maxLossLabel.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
+        maxLossLabel.setForeground(Color.RED);
+        panel.add(maxLossLabel, gbc);
+
         return panel;
     }
 
@@ -287,6 +305,9 @@ public class PersonalStatsPanel extends JPanel {
             final String tt = String.valueOf(stats.getTotalTrades());
             final String mdd = String.format("%.2f%%", stats.getMaxDrawdown());
             final String avg = String.format("%.2f", stats.getAvgProfitPerTrade());
+            // [FIX] 單筆最大獲利/虧損
+            final String mp = String.format("%.2f", stats.getMaxSingleProfit());
+            final String ml = String.format("%.2f", stats.getMaxSingleLoss());
             final Color profitColor = stats.getTotalProfitLoss() >= 0 ? new Color(0, 150, 0) : Color.RED;
             final Color todayColor = stats.getTodayProfitLoss() >= 0 ? new Color(0, 150, 0) : Color.RED;
 
@@ -299,6 +320,8 @@ public class PersonalStatsPanel extends JPanel {
                 totalTradesLabel.setText(tt);
                 maxDrawdownLabel.setText(mdd);
                 avgProfitLabel.setText(avg);
+                maxProfitLabel.setText(mp);
+                maxLossLabel.setText(ml);
                 totalProfitLabel.setForeground(profitColor);
                 todayProfitLabel.setForeground(todayColor);
                 updateDetailsArea(stats);
@@ -353,5 +376,12 @@ public class PersonalStatsPanel extends JPanel {
     // Setter
     public void setListener(PersonalStatsPanelListener listener) {
         this.listener = listener;
+    }
+
+    // [FIX] 面板移除時關閉背景執行緒，避免資源洩漏
+    @Override
+    public void removeNotify() {
+        super.removeNotify();
+        executor.shutdownNow();
     }
 }

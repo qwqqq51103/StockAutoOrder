@@ -606,7 +606,6 @@ public class StockMarketModel {
             logger.info("市場模型初始化完成", "MODEL_INIT");
         } catch (Exception e) {
             logger.error("市場模型初始化失敗: " + e.getMessage(), "MODEL_INIT");
-            e.printStackTrace();
         }
     }
 
@@ -733,7 +732,6 @@ public class StockMarketModel {
                     logger.info(String.format("市場行為模擬：時間步長 %d", timeStep), "MARKET_BEHAVIOR");
                 } catch (Exception e) {
                     logger.error("市場行為模擬發生錯誤：" + e.getMessage(), "MARKET_BEHAVIOR");
-                    e.printStackTrace();
                 }
 
                 // 2. 散戶行為：執行散戶決策
@@ -741,7 +739,6 @@ public class StockMarketModel {
                     executeRetailInvestorDecisions();
                 } catch (Exception e) {
                     logger.error("散戶決策發生錯誤：" + e.getMessage(), "RETAIL_BEHAVIOR");
-                    e.printStackTrace();
                 }
 
                 // 3. 主力行為：執行主力決策
@@ -749,7 +746,6 @@ public class StockMarketModel {
                     mainForce.makeDecision();
                 } catch (Exception e) {
                     logger.error("主力決策發生錯誤：" + e.getMessage(), "MAINFORCE_BEHAVIOR");
-                    e.printStackTrace();
                 }
 
                 // 4. 處理訂單簿，撮合訂單（需加鎖保護）
@@ -758,7 +754,6 @@ public class StockMarketModel {
                     orderBook.processOrders(stock);
                 } catch (Exception e) {
                     logger.error("訂單簿處理發生錯誤：" + e.getMessage(), "ORDER_PROCESSING");
-                    e.printStackTrace();
                 } finally {
                     orderBookLock.unlock(); // 解鎖
                 }
@@ -771,14 +766,12 @@ public class StockMarketModel {
                     notifyListenersOfUpdates();
                 } catch (Exception e) {
                     logger.error("市場分析數據更新發生錯誤：" + e.getMessage(), "MARKET_ANALYSIS");
-                    e.printStackTrace();
                 } finally {
                     marketAnalyzerLock.unlock(); // 解鎖
                     validateMarketInventory();
                 }
             } catch (Exception e) {
                 logger.error("主模擬流程發生未處理的錯誤：" + e.getMessage(), "MARKET_SIMULATION");
-                e.printStackTrace();
             }
         }, initialDelay, period, TimeUnit.MILLISECONDS);
     }

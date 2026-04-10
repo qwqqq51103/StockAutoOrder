@@ -17,11 +17,13 @@ public class OrderBookView {
 
     private OrderBookTable orderBookTable;
     private JScrollPane scrollPane;
+    private JScrollPane outerScrollPane; // [FIX] 外層 ScrollPane 快取，避免每次 getScrollPane() 都 new
     // [UX] 搜尋列
     private JTextField searchField;
     private JPanel container; // [UI] 卡片風
     // [UI] 當前股價顯示
     private JLabel currentPriceLabel;
+    private double lastPrice = 0.0; // [FIX] 用於判斷漲跌色
     // [UI] 內外盤比例區域
     private JLabel inOutLabel;
     private InOutRatioBar ratioBar; // 中央大條內外盤比
@@ -56,6 +58,7 @@ public class OrderBookView {
         searchField = new JTextField(16);
         JButton searchBtn = new JButton("搜索");
         searchBtn.addActionListener(e -> applyFilter()); // [UX]
+        searchField.addActionListener(e -> applyFilter()); // [UX] Enter 鍵也觸發搜尋
         topBar.add(new JLabel("搜尋:"));
         topBar.add(searchField);
         topBar.add(searchBtn);
@@ -96,10 +99,8 @@ public class OrderBookView {
         topArea.add(pricePanel, BorderLayout.CENTER);
         
         container.add(topArea, BorderLayout.NORTH);
-        // 重用原先的 scrollPane，但改設置其 viewport 內容為 container，並將原表格加入 container 中
-        java.awt.Component tableView = scrollPane.getViewport().getView();
-        scrollPane.setViewportView(container);
-        container.add(tableView, BorderLayout.CENTER);
+        // [FIX] 表格保留在自己的 scrollPane 內，container 再包一層 outerScrollPane
+        container.add(scrollPane, BorderLayout.CENTER);
 
         // [UI] 內外盤比例（買量=內盤、賣量=外盤 的概念，可依你定義調整）
         JPanel bottomPanel = new JPanel(new BorderLayout());
@@ -146,6 +147,10 @@ public class OrderBookView {
         right.add(deltaPanel);
         bottomPanel.add(right, BorderLayout.EAST);
         container.add(bottomPanel, BorderLayout.SOUTH);
+
+        // [FIX] 建立唯一的外層 ScrollPane 並快取，getScrollPane() 不再每次 new
+        outerScrollPane = new JScrollPane(container);
+        outerScrollPane.setBorder(null);
     }
 
     // 本地排程重繪，避免直接依賴 MainView
@@ -217,10 +222,7 @@ public class OrderBookView {
      * 獲取滾動面板
      */
     public JScrollPane getScrollPane() {
-        // 維持舊 API，但實際提供外層卡片容器
-        JScrollPane sp = new JScrollPane(container);
-        sp.setBorder(null);
-        return sp;
+        return outerScrollPane;
     }
 
     /**
@@ -254,12 +256,18 @@ public class OrderBookView {
 
         double currentPrice = orderBook.getCurrentStockPrice();
         
-        // 更新當前股價顯示
+        // [FIX] 更新當前股價顯示，依漲跌決定顏色
         if (currentPriceLabel != null) {
             currentPriceLabel.setText(String.format("%.2f", currentPrice));
-            // 根據價格變化設置顏色（可選）
             if (currentPrice > 0) {
-                currentPriceLabel.setForeground(new Color(220, 53, 69)); // 紅色
+                if (lastPrice > 0 && currentPrice > lastPrice) {
+                    currentPriceLabel.setForeground(new Color(40, 167, 69));  // 漲：綠
+                } else if (lastPrice > 0 && currentPrice < lastPrice) {
+                    currentPriceLabel.setForeground(new Color(220, 53, 69));  // 跌：紅
+                } else {
+                    currentPriceLabel.setForeground(new Color(0, 100, 200));  // 平：藍
+                }
+                lastPrice = currentPrice;
             }
         }
         
@@ -293,14 +301,9 @@ public class OrderBookView {
         scheduleLocalFlush(); // [CHART]
     }
 
-    // [UX] 套用簡單的 RowFilter（依任意欄字串包含）
+    // [FIX] 套用 RowFilter 搜尋，空字串清除過濾
     private void applyFilter() {
-        try {
-            String q = searchField.getText();
-            if (q == null || q.trim().isEmpty()) return;
-            // 由於 OrderBookTable 內使用 TableRowSorter，自身會接手排序/過濾；此處簡化交由 Swing 的 sorter 規則
-            // 最小侵入：這裡不直接存取內部 sorter，僅提示使用者按下 Enter 後內部 sorter 可被其他地方設置。
-        } catch (Exception ignore) {}
+        orderBookTable.setFilter(searchField.getText());
     }
 
     // [UI] 更新內外盤比例
@@ -367,8 +370,9 @@ public class OrderBookView {
         try { return v==null?0:Integer.parseInt(String.valueOf(v)); } catch(Exception e){ return 0; }
     }
 
-    private int safeTopVolume(int col){
-        try { Object v = orderBookTable.getScrollPane().getViewport().getView() instanceof JTable ? ((JTable)orderBookTable.getScrollPane().getViewport().getView()).getValueAt(2, col): null; return v==null?0:Integer.parseInt(String.valueOf(v)); } catch (Exception e){ return 0; }
+    // [FIX] 直接取 model 資料，不再錯誤地嘗試從 scrollPane.getViewport().getView() 轉型
+    private int safeTopVolume(int col) {
+        return orderBookTable.getModelValueAt(2, col);
     }
 
     // [UI] 依逐筆成交 + 當下買一/賣一計算內外盤（建議控制器推送最近N筆或T秒資料）

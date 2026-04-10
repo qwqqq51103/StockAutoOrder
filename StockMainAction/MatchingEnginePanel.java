@@ -4,7 +4,6 @@ import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.awt.event.ActionListener;
-import java.util.Hashtable;
 import StockMainAction.model.core.MatchingMode;
 
 /**
@@ -16,9 +15,6 @@ public class MatchingEnginePanel extends JPanel {
     private JButton applyButton;
     private JLabel currentModeLabel;
     private JTextArea descriptionArea;
-    private JCheckBox randomModeCheckbox;
-    private JSlider probabilitySlider;
-    private JSlider liquiditySlider;
 
     /**
      * 構造函數 - 初始化撮合引擎面板
@@ -31,82 +27,38 @@ public class MatchingEnginePanel extends JPanel {
                 TitledBorder.CENTER,
                 TitledBorder.TOP));
 
-        // 創建主面板
-        JPanel mainPanel = new JPanel(new GridLayout(4, 1, 5, 5));
+        // 主控區（當前模式 + 模式選擇）
+        JPanel mainPanel = new JPanel(new GridLayout(3, 1, 5, 5));
 
         // 1. 當前模式標籤
         JPanel currentPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         currentModeLabel = new JLabel("當前撮合模式: 台股撮合（價格時間優先）");
+        currentModeLabel.setFont(currentModeLabel.getFont().deriveFont(Font.BOLD));
         currentPanel.add(currentModeLabel);
 
         // 2. 撮合模式選擇
         JPanel modePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-        JLabel modeLabel = new JLabel("撮合模式:");
+        modePanel.add(new JLabel("撮合模式:"));
         matchingModeComboBox = new JComboBox<>(MatchingMode.values());
         applyButton = new JButton("應用");
-
-        modePanel.add(modeLabel);
         modePanel.add(matchingModeComboBox);
         modePanel.add(applyButton);
 
-        // 3. 隨機模式設置
-        JPanel randomPanel = new JPanel(new BorderLayout());
-        JPanel randomCheckPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        // 3. 說明提示（取代原先永久禁用的隨機/流動性控件）
+        JPanel notePanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        JLabel noteLabel = new JLabel(
+                "<html><i>本版本固定使用「台股連續撮合」規則，隨機切換與流動性設定已移除。</i></html>");
+        noteLabel.setForeground(new Color(100, 100, 100));
+        notePanel.add(noteLabel);
 
-        // 台股撮合固定模式：停用舊的隨機切換功能
-        randomModeCheckbox = new JCheckBox("隨機切換模式（已停用）", false);
-        JLabel probabilityLabel = new JLabel("切換概率:");
-
-        randomCheckPanel.add(randomModeCheckbox);
-        randomCheckPanel.add(probabilityLabel);
-
-        probabilitySlider = new JSlider(0, 100, 15);
-        probabilitySlider.setMajorTickSpacing(25);
-        probabilitySlider.setMinorTickSpacing(5);
-        probabilitySlider.setPaintTicks(true);
-        probabilitySlider.setPaintLabels(true);
-        probabilitySlider.setEnabled(false);
-
-        randomModeCheckbox.setEnabled(false);
-        probabilitySlider.setEnabled(false);
-
-        randomPanel.add(randomCheckPanel, BorderLayout.NORTH);
-        randomPanel.add(probabilitySlider, BorderLayout.CENTER);
-
-        // 4. 流動性設置
-        JPanel liquidityPanel = new JPanel(new BorderLayout());
-        JPanel liquidityLabelPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
-
-        JLabel liquidityLabel = new JLabel("市場流動性:");
-        liquidityLabelPanel.add(liquidityLabel);
-
-        liquiditySlider = new JSlider(50, 200, 100);
-        liquiditySlider.setMajorTickSpacing(50);
-        liquiditySlider.setMinorTickSpacing(10);
-        liquiditySlider.setPaintTicks(true);
-        liquiditySlider.setPaintLabels(true);
-
-        // 添加標籤
-        Hashtable<Integer, JLabel> labelTable = new Hashtable<>();
-        labelTable.put(50, new JLabel("低"));
-        labelTable.put(100, new JLabel("中"));
-        labelTable.put(150, new JLabel("高"));
-        labelTable.put(200, new JLabel("極高"));
-        liquiditySlider.setLabelTable(labelTable);
-        // 台股撮合：此版本不以「流動性滑桿」改變撮合規則（避免偏離交易所邏輯）
-        liquiditySlider.setEnabled(false);
-
-        liquidityPanel.add(liquidityLabelPanel, BorderLayout.NORTH);
-        liquidityPanel.add(liquiditySlider, BorderLayout.CENTER);
-
-        // 5. 描述文字區
+        // 4. 描述文字區
         descriptionArea = new JTextArea(5, 30);
         descriptionArea.setEditable(false);
         descriptionArea.setLineWrap(true);
         descriptionArea.setWrapStyleWord(true);
         JScrollPane descScrollPane = new JScrollPane(descriptionArea);
 
-        // 6. 幫助按鈕
+        // 幫助按鈕
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
         JButton helpButton = new JButton("說明");
         helpButton.addActionListener(e -> showHelpDialog());
@@ -115,8 +67,7 @@ public class MatchingEnginePanel extends JPanel {
         // 組合面板
         mainPanel.add(currentPanel);
         mainPanel.add(modePanel);
-        mainPanel.add(randomPanel);
-        mainPanel.add(liquidityPanel);
+        mainPanel.add(notePanel);
 
         // 更新描述文字
         updateDescription();
@@ -199,24 +150,12 @@ public class MatchingEnginePanel extends JPanel {
         currentModeLabel.setText("當前撮合模式: " + mode.toString());
     }
 
-    /**
-     * 獲取隨機模式切換狀態
-     */
-    public boolean isRandomModeSwitchingEnabled() {
-        return randomModeCheckbox.isSelected();
-    }
+    /** 隨機切換已移除，固定回傳 false */
+    public boolean isRandomModeSwitchingEnabled() { return false; }
 
-    /**
-     * 獲取隨機模式切換概率
-     */
-    public double getRandomModeSwitchingProbability() {
-        return probabilitySlider.getValue() / 100.0;
-    }
+    /** 隨機切換已移除，固定回傳 0 */
+    public double getRandomModeSwitchingProbability() { return 0.0; }
 
-    /**
-     * 獲取流動性因子
-     */
-    public double getLiquidityFactor() {
-        return liquiditySlider.getValue() / 100.0;
-    }
+    /** 流動性滑桿已移除，固定回傳中性值 1.0 */
+    public double getLiquidityFactor() { return 1.0; }
 }

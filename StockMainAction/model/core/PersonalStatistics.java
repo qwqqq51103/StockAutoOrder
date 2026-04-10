@@ -4,6 +4,8 @@ package StockMainAction.model.core;
 
 import StockMainAction.model.PersonalAI;
 import StockMainAction.model.user.UserAccount;
+import StockMainAction.util.logging.MarketLogger;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -114,6 +116,8 @@ public class PersonalStatistics {
     // 交易記錄
     private List<TradeRecord> tradeHistory = new ArrayList<>();
 
+    private static final MarketLogger logger = MarketLogger.getInstance();
+
     // 每日統計記錄（用於計算最大回撤等）
     private List<Double> dailyPortfolioValues = new ArrayList<>();
     private double highWaterMark = 0.0;
@@ -145,7 +149,7 @@ public class PersonalStatistics {
                 }
             }
         } catch (Exception e) {
-            System.err.println("從PersonalAI獲取平均成本價失敗: " + e.getMessage());
+            logger.warn("從 PersonalAI 獲取平均成本價失敗：" + e.getMessage(), "PERSONAL_STATS");
         }
 
         try {
@@ -184,7 +188,7 @@ public class PersonalStatistics {
                 return userAccount.getStockInventory();
             }
         } catch (Exception e) {
-            System.err.println("獲取持股數量失敗: " + e.getMessage());
+            logger.warn("獲取持股數量失敗：" + e.getMessage(), "PERSONAL_STATS");
         }
         return 0;
     }
@@ -198,7 +202,7 @@ public class PersonalStatistics {
                 return userAccount.getAvailableFunds();
             }
         } catch (Exception e) {
-            System.err.println("獲取現金餘額失敗: " + e.getMessage());
+            logger.warn("獲取現金餘額失敗：" + e.getMessage(), "PERSONAL_STATS");
         }
         return 0.0;
     }
@@ -211,35 +215,33 @@ public class PersonalStatistics {
         double profitLoss = 0.0;
 
         if ("買入".equals(type)) {
-            // 🆕 更新自維護的平均成本價
+            // 更新自維護的平均成本價
             updateSelfMaintainedAvgPrice(quantity, price);
         } else if ("賣出".equals(type)) {
             // 計算這筆賣出交易的損益
-            double avgCostPrice = getAverageCostPriceSafely();
-            profitLoss = (price - avgCostPrice) * quantity;
+            double avgCostPriceNow = getAverageCostPriceSafely();
+            profitLoss = (price - avgCostPriceNow) * quantity;
             totalRealizedProfitLoss += profitLoss;
 
             // 更新交易統計
             totalTrades++;
             if (profitLoss > 0) {
                 winningTrades++;
-                if (profitLoss > maxSingleProfit) {
-                    maxSingleProfit = profitLoss;
-                }
+                if (profitLoss > maxSingleProfit) maxSingleProfit = profitLoss;
             } else if (profitLoss < 0) {
                 losingTrades++;
-                if (profitLoss < maxSingleLoss) {
-                    maxSingleLoss = profitLoss;
-                }
+                if (profitLoss < maxSingleLoss) maxSingleLoss = profitLoss;
             }
-
-            // 檢查是否為今日交易（簡化版）
-            todayProfitLoss += profitLoss;
         }
 
-        // 添加交易記錄
+        // 建立交易記錄
         TradeRecord record = new TradeRecord(LocalDateTime.now(), type, quantity, price, totalAmount, profitLoss);
         tradeHistory.add(record);
+
+        // [FIX] 依記錄的實際日期判斷今日損益，避免跨日後資料錯誤
+        if ("賣出".equals(type) && record.getTimestamp().toLocalDate().equals(LocalDate.now())) {
+            todayProfitLoss += profitLoss;
+        }
 
         // 更新投資組合價值
         updatePortfolioValue();
@@ -291,7 +293,7 @@ public class PersonalStatistics {
             // 記錄每日投資組合價值
             dailyPortfolioValues.add(currentPortfolioValue);
         } catch (Exception e) {
-            System.err.println("更新投資組合價值失敗: " + e.getMessage());
+            logger.warn("更新投資組合價值失敗：" + e.getMessage(), "PERSONAL_STATS");
         }
     }
 
@@ -337,6 +339,17 @@ public class PersonalStatistics {
     }
 
     /**
+     * 重新計算今日損益（依各記錄的實際時間戳過濾，可在跨日後呼叫）
+     */
+    public void recalculateTodayProfitLoss() {
+        LocalDate today = LocalDate.now();
+        todayProfitLoss = tradeHistory.stream()
+                .filter(r -> "賣出".equals(r.getType()) && r.getTimestamp().toLocalDate().equals(today))
+                .mapToDouble(TradeRecord::getProfitLoss)
+                .sum();
+    }
+
+    /**
      * 重置統計數據
      */
     public void reset() {
@@ -378,7 +391,7 @@ public class PersonalStatistics {
                 }
             }
         } catch (Exception e) {
-            System.err.println("計算未實現損益失敗: " + e.getMessage());
+            logger.warn("計算未實現損益失敗：" + e.getMessage(), "PERSONAL_STATS");
         }
         return 0.0;
     }
@@ -391,8 +404,8 @@ public class PersonalStatistics {
             double unrealizedProfitLoss = getUnrealizedProfitLoss();
             return totalRealizedProfitLoss + unrealizedProfitLoss;
         } catch (Exception e) {
-            System.err.println("計算總損益失敗: " + e.getMessage());
-            return totalRealizedProfitLoss; // 只返回已實現損益
+            logger.warn("計算總損益失敗：" + e.getMessage(), "PERSONAL_STATS");
+            return totalRealizedProfitLoss;
         }
     }
 
@@ -405,8 +418,8 @@ public class PersonalStatistics {
             int currentHoldings = getCurrentHoldingsSafely();
             return currentCash + (currentHoldings * currentStockPrice);
         } catch (Exception e) {
-            System.err.println("計算投資組合價值失敗: " + e.getMessage());
-            return initialCash; // 返回初始資金作為預設值
+            logger.warn("計算投資組合價值失敗：" + e.getMessage(), "PERSONAL_STATS");
+            return initialCash;
         }
     }
 
@@ -420,7 +433,7 @@ public class PersonalStatistics {
                 return ((currentValue - initialCash) / initialCash) * 100;
             }
         } catch (Exception e) {
-            System.err.println("計算回報率失敗: " + e.getMessage());
+            logger.warn("計算回報率失敗：" + e.getMessage(), "PERSONAL_STATS");
         }
         return 0.0;
     }
