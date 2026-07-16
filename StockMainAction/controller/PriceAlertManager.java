@@ -59,6 +59,15 @@ public class PriceAlertManager {
         }
     }
     
+    /**
+     * 重置所有提醒的觸發狀態（讓已觸發的警示可以再次啟用）
+     */
+    public void resetAllAlerts() {
+        for (PriceAlert alert : alerts) {
+            alert.reset();
+        }
+    }
+
     public List<PriceAlert> getAlerts() { return new ArrayList<>(alerts); }
     public double getCurrentPrice() { return currentPrice; }
 }

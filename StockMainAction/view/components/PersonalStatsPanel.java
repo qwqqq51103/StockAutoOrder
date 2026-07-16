@@ -7,6 +7,8 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionListener;
 import java.util.List;
+import java.util.concurrent.ExecutorService; // [PERF]
+import java.util.concurrent.Executors; // [PERF]
 
 /**
  * 個人統計面板組件
@@ -35,6 +37,9 @@ public class PersonalStatsPanel extends JPanel {
     private JButton refreshButton;
     private JButton resetButton;
     private JButton exportButton;
+
+    // [PERF] 背景執行緒
+    private final ExecutorService executor = Executors.newSingleThreadExecutor();
 
     // 事件監聽器接口
     public interface PersonalStatsPanelListener {
@@ -143,6 +148,24 @@ public class PersonalStatsPanel extends JPanel {
         gbc.gridx = 3;
         avgProfitLabel = new JLabel("0.00");
         panel.add(avgProfitLabel, gbc);
+
+        // [FIX] 第五行：補齊聲明但未初始化/顯示的標籤
+        gbc.gridx = 0;
+        gbc.gridy = 4;
+        panel.add(new JLabel("單筆最大獲利:"), gbc);
+        gbc.gridx = 1;
+        maxProfitLabel = new JLabel("0.00");
+        maxProfitLabel.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
+        maxProfitLabel.setForeground(new Color(0, 150, 0));
+        panel.add(maxProfitLabel, gbc);
+
+        gbc.gridx = 2;
+        panel.add(new JLabel("單筆最大虧損:"), gbc);
+        gbc.gridx = 3;
+        maxLossLabel = new JLabel("0.00");
+        maxLossLabel.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
+        maxLossLabel.setForeground(Color.RED);
+        panel.add(maxLossLabel, gbc);
 
         return panel;
     }
@@ -272,29 +295,38 @@ public class PersonalStatsPanel extends JPanel {
      * 更新統計顯示
      */
     public void updateStatistics(PersonalStatistics stats) {
-        SwingUtilities.invokeLater(() -> {
-            // 更新摘要標籤
-            totalProfitLabel.setText(String.format("%.2f", stats.getTotalProfitLoss()));
-            todayProfitLabel.setText(String.format("%.2f", stats.getTodayProfitLoss()));
-            portfolioValueLabel.setText(String.format("%.2f", stats.getCurrentPortfolioValue()));
-            returnRateLabel.setText(String.format("%.2f%%", stats.getReturnRate()));
-            winRateLabel.setText(String.format("%.1f%%", stats.getWinRate()));
-            totalTradesLabel.setText(String.valueOf(stats.getTotalTrades()));
-            maxDrawdownLabel.setText(String.format("%.2f%%", stats.getMaxDrawdown()));
-            avgProfitLabel.setText(String.format("%.2f", stats.getAvgProfitPerTrade()));
+        // [PERF] 將重計算/格式化移出 EDT
+        executor.submit(() -> {
+            final String totalProfit = String.format("%.2f", stats.getTotalProfitLoss());
+            final String todayProfit = String.format("%.2f", stats.getTodayProfitLoss());
+            final String pv = String.format("%.2f", stats.getCurrentPortfolioValue());
+            final String rr = String.format("%.2f%%", stats.getReturnRate());
+            final String wr = String.format("%.1f%%", stats.getWinRate());
+            final String tt = String.valueOf(stats.getTotalTrades());
+            final String mdd = String.format("%.2f%%", stats.getMaxDrawdown());
+            final String avg = String.format("%.2f", stats.getAvgProfitPerTrade());
+            // [FIX] 單筆最大獲利/虧損
+            final String mp = String.format("%.2f", stats.getMaxSingleProfit());
+            final String ml = String.format("%.2f", stats.getMaxSingleLoss());
+            final Color profitColor = stats.getTotalProfitLoss() >= 0 ? new Color(0, 150, 0) : Color.RED;
+            final Color todayColor = stats.getTodayProfitLoss() >= 0 ? new Color(0, 150, 0) : Color.RED;
 
-            // 設置損益顏色
-            Color profitColor = stats.getTotalProfitLoss() >= 0 ? new Color(0, 150, 0) : Color.RED;
-            totalProfitLabel.setForeground(profitColor);
-
-            Color todayColor = stats.getTodayProfitLoss() >= 0 ? new Color(0, 150, 0) : Color.RED;
-            todayProfitLabel.setForeground(todayColor);
-
-            // 更新詳細統計
-            updateDetailsArea(stats);
-
-            // 更新交易歷史
-            updateTradeHistory(stats);
+            SwingUtilities.invokeLater(() -> {
+                totalProfitLabel.setText(totalProfit);
+                todayProfitLabel.setText(todayProfit);
+                portfolioValueLabel.setText(pv);
+                returnRateLabel.setText(rr);
+                winRateLabel.setText(wr);
+                totalTradesLabel.setText(tt);
+                maxDrawdownLabel.setText(mdd);
+                avgProfitLabel.setText(avg);
+                maxProfitLabel.setText(mp);
+                maxLossLabel.setText(ml);
+                totalProfitLabel.setForeground(profitColor);
+                todayProfitLabel.setForeground(todayColor);
+                updateDetailsArea(stats);
+                updateTradeHistory(stats);
+            });
         });
     }
 
@@ -344,5 +376,12 @@ public class PersonalStatsPanel extends JPanel {
     // Setter
     public void setListener(PersonalStatsPanelListener listener) {
         this.listener = listener;
+    }
+
+    // [FIX] 面板移除時關閉背景執行緒，避免資源洩漏
+    @Override
+    public void removeNotify() {
+        super.removeNotify();
+        executor.shutdownNow();
     }
 }

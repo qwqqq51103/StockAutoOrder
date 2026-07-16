@@ -3,14 +3,15 @@
 package StockMainAction.view.components;
 
 import StockMainAction.model.core.QuickTradeConfig;
-import StockMainAction.controller.QuickTradeManager;
+import StockMainAction.util.logging.MarketLogger;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
 import java.awt.event.InputEvent;
 import java.awt.event.KeyEvent;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * 快捷交易面板組件
@@ -21,12 +22,15 @@ public class QuickTradePanel extends JPanel {
     private JList<QuickTradeConfig> configList;
     private DefaultListModel<QuickTradeConfig> listModel;
     private JButton[] quickButtons;
+    private JPanel quickButtonPanel; // 快捷按鈕容器（動態重建用）
     private JLabel currentPriceLabel;
     private JLabel availableFundsLabel;
     private JLabel currentHoldingsLabel;
     private JTextArea previewArea;
     private JButton executeButton;
     private JButton configButton;
+    private JButton pumpButton;
+    private JButton dumpButton;
 
     // 狀態變數
     private QuickTradeConfig selectedConfig;
@@ -34,7 +38,6 @@ public class QuickTradePanel extends JPanel {
     private double availableFunds = 0.0;
     private int currentHoldings = 0;
 
-    private boolean autoExecute = false;  // 是否自動執行
 
     // 事件監聽器接口
     public interface QuickTradePanelListener {
@@ -44,11 +47,35 @@ public class QuickTradePanel extends JPanel {
         void onConfigureQuickTrade();
 
         void onPreviewQuickTrade(QuickTradeConfig config);
+
+        // 市場介入（主力/個人戶）：以「分批市價吃單」推動成交價
+        void onPumpPrice(int totalQty, int slices, boolean useMainForce,
+                boolean enableLiquidity, int depthLevels, double depthSpanPct,
+                boolean enableCounterWallSelfTrade, boolean useOtherTraderFooting);
+
+        void onDumpPrice(int totalQty, int slices, boolean useMainForce,
+                boolean enableLiquidity, int depthLevels, double depthSpanPct,
+                boolean enableCounterWallSelfTrade, boolean useOtherTraderFooting);
     }
 
     private QuickTradePanelListener listener;
 
+    private static final MarketLogger logger = MarketLogger.getInstance();
+
+    // 背景下單執行緒：使用 daemon thread，確保 JVM 退出時不會被此 pool 阻塞
+    private final ExecutorService executor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "QuickTrade-Executor");
+        t.setDaemon(true);
+        return t;
+    });
+
+    // 防抖 Timer：updateCurrentPrice / updateAvailableFunds / updateCurrentHoldings
+    // 批次更新時，最多 50ms 後才觸發一次 updatePreview()，避免同一 tick 觸發三次重繪
+    private final javax.swing.Timer previewDebounceTimer =
+            new javax.swing.Timer(50, e -> updatePreview());
+
     public QuickTradePanel() {
+        previewDebounceTimer.setRepeats(false);
         initializeUI();
     }
 
@@ -60,7 +87,11 @@ public class QuickTradePanel extends JPanel {
         JPanel mainPanel = new JPanel(new BorderLayout());
 
         // 上部：快捷按鈕區
-        JPanel quickButtonPanel = createQuickButtonPanel();
+        JPanel northPanel = new JPanel(new BorderLayout());
+        createQuickButtonPanel(); // 建立空容器，存入 this.quickButtonPanel
+        JPanel interventionPanel = createInterventionPanel();
+        northPanel.add(quickButtonPanel, BorderLayout.CENTER);
+        northPanel.add(interventionPanel, BorderLayout.SOUTH);
 
         // 中部：當前狀態和預覽
         JPanel statusAndPreviewPanel = createStatusAndPreviewPanel();
@@ -68,7 +99,7 @@ public class QuickTradePanel extends JPanel {
         // 下部：配置列表和控制按鈕
         JPanel configPanel = createConfigPanel();
 
-        mainPanel.add(quickButtonPanel, BorderLayout.NORTH);
+        mainPanel.add(northPanel, BorderLayout.NORTH);
         mainPanel.add(statusAndPreviewPanel, BorderLayout.CENTER);
         mainPanel.add(configPanel, BorderLayout.SOUTH);
 
@@ -76,42 +107,163 @@ public class QuickTradePanel extends JPanel {
     }
 
     /**
-     * 創建快捷按鈕面板
+     * 建立快捷按鈕容器（初始為空，由 rebuildQuickButtons 填入按鈕）
      */
-    private JPanel createQuickButtonPanel() {
-        JPanel panel = new JPanel(new GridLayout(2, 4, 5, 5));
-        panel.setBorder(BorderFactory.createTitledBorder("快捷按鈕"));
+    private void createQuickButtonPanel() {
+        quickButtonPanel = new JPanel(new GridLayout(2, 4, 5, 5));
+        quickButtonPanel.setBorder(BorderFactory.createTitledBorder("快捷按鈕"));
+        quickButtons = new JButton[0];
+    }
 
-        // 創建8個快捷按鈕
-        quickButtons = new JButton[8];
-        String[] defaultLabels = {
-            "F1: 買100股", "F2: 賣100股", "F3: 50%資金買", "F4: 賣50%持股",
-            "Ctrl+B: 全倉買", "Ctrl+S: 全倉賣", "Ctrl+Q: 智能買", "Ctrl+W: 智能賣"
-        };
+    /**
+     * 依目前配置清單動態重建所有快捷按鈕（支援任意數量）
+     */
+    private void rebuildQuickButtons(List<QuickTradeConfig> configs) {
+        quickButtonPanel.removeAll();
 
-        for (int i = 0; i < 8; i++) {
-            quickButtons[i] = new JButton(defaultLabels[i]);
-            quickButtons[i].setPreferredSize(new Dimension(120, 40));
-            quickButtons[i].setFont(new Font("Microsoft JhengHei", Font.PLAIN, 10));
+        int count = configs.size();
+        int cols  = Math.max(1, Math.min(4, count));
+        int rows  = count == 0 ? 1 : (int) Math.ceil(count / (double) cols);
+        quickButtonPanel.setLayout(new GridLayout(rows, cols, 5, 5));
 
-            // 設置按鈕顏色
-            if (i % 2 == 0) {
-                // 買入按鈕（綠色系）
-                quickButtons[i].setBackground(new Color(220, 255, 220));
-                quickButtons[i].setForeground(new Color(0, 100, 0));
+        quickButtons = new JButton[count];
+        for (int i = 0; i < count; i++) {
+            QuickTradeConfig cfg = configs.get(i);
+            String hotkey  = (cfg.getHotkey() != null && !cfg.getHotkey().isEmpty())
+                             ? "<br><small>[" + cfg.getHotkey() + "]</small>" : "";
+            String label   = "<html><center>" + escapeHtml(cfg.getName()) + hotkey + "</center></html>";
+
+            JButton btn = new JButton(label);
+            btn.setPreferredSize(new Dimension(120, 40));
+            btn.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 10));
+
+            if (cfg.isBuy()) {
+                btn.setBackground(new Color(220, 255, 220));
+                btn.setForeground(new Color(0, 100, 0));
             } else {
-                // 賣出按鈕（紅色系）
-                quickButtons[i].setBackground(new Color(255, 220, 220));
-                quickButtons[i].setForeground(new Color(150, 0, 0));
+                btn.setBackground(new Color(255, 220, 220));
+                btn.setForeground(new Color(150, 0, 0));
             }
+            final int idx = i;
+            btn.addActionListener(e -> executeQuickTrade(idx));
 
-            final int buttonIndex = i;
-            quickButtons[i].addActionListener(e -> executeQuickTrade(buttonIndex));
-
-            panel.add(quickButtons[i]);
+            quickButtons[i] = btn;
+            quickButtonPanel.add(btn);
         }
 
+        quickButtonPanel.revalidate();
+        quickButtonPanel.repaint();
+    }
+
+    /** HTML 特殊字元轉義（防止名稱含 < > 破壞按鈕顯示） */
+    private static String escapeHtml(String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * 市場介入（實驗/教學用途）：拉抬/出貨（打壓）
+     * 注意：價格推動必須靠「成交」，所以這裡以「分批市價單」做為主要推動手段。
+     */
+    private JPanel createInterventionPanel() {
+        JPanel panel = new JPanel(new GridBagLayout());
+        panel.setBorder(BorderFactory.createTitledBorder("市場介入（實驗）"));
+        GridBagConstraints gc = new GridBagConstraints();
+        gc.insets = new Insets(2, 4, 2, 4);
+        gc.fill = GridBagConstraints.HORIZONTAL;
+        gc.weightx = 1.0;
+
+        pumpButton = new JButton("拉抬(分批市價買)");
+        pumpButton.setBackground(new Color(210, 255, 210));
+        pumpButton.setForeground(new Color(0, 90, 0));
+
+        dumpButton = new JButton("出貨/打壓(分批市價賣)");
+        dumpButton.setBackground(new Color(255, 210, 210));
+        dumpButton.setForeground(new Color(140, 0, 0));
+
+        pumpButton.addActionListener(e -> showInterventionDialog(true));
+        dumpButton.addActionListener(e -> showInterventionDialog(false));
+
+        gc.gridx = 0;
+        gc.gridy = 0;
+        panel.add(pumpButton, gc);
+        gc.gridx = 1;
+        panel.add(dumpButton, gc);
+
         return panel;
+    }
+
+    private void showInterventionDialog(boolean pump) {
+        try {
+            JPanel p = new JPanel(new GridBagLayout());
+            GridBagConstraints gc = new GridBagConstraints();
+            gc.insets = new Insets(4, 6, 4, 6);
+            gc.anchor = GridBagConstraints.WEST;
+            gc.fill = GridBagConstraints.HORIZONTAL;
+            gc.weightx = 1.0;
+
+            JSpinner qty = new JSpinner(new SpinnerNumberModel(5000, 1, 1_000_000, 100));
+            JSpinner slices = new JSpinner(new SpinnerNumberModel(10, 1, 200, 1));
+            JCheckBox useMainForce = new JCheckBox("使用主力帳戶（建議）", true);
+            JCheckBox enableLiquidity = new JCheckBox("先補深度(掛牆/墊腳石)", true);
+            JCheckBox enableCounterWallSelfTrade = new JCheckBox("進階模式：對手牆 + 自成交", false);
+            JCheckBox useOtherTraderFooting = new JCheckBox("打壓買墊腳改由另一交易者掛(預設關)", false);
+            JSpinner depthLevels = new JSpinner(new SpinnerNumberModel(5, 1, 20, 1));
+            JSpinner depthSpan = new JSpinner(new SpinnerNumberModel(1.0, 0.1, 10.0, 0.1)); // %
+
+            gc.gridx = 0; gc.gridy = 0;
+            p.add(new JLabel("總量(股):"), gc);
+            gc.gridx = 1;
+            p.add(qty, gc);
+
+            gc.gridx = 0; gc.gridy = 1;
+            p.add(new JLabel("分批數:"), gc);
+            gc.gridx = 1;
+            p.add(slices, gc);
+
+            gc.gridx = 0; gc.gridy = 2; gc.gridwidth = 2;
+            p.add(useMainForce, gc);
+
+            gc.gridx = 0; gc.gridy = 3; gc.gridwidth = 2;
+            p.add(enableLiquidity, gc);
+
+            gc.gridwidth = 1;
+            gc.gridx = 0; gc.gridy = 4;
+            gc.gridwidth = 2;
+            p.add(enableCounterWallSelfTrade, gc);
+
+            gc.gridx = 0; gc.gridy = 5;
+            p.add(useOtherTraderFooting, gc);
+
+            gc.gridwidth = 1;
+            gc.gridx = 0; gc.gridy = 6;
+            p.add(new JLabel("補深度檔數:"), gc);
+            gc.gridx = 1;
+            p.add(depthLevels, gc);
+
+            gc.gridx = 0; gc.gridy = 7;
+            p.add(new JLabel("補深度跨度(%):"), gc);
+            gc.gridx = 1;
+            p.add(depthSpan, gc);
+
+            String title = pump ? "拉抬設定" : "出貨/打壓設定";
+            int ok = JOptionPane.showConfirmDialog(this, p, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (ok != JOptionPane.OK_OPTION) return;
+
+            int totalQty = ((Number) qty.getValue()).intValue();
+            int nSlices = ((Number) slices.getValue()).intValue();
+            boolean useMF = useMainForce.isSelected();
+            boolean enLiq = enableLiquidity.isSelected();
+            boolean enCounterSelf = enableCounterWallSelfTrade.isSelected();
+            boolean useOtherFooting = useOtherTraderFooting.isSelected();
+            int lvl = ((Number) depthLevels.getValue()).intValue();
+            double spanPct = ((Number) depthSpan.getValue()).doubleValue() / 100.0;
+
+            if (listener == null) return;
+            if (pump) listener.onPumpPrice(totalQty, nSlices, useMF, enLiq, lvl, spanPct, enCounterSelf, useOtherFooting);
+            else listener.onDumpPrice(totalQty, nSlices, useMF, enLiq, lvl, spanPct, enCounterSelf, useOtherFooting);
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, "介入操作失敗：" + ex.getMessage(), "錯誤", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     /**
@@ -169,6 +321,17 @@ public class QuickTradePanel extends JPanel {
         executeButton.setFont(new Font("Microsoft JhengHei", Font.BOLD, 12));
         executeButton.setEnabled(false);
         executeButton.addActionListener(e -> executeSelectedTrade());
+        // [UX] Enter 送單 / Esc 清空
+        KeyStroke enter = KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0);
+        KeyStroke esc = KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0);
+        previewArea.getInputMap(JComponent.WHEN_FOCUSED).put(enter, "doExec");
+        previewArea.getActionMap().put("doExec", new AbstractAction(){
+            @Override public void actionPerformed(ActionEvent e){ executeSelectedTrade(); }
+        });
+        previewArea.getInputMap(JComponent.WHEN_FOCUSED).put(esc, "doClear");
+        previewArea.getActionMap().put("doClear", new AbstractAction(){
+            @Override public void actionPerformed(ActionEvent e){ clearPreview(); }
+        });
 
         JPanel buttonPanel = new JPanel(new FlowLayout());
         buttonPanel.add(executeButton);
@@ -207,6 +370,8 @@ public class QuickTradePanel extends JPanel {
         JPanel controlPanel = new JPanel(new FlowLayout());
 
         configButton = new JButton("配置管理");
+        configButton.setEnabled(true);
+        configButton.setToolTipText("開啟快捷交易配置管理（新增 / 編輯 / 刪除策略組）");
         configButton.addActionListener(e -> {
             if (listener != null) {
                 listener.onConfigureQuickTrade();
@@ -276,107 +441,54 @@ public class QuickTradePanel extends JPanel {
      * 執行快捷交易
      */
     private void executeQuickTrade(int buttonIndex) {
-        System.out.println("executeQuickTrade called with index: " + buttonIndex);
-
-        // 檢查 listener 是否為 null
         if (listener == null) {
-            System.err.println("ERROR: listener is null!");
+            logger.warn("快捷交易觸發失敗：listener 為 null，index=" + buttonIndex, "QUICK_TRADE");
             return;
         }
 
-        // 根據按鈕索引獲取對應的預設配置
         QuickTradeConfig config = getQuickButtonConfig(buttonIndex);
         if (config != null) {
-            System.out.println("Config found: " + config.getName());
-
-            // 預覽交易
             selectedConfig = config;
             updatePreview();
 
-            // 如果啟用了自動執行，直接執行
             if (config.isAutoExecute()) {
-                System.out.println("Auto-executing trade...");
                 listener.onQuickTradeExecute(config);
             } else {
-                // 否則等待用戶確認
-                System.out.println("Waiting for user confirmation...");
                 executeButton.setEnabled(true);
             }
         } else {
-            System.err.println("ERROR: config is null for index " + buttonIndex);
+            logger.warn("快捷交易配置不存在，index=" + buttonIndex, "QUICK_TRADE");
         }
     }
 
     /**
      * 獲取快捷按鈕對應的配置
      */
-    private QuickTradeConfig getQuickButtonConfig(int buttonIndex) {
-        // 根據按鈕索引返回預設配置
-        switch (buttonIndex) {
-            case 0: // F1: 買100股
-                return createDefaultConfig("買100股", "F1", true, 100, 0);
-            case 1: // F2: 賣100股
-                return createDefaultConfig("賣100股", "F2", false, 100, 0);
-            case 2: // F3: 50%資金買
-                return createDefaultConfig("50%資金買", "F3", true, 0, 50);
-            case 3: // F4: 賣50%持股
-                return createDefaultConfig("賣50%持股", "F4", false, 0, 50);
-            case 4: // Ctrl+B: 全倉買
-                return createDefaultConfig("全倉買", "Ctrl+B", true, 0, 100);
-            case 5: // Ctrl+S: 全倉賣
-                return createDefaultConfig("全倉賣", "Ctrl+S", false, 0, 100);
-            case 6: // Ctrl+Q: 智能買
-                return createDefaultConfig("智能買", "Ctrl+Q", true, 0, 30);
-            case 7: // Ctrl+W: 智能賣
-                return createDefaultConfig("智能賣", "Ctrl+W", false, 0, 30);
-            default:
-                return null;
-        }
-    }
-
     /**
-     * 創建預設配置
+     * 依索引從配置清單取得配置（直接讀 listModel，不再硬編碼）
      */
-    private QuickTradeConfig createDefaultConfig(String name, String hotkey, boolean isBuy,
-            int fixedQuantity, int percentage) {
-
-        // 根據參數決定交易類型
-        QuickTradeConfig.QuickTradeType tradeType;
-        if (fixedQuantity > 0) {
-            tradeType = QuickTradeConfig.QuickTradeType.FIXED_QUANTITY;
-        } else if (percentage == 100) {
-            tradeType = isBuy ? QuickTradeConfig.QuickTradeType.ALL_IN : QuickTradeConfig.QuickTradeType.ALL_OUT;
-        } else if (percentage > 0) {
-            tradeType = isBuy ? QuickTradeConfig.QuickTradeType.PERCENTAGE_FUNDS : QuickTradeConfig.QuickTradeType.PERCENTAGE_HOLDINGS;
-        } else {
-            // 對於智能交易
-            tradeType = isBuy ? QuickTradeConfig.QuickTradeType.SMART_BUY : QuickTradeConfig.QuickTradeType.SMART_SELL;
+    private QuickTradeConfig getQuickButtonConfig(int buttonIndex) {
+        if (buttonIndex >= 0 && buttonIndex < listModel.getSize()) {
+            return listModel.getElementAt(buttonIndex);
         }
-
-        // 使用正確的建構函數
-        QuickTradeConfig config = new QuickTradeConfig(
-                name,
-                tradeType,
-                QuickTradeConfig.PriceStrategy.CURRENT_PRICE, // 預設使用當前價
-                isBuy
-        );
-
-        // 設置其他屬性
-        config.setHotkey(hotkey);
-        config.setFixedQuantity(fixedQuantity);
-        config.setPercentage(percentage);
-        config.setAutoExecute(true);
-
-        return config;
+        return null;
     }
+
 
     /**
      * 執行選中的交易
      */
     private void executeSelectedTrade() {
         if (selectedConfig != null && listener != null) {
-            listener.onQuickTradeExecute(selectedConfig);
+            QuickTradeConfig cfg = selectedConfig;
             executeButton.setEnabled(false);
+            executor.submit(() -> {
+                try {
+                    listener.onQuickTradeExecute(cfg); // [PERF] 背景執行下單
+                } finally {
+                    SwingUtilities.invokeLater(() -> updatePreview());
+                }
+            });
         }
     }
 
@@ -472,31 +584,31 @@ public class QuickTradePanel extends JPanel {
     }
 
     /**
-     * 更新當前價格
+     * 更新當前價格（批次防抖：50ms 內多次呼叫只觸發一次 updatePreview）
      */
     public void updateCurrentPrice(double price) {
         this.currentPrice = price;
         currentPriceLabel.setText(String.format("%.2f", price));
         currentPriceLabel.setForeground(price > 0 ? Color.BLACK : Color.RED);
-        updatePreview();
+        previewDebounceTimer.restart();
     }
 
     /**
-     * 更新可用資金
+     * 更新可用資金（批次防抖）
      */
     public void updateAvailableFunds(double funds) {
         this.availableFunds = funds;
         availableFundsLabel.setText(String.format("%.2f", funds));
-        updatePreview();
+        previewDebounceTimer.restart();
     }
 
     /**
-     * 更新當前持股
+     * 更新當前持股（批次防抖）
      */
     public void updateCurrentHoldings(int holdings) {
         this.currentHoldings = holdings;
         currentHoldingsLabel.setText(String.valueOf(holdings));
-        updatePreview();
+        previewDebounceTimer.restart();
     }
 
     /**
@@ -507,11 +619,11 @@ public class QuickTradePanel extends JPanel {
         for (QuickTradeConfig config : configs) {
             listModel.addElement(config);
         }
-
-        // 如果有配置，選擇第一個
         if (!configs.isEmpty()) {
             configList.setSelectedIndex(0);
         }
+        // 重建快捷按鈕（支援任意數量、名稱同步）
+        rebuildQuickButtons(configs);
     }
 
     /**
@@ -559,7 +671,8 @@ public class QuickTradePanel extends JPanel {
             button.setEnabled(enabled);
         }
         executeButton.setEnabled(enabled && selectedConfig != null);
-        configButton.setEnabled(enabled);
+        // configButton 不受 enabled 影響，由 QuickTradeConfigDialog 決定是否開放
+        configButton.setEnabled(true);
     }
 
     /**
@@ -585,5 +698,16 @@ public class QuickTradePanel extends JPanel {
         currentHoldingsLabel.setText("0");
 
         clearPreview();
+    }
+
+    /**
+     * 當面板從容器移除時（例如視窗關閉），立即釋放背景執行緒資源。
+     */
+    @Override
+    public void removeNotify() {
+        super.removeNotify();
+        previewDebounceTimer.stop();
+        executor.shutdown();
+        logger.info("QuickTradePanel executor 已關閉", "QUICK_TRADE");
     }
 }

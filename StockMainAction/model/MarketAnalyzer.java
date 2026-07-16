@@ -24,10 +24,12 @@ public class MarketAnalyzer {
 
     // 用於 RSI 計算
     private final int rsiPeriod = 14; // RSI 的計算週期
-    private final Deque<Double> gainLossHistory = new LinkedList<>();
+    private final Deque<Double> gainHistory = new LinkedList<>();
+    private final Deque<Double> lossHistory = new LinkedList<>();
     private double averageGain = 0.0;
     private double averageLoss = 0.0;
     private boolean rsiInitialized = false;
+    private Double previousClose = null;
 
     /**
      * 構造函數
@@ -79,31 +81,27 @@ public class MarketAnalyzer {
         }
         recentPriceData.add(price);
 
-        // RSI 計算
-        if (recentPriceData.size() > 1) { // 確保有至少兩個價格點來計算變化
-            Iterator<Double> iterator = recentPriceData.iterator();
-            Double previousPrice = iterator.next();
-            Double currentPrice = price;
-            double change = currentPrice - previousPrice;
+        // RSI 計算（Wilder）
+        if (previousClose != null) {
+            double change = price - previousClose;
             double gain = Math.max(change, 0);
             double loss = Math.max(-change, 0);
 
-            gainLossHistory.add(gain);
-            if (gainLossHistory.size() > rsiPeriod) {
-                gainLossHistory.poll();
-            }
+            gainHistory.add(gain);
+            lossHistory.add(loss);
+            if (gainHistory.size() > rsiPeriod) gainHistory.poll();
+            if (lossHistory.size() > rsiPeriod) lossHistory.poll();
 
-            if (gainLossHistory.size() == rsiPeriod) {
-                if (!rsiInitialized) {
-                    averageGain = gainLossHistory.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-                    averageLoss = gainLossHistory.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
-                    rsiInitialized = true;
-                } else {
-                    averageGain = (averageGain * (rsiPeriod - 1) + gain) / rsiPeriod;
-                    averageLoss = (averageLoss * (rsiPeriod - 1) + loss) / rsiPeriod;
-                }
+            if (!rsiInitialized && gainHistory.size() == rsiPeriod && lossHistory.size() == rsiPeriod) {
+                averageGain = gainHistory.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+                averageLoss = lossHistory.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+                rsiInitialized = true;
+            } else if (rsiInitialized) {
+                averageGain = (averageGain * (rsiPeriod - 1) + gain) / rsiPeriod;
+                averageLoss = (averageLoss * (rsiPeriod - 1) + loss) / rsiPeriod;
             }
         }
+        previousClose = price;
 
         // 調試輸出當前價格數據
         //System.out.println("MarketAnalyzer - 更新後價格數據數量: " + recentPriceData.size());
@@ -135,7 +133,10 @@ public class MarketAnalyzer {
             //System.out.println("MarketAnalyzer - 計算波動性: 0.0 (價格數據不足)");
             return 0.0;
         }
-        double mean = calculateSMA();
+        // 使用當前窗口的平均避免 NaN
+        double mean = 0.0;
+        for (double p : recentPriceData) mean += p;
+        mean /= recentPriceData.size();
         double variance = 0.0;
         for (double price : recentPriceData) {
             variance += Math.pow(price - mean, 2);
@@ -189,10 +190,44 @@ public class MarketAnalyzer {
             //System.out.println("MarketAnalyzer - 計算 RSI: NaN (數據不足)");
             return Double.NaN;
         }
-        double rs = averageGain / (averageLoss == 0 ? 1 : averageLoss);
+        if (averageLoss == 0) {
+            return 100.0; // 無下跌
+        }
+        double rs = averageGain / averageLoss;
         double rsi = 100 - (100 / (1 + rs));
         //System.out.println("MarketAnalyzer - 計算 RSI: " + rsi);
         return rsi;
+    }
+
+    // ====== 輔助：提供最近高低與最後價供技術線使用 ======
+    public synchronized double getRecentHigh(int period) {
+        if (recentPriceData.isEmpty()) return Double.NaN;
+        int size = recentPriceData.size();
+        int start = Math.max(0, size - period);
+        double high = Double.NEGATIVE_INFINITY;
+        int i = 0;
+        for (Double p : recentPriceData) {
+            if (i++ < start) continue;
+            high = Math.max(high, p);
+        }
+        return high;
+    }
+
+    public synchronized double getRecentLow(int period) {
+        if (recentPriceData.isEmpty()) return Double.NaN;
+        int size = recentPriceData.size();
+        int start = Math.max(0, size - period);
+        double low = Double.POSITIVE_INFINITY;
+        int i = 0;
+        for (Double p : recentPriceData) {
+            if (i++ < start) continue;
+            low = Math.min(low, p);
+        }
+        return low;
+    }
+
+    public synchronized double getLastPrice() {
+        return recentPriceData.isEmpty() ? Double.NaN : ((LinkedList<Double>) recentPriceData).getLast();
     }
 
     /**

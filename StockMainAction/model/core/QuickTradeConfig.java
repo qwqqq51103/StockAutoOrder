@@ -30,9 +30,10 @@ public class QuickTradeConfig {
             this.displayName = displayName;
         }
 
-        public String getDisplayName() {
-            return displayName;
-        }
+        public String getDisplayName() { return displayName; }
+
+        @Override
+        public String toString() { return displayName; }
     }
 
     /**
@@ -51,9 +52,10 @@ public class QuickTradeConfig {
             this.displayName = displayName;
         }
 
-        public String getDisplayName() {
-            return displayName;
-        }
+        public String getDisplayName() { return displayName; }
+
+        @Override
+        public String toString() { return displayName; }
     }
 
     // 配置屬性

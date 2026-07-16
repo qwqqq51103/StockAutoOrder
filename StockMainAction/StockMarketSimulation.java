@@ -23,6 +23,13 @@ public class StockMarketSimulation {
     public static void main(String[] args) {
         logger.info("股票市場模擬程式啟動", "APPLICATION_START");
 
+        // 設定現代化 LookAndFeel（FlatLaf 若可用，否則退回系統 LAF）
+        try {
+            UIManager.setLookAndFeel("com.formdev.flatlaf.FlatDarkLaf");
+        } catch (Exception ignore) {
+            try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
+        }
+
         // 使用Swing的事件分派線程初始化UI
         SwingUtilities.invokeLater(() -> {
             try {

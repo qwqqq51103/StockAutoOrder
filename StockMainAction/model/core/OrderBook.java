@@ -1,16 +1,16 @@
 package StockMainAction.model.core;
 
 import StockMainAction.model.PersonalAI;
-import StockMainAction.model.core.Stock;
+import StockMainAction.model.MarketBehavior;
+import StockMainAction.model.NoiseTraderAI;
+import StockMainAction.model.RetailInvestorAI;
 import StockMainAction.controller.listeners.OrderBookListener;
 import StockMainAction.StockMarketSimulation;
 import StockMainAction.model.StockMarketModel;
 import StockMainAction.model.user.UserAccount;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.ListIterator;
-import java.util.Random;
 import java.util.stream.Collectors;
 import javax.swing.SwingUtilities;
 import java.io.BufferedWriter;
@@ -19,10 +19,11 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.Map;
 import StockMainAction.util.logging.MarketLogger;
+import StockMainAction.util.logging.LogicAudit;
+import java.util.Collections;
 
 /**
  * 訂單簿類別，管理買賣訂單的提交和撮合（改良後的版本）。
@@ -48,15 +49,18 @@ public class OrderBook {
     /**
      * 單次撮合量的限制參數。
      */
-    private static final int MIN_PER_TRANSACTION = 4999; // 避免一次吃掉太多深度
+    private static final int MAX_PER_TRANSACTION = 5000; // 單筆撮合上限，避免一次吃掉太多深度
     private static final int DIV_FACTOR = 30;            // 分批撮合的分母
 
-    // 新增屬性
-    private MatchingMode matchingMode = MatchingMode.STANDARD; // 默認使用標準模式
-    private double randomModeChangeProbability = 0.0; // 隨機模式切換概率
+    // 撮合模式：固定使用台股撮合（價格優先、時間優先）
+    private MatchingMode matchingMode = MatchingMode.TWSE_STRICT;
+    // 舊的隨機切換撮合模式已停用（保留欄位以相容既有 UI 呼叫）
+    private double randomModeChangeProbability = 0.0;
     private final Map<Order, Long> orderTimestamps = new HashMap<>(); // 訂單時間戳記錄
     private double liquidityFactor = 1.0; // 流動性因子
     private double depthImpactFactor = 0.2; // 深度影響因子
+    // [RISK] 市價單最大允許滑價（雙邊共用，預設10%）
+    private double maxMarketSlippageRatio = 0.10;
 
     /**
      * 構造函數
@@ -64,24 +68,23 @@ public class OrderBook {
      * @param simulation 模擬實例
      */
     public OrderBook(StockMarketModel model) {
-        this.buyOrders = new ArrayList<>();
-        this.sellOrders = new ArrayList<>();
+        this.buyOrders = Collections.synchronizedList(new ArrayList<>());
+        this.sellOrders = Collections.synchronizedList(new ArrayList<>());
         this.model = model;
         this.listeners = new ArrayList<>();
     }
 
     // ================== 工具函式 ==================
     /**
-     * 按照交易所規則(或自訂)對價格做跳階
-     * <p>
-     * 小於 100 時，每單位 0.1；大於等於 100 時，每單位 0.5。
+     * 按照台股 tick ladder 對價格做跳動單位對齊（模擬用：四捨五入到最近一格）
+     * 真實交易所若不符合 tick 通常會拒單，這裡為方便直接對齊。
      */
     public double adjustPriceToUnit(double price) {
-        if (price < 100) {
-            return Math.round(price * 10) / 10.0;   // 取到小數第一位
-        } else {
-            return Math.round(price * 2) / 2.0;     // 取到 0.5
-        }
+        if (price <= 0) return 0.0;
+        double tick = getTickSize(price);
+        double aligned = Math.round(price / tick) * tick;
+        // 避免浮點誤差造成 36.8000000003 之類
+        return Math.round(aligned * 100.0) / 100.0;
     }
 
     /**
@@ -121,7 +124,11 @@ public class OrderBook {
                 return;
             }
 
-            // 1. 檢查資金
+            // 1. 調整價格到 tick 大小（必須先對齊，避免「凍結金額」與「實際委託價」不一致，造成殘留凍結）
+            double adjustedPrice = adjustPriceToUnit(order.getPrice());
+            order.setPrice(adjustedPrice);
+
+            // 2. 檢查資金（以對齊後的委託價計算凍結）
             double totalCost = order.getPrice() * order.getVolume();
             if (!account.freezeFunds(totalCost)) {
                 logger.warn(String.format(
@@ -130,10 +137,6 @@ public class OrderBook {
                 ), "ORDER_SUBMIT");
                 return;
             }
-
-            // 2. 調整價格到 tick 大小
-            double adjustedPrice = adjustPriceToUnit(order.getPrice());
-            order.setPrice(adjustedPrice);
 
             // 3. 插入買單列表 (由高到低)
             synchronized (buyOrders) {
@@ -274,20 +277,121 @@ public class OrderBook {
      * @return 是否成功提交
      */
     public boolean submitFokBuyOrder(double price, int volume, Trader trader) {
-        // 檢查是否有足夠賣單以完全滿足此買單
-        int availableSellVolume = getAvailableSellVolume(price);
-        if (availableSellVolume < volume) {
-            // 無法完全滿足，取消訂單
-            System.out.println("FOK買單無法完全滿足，已取消");
+        // 台股 FOK：要嘛立即全成、否則取消；不入簿、不插隊（避免破壞價格時間優先）
+        if (trader == null || trader.getAccount() == null || model == null || model.getStock() == null) {
+            return false;
+        }
+        if (volume <= 0) return false;
+
+        double limitPx = adjustPriceToUnit(price);
+        if (limitPx <= 0) return false;
+
+        // 僅計入「限價賣單」且 價格<=limitPx 的可成交量（台股語義）
+        int available = 0;
+        synchronized (sellOrders) {
+            for (Order o : sellOrders) {
+                if (o != null && !o.isMarketOrder() && o.getPrice() > 0 && o.getPrice() <= limitPx) {
+                    available += o.getVolume();
+                }
+            }
+        }
+        if (available < volume) {
             return false;
         }
 
-        // 可以完全滿足，創建並提交訂單
-        Order fokBuyOrder = Order.createFokBuyOrder(price, volume, trader);
-        buyOrders.add(fokBuyOrder);
-        orderTimestamps.put(fokBuyOrder, System.currentTimeMillis());
-        notifyListeners();
-        return true;
+        // 先凍結資金（以委託價上限計）
+        double reserved = limitPx * volume;
+        if (!trader.getAccount().freezeFunds(reserved)) {
+            return false;
+        }
+
+        int remaining = volume;
+        double spent = 0.0;
+
+        try {
+            // 依價格升序、時間升序撮合
+            List<Order> snapshot;
+            synchronized (sellOrders) {
+                snapshot = new ArrayList<>(sellOrders);
+            }
+            snapshot = snapshot.stream()
+                    .filter(o -> o != null && !o.isMarketOrder() && o.getPrice() > 0 && o.getVolume() > 0)
+                    .sorted((o1, o2) -> {
+                        int pc = Double.compare(o1.getPrice(), o2.getPrice());
+                        if (pc != 0) return pc;
+                        long t1 = orderTimestamps.getOrDefault(o1, o1.getTimestamp());
+                        long t2 = orderTimestamps.getOrDefault(o2, o2.getTimestamp());
+                        return Long.compare(t1, t2);
+                    })
+                    .collect(Collectors.toList());
+
+            for (Order sellOrder : snapshot) {
+                if (remaining <= 0) break;
+                double sellPx = sellOrder.getPrice();
+                if (sellPx > limitPx) break;
+
+                int chunk = Math.min(remaining, sellOrder.getVolume());
+                if (chunk <= 0) continue;
+
+                // 成交價對齊 tick（sellPx 本來就應該已對齊，但保險起見）
+                sellPx = adjustPriceToUnit(sellPx);
+
+                // 更新買方：消耗凍結資金（由 trader.updateAfterTransaction 內部處理）
+                trader.updateAfterTransaction("buy", chunk, sellPx);
+                spent += sellPx * chunk;
+
+                // 更新賣方：先消耗凍結庫存，再入帳
+                try { sellOrder.getTrader().getAccount().consumeFrozenStocks(chunk); } catch (Exception ignore) {}
+                sellOrder.getTrader().updateAfterTransaction("sell", chunk, sellPx);
+
+                // 扣減賣單
+                synchronized (sellOrders) {
+                    sellOrder.setVolume(sellOrder.getVolume() - chunk);
+                    if (sellOrder.getVolume() <= 0) {
+                        sellOrders.remove(sellOrder);
+                        orderTimestamps.remove(sellOrder);
+                    }
+                }
+
+                // 更新最後成交價
+                model.getStock().setPrice(sellPx);
+
+                // 記錄成交
+                if (model != null) {
+                    String txId = String.format("FOK_%d_%04d", System.currentTimeMillis(), (int) (Math.random() * 10000));
+                    Order virtualBuyOrder = new Order("buy", limitPx, chunk, trader, false, false, true);
+                    Transaction t = new Transaction(txId, virtualBuyOrder, sellOrder, sellPx, chunk, System.currentTimeMillis());
+                    t.setMatchingMode(matchingMode.toString());
+                    t.setBuyerInitiated(true);
+                    model.addTransaction(t);
+                    model.getMarketAnalyzer().addTransaction(sellPx, chunk);
+                    model.getMarketAnalyzer().addPrice(sellPx);
+                }
+
+                remaining -= chunk;
+            }
+
+            if (remaining != 0) {
+                // 理論上不應發生（前面已檢查 available），但保險：釋放未用資金並回報失敗
+                double refund = Math.max(0.0, reserved - spent);
+                try { trader.getAccount().unfreezeFunds(refund); } catch (Exception ex) { trader.getAccount().incrementFunds(refund); }
+                return false;
+            }
+
+            // 釋放多凍結的資金（成交價可能低於委託價）
+            double refund = Math.max(0.0, reserved - spent);
+            if (refund > 0) {
+                try { trader.getAccount().unfreezeFunds(refund); } catch (Exception ex) { trader.getAccount().incrementFunds(refund); }
+            }
+
+            notifyListeners();
+            return true;
+        } catch (Exception e) {
+            // 異常：盡可能釋放資金
+            try { trader.getAccount().unfreezeFunds(reserved); } catch (Exception ex) { trader.getAccount().incrementFunds(reserved); }
+            logger.error("FOK買單執行異常：" + e.getMessage(), "ORDER_FOK");
+            return false;
+        }
     }
 
     /**
@@ -296,20 +400,106 @@ public class OrderBook {
      * @return 是否成功提交
      */
     public boolean submitFokSellOrder(double price, int volume, Trader trader) {
-        // 檢查是否有足夠買單以完全滿足此賣單
-        int availableBuyVolume = getAvailableBuyVolume(price);
-        if (availableBuyVolume < volume) {
-            // 無法完全滿足，取消訂單
-            System.out.println("FOK賣單無法完全滿足，已取消");
+        // 台股 FOK：要嘛立即全成、否則取消；不入簿、不插隊
+        if (trader == null || trader.getAccount() == null || model == null || model.getStock() == null) {
+            return false;
+        }
+        if (volume <= 0) return false;
+
+        double limitPx = adjustPriceToUnit(price);
+        if (limitPx <= 0) return false;
+
+        // 僅計入「限價買單」且 價格>=limitPx 的可成交量
+        int available = 0;
+        synchronized (buyOrders) {
+            for (Order o : buyOrders) {
+                if (o != null && !o.isMarketOrder() && o.getPrice() > 0 && o.getPrice() >= limitPx) {
+                    available += o.getVolume();
+                }
+            }
+        }
+        if (available < volume) {
             return false;
         }
 
-        // 可以完全滿足，創建並提交訂單
-        Order fokSellOrder = Order.createFokSellOrder(price, volume, trader);
-        sellOrders.add(fokSellOrder);
-        orderTimestamps.put(fokSellOrder, System.currentTimeMillis());
-        notifyListeners();
-        return true;
+        // 先凍結庫存
+        if (!trader.getAccount().freezeStocks(volume)) {
+            return false;
+        }
+
+        int remaining = volume;
+
+        try {
+            // 依價格降序、時間升序撮合
+            List<Order> snapshot;
+            synchronized (buyOrders) {
+                snapshot = new ArrayList<>(buyOrders);
+            }
+            snapshot = snapshot.stream()
+                    .filter(o -> o != null && !o.isMarketOrder() && o.getPrice() > 0 && o.getVolume() > 0)
+                    .sorted((o1, o2) -> {
+                        int pc = Double.compare(o2.getPrice(), o1.getPrice());
+                        if (pc != 0) return pc;
+                        long t1 = orderTimestamps.getOrDefault(o1, o1.getTimestamp());
+                        long t2 = orderTimestamps.getOrDefault(o2, o2.getTimestamp());
+                        return Long.compare(t1, t2);
+                    })
+                    .collect(Collectors.toList());
+
+            for (Order buyOrder : snapshot) {
+                if (remaining <= 0) break;
+                double buyPx = buyOrder.getPrice();
+                if (buyPx < limitPx) break;
+
+                int chunk = Math.min(remaining, buyOrder.getVolume());
+                if (chunk <= 0) continue;
+                buyPx = adjustPriceToUnit(buyPx);
+
+                // 賣方：消耗凍結庫存 + 入帳
+                try { trader.getAccount().consumeFrozenStocks(chunk); } catch (Exception ignore) {}
+                trader.updateAfterTransaction("sell", chunk, buyPx);
+
+                // 買方：消耗凍結資金 + 入庫（由買方 trader.updateAfterTransaction 處理）
+                buyOrder.getTrader().updateAfterTransaction("buy", chunk, buyPx);
+
+                synchronized (buyOrders) {
+                    buyOrder.setVolume(buyOrder.getVolume() - chunk);
+                    if (buyOrder.getVolume() <= 0) {
+                        buyOrders.remove(buyOrder);
+                        orderTimestamps.remove(buyOrder);
+                    }
+                }
+
+                model.getStock().setPrice(buyPx);
+
+                if (model != null) {
+                    String txId = String.format("FOK_%d_%04d", System.currentTimeMillis(), (int) (Math.random() * 10000));
+                    Order virtualSellOrder = new Order("sell", limitPx, chunk, trader, false, false, true);
+                    Transaction t = new Transaction(txId, buyOrder, virtualSellOrder, buyPx, chunk, System.currentTimeMillis());
+                    t.setMatchingMode(matchingMode.toString());
+                    t.setBuyerInitiated(false);
+                    model.addTransaction(t);
+                    model.getMarketAnalyzer().addTransaction(buyPx, chunk);
+                    model.getMarketAnalyzer().addPrice(buyPx);
+                }
+
+                remaining -= chunk;
+            }
+
+            if (remaining != 0) {
+                // 釋放剩餘凍結庫存（保險）
+                int refund = remaining;
+                try { trader.getAccount().unfreezeStocks(refund); } catch (Exception ex) { trader.getAccount().incrementStocks(refund); }
+                return false;
+            }
+
+            notifyListeners();
+            return true;
+        } catch (Exception e) {
+            try { trader.getAccount().unfreezeStocks(volume); } catch (Exception ex) { trader.getAccount().incrementStocks(volume); }
+            logger.error("FOK賣單執行異常：" + e.getMessage(), "ORDER_FOK");
+            return false;
+        }
     }
 
     // ================== 撮合/匹配核心 ==================
@@ -321,14 +511,16 @@ public class OrderBook {
     public void processOrders(Stock stock) {
         logger.info("開始處理訂單撮合", "ORDER_PROCESSING");
         logger.debug("處理訂單：使用模式=" + matchingMode, "ORDER_BOOK");
+        LogicAudit.info("ORDER_MATCH", "start | mode=" + matchingMode);
 
         // 準備異常日誌文件
         File logFile = new File(System.getProperty("user.home") + "/Desktop/MarketAnomalies.log");
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true))) {
+        try ( BufferedWriter writer = new BufferedWriter(new FileWriter(logFile, true))) {
             // 處理FOK訂單
             try {
                 handleFokOrders();
                 logger.info("成功處理FOK訂單", "ORDER_PROCESSING");
+                LogicAudit.info("ORDER_MATCH", "FOK handled");
             } catch (Exception e) {
                 logger.error("處理FOK訂單時發生異常：" + e.getMessage(), "ORDER_PROCESSING");
             }
@@ -337,20 +529,79 @@ public class OrderBook {
             int initialBuyOrdersCount = buyOrders.size();
             int initialSellOrdersCount = sellOrders.size();
 
-            buyOrders = buyOrders.stream()
-                    .filter(o -> o.getVolume() > 0 && (o.isMarketOrder() || o.getPrice() > 0))
-                    .sorted((o1, o2) -> {
-                        // 市價單和價格排序邏輯
-                        if (o1.isMarketOrder() && !o2.isMarketOrder()) {
-                            return -1;
+            // [FIX] 清理無效訂單時要一併解凍，避免長時間運行後出現「帳戶有凍結但簿上沒單」
+            // - buy: 退還 frozenFunds（限價單才會凍結）
+            // - sell: 退還 frozenStocks（限價單才會凍結）
+            try {
+                List<Order> invalidBuys = new ArrayList<>();
+                synchronized (buyOrders) {
+                    for (Order o : new ArrayList<>(buyOrders)) {
+                        if (o == null) {
+                            invalidBuys.add(o);
+                            continue;
                         }
-                        if (!o1.isMarketOrder() && o2.isMarketOrder()) {
-                            return 1;
+                        boolean ok = o.getVolume() > 0 && (o.isMarketOrder() || o.getPrice() > 0);
+                        if (!ok) invalidBuys.add(o);
+                    }
+                    for (Order o : invalidBuys) {
+                        buyOrders.remove(o);
+                        orderTimestamps.remove(o);
+                        if (o == null) continue;
+                        // 限價買：撤銷時退還凍結資金
+                        if (!o.isMarketOrder() && o.getPrice() > 0 && o.getVolume() > 0 && o.getTrader() != null && o.getTrader().getAccount() != null) {
+                            double refund = adjustPriceToUnit(o.getPrice()) * o.getVolume();
+                            try {
+                                UserAccount acc = o.getTrader().getAccount();
+                                if (!acc.unfreezeFunds(refund)) acc.incrementFunds(refund);
+                            } catch (Exception ignore) {}
                         }
+                    }
+                    // 移除 null（保險）
+                    buyOrders.removeIf(x -> x == null);
+                }
 
+                List<Order> invalidSells = new ArrayList<>();
+                synchronized (sellOrders) {
+                    for (Order o : new ArrayList<>(sellOrders)) {
+                        if (o == null) {
+                            invalidSells.add(o);
+                            continue;
+                        }
+                        boolean ok = o.getVolume() > 0 && (o.isMarketOrder() || o.getPrice() > 0);
+                        if (!ok) invalidSells.add(o);
+                    }
+                    for (Order o : invalidSells) {
+                        sellOrders.remove(o);
+                        orderTimestamps.remove(o);
+                        if (o == null) continue;
+                        // 限價賣：撤銷時退還凍結股票
+                        if (!o.isMarketOrder() && o.getVolume() > 0 && o.getTrader() != null && o.getTrader().getAccount() != null) {
+                            int refund = o.getVolume();
+                            try {
+                                o.getTrader().getAccount().unfreezeStocks(refund);
+                            } catch (Exception ex) {
+                                try { o.getTrader().getAccount().incrementStocks(refund); } catch (Exception ignore) {}
+                            }
+                        }
+                    }
+                    sellOrders.removeIf(x -> x == null);
+                }
+            } catch (Exception ignore) {}
+
+            // 排序（就地排序，避免替換整個 List 導致其他引用/同步失效）
+            try {
+                synchronized (buyOrders) {
+                    buyOrders.sort((o1, o2) -> {
+                        if (o1 == null && o2 == null) return 0;
+                        if (o1 == null) return 1;
+                        if (o2 == null) return -1;
+                        // 市價單優先
+                        if (o1.isMarketOrder() && !o2.isMarketOrder()) return -1;
+                        if (!o1.isMarketOrder() && o2.isMarketOrder()) return 1;
+                        // 價格優先（買單降序）
                         if (!o1.isMarketOrder() && !o2.isMarketOrder()) {
                             int priceCompare = Double.compare(o2.getPrice(), o1.getPrice());
-                            if (priceCompare == 0 && matchingMode == MatchingMode.PRICE_TIME) {
+                            if (priceCompare == 0) {
                                 long t1 = orderTimestamps.getOrDefault(o1, Long.MAX_VALUE);
                                 long t2 = orderTimestamps.getOrDefault(o2, Long.MAX_VALUE);
                                 return Long.compare(t1, t2);
@@ -358,23 +609,20 @@ public class OrderBook {
                             return priceCompare;
                         }
                         return 0;
-                    })
-                    .collect(Collectors.toList());
-
-            sellOrders = sellOrders.stream()
-                    .filter(o -> o.getVolume() > 0 && (o.isMarketOrder() || o.getPrice() > 0))
-                    .sorted((o1, o2) -> {
-                        // 市價單和價格排序邏輯
-                        if (o1.isMarketOrder() && !o2.isMarketOrder()) {
-                            return -1;
-                        }
-                        if (!o1.isMarketOrder() && o2.isMarketOrder()) {
-                            return 1;
-                        }
-
+                    });
+                }
+                synchronized (sellOrders) {
+                    sellOrders.sort((o1, o2) -> {
+                        if (o1 == null && o2 == null) return 0;
+                        if (o1 == null) return 1;
+                        if (o2 == null) return -1;
+                        // 市價單優先
+                        if (o1.isMarketOrder() && !o2.isMarketOrder()) return -1;
+                        if (!o1.isMarketOrder() && o2.isMarketOrder()) return 1;
+                        // 價格優先（賣單升序）
                         if (!o1.isMarketOrder() && !o2.isMarketOrder()) {
                             int priceCompare = Double.compare(o1.getPrice(), o2.getPrice());
-                            if (priceCompare == 0 && matchingMode == MatchingMode.PRICE_TIME) {
+                            if (priceCompare == 0) {
                                 long t1 = orderTimestamps.getOrDefault(o1, Long.MAX_VALUE);
                                 long t2 = orderTimestamps.getOrDefault(o2, Long.MAX_VALUE);
                                 return Long.compare(t1, t2);
@@ -382,14 +630,24 @@ public class OrderBook {
                             return priceCompare;
                         }
                         return 0;
-                    })
-                    .collect(Collectors.toList());
+                    });
+                }
+            } catch (Exception ignore) {}
 
             logger.info(String.format(
                     "訂單篩選與排序完成：買單從 %d 到 %d，賣單從 %d 到 %d",
                     initialBuyOrdersCount, buyOrders.size(),
                     initialSellOrdersCount, sellOrders.size()
             ), "ORDER_PROCESSING");
+            LogicAudit.info("ORDER_MATCH", String.format(
+                    "books | buys=%d sells=%d", buyOrders.size(), sellOrders.size()));
+
+            // [SAFETY] 週期性對帳：若帳戶凍結量 > 簿上應凍結量，解凍多餘部分（避免長跑累積）
+            try {
+                if (model != null && model.getTimeStep() % 50 == 0) {
+                    reconcileOrphanFrozen();
+                }
+            } catch (Exception ignore) {}
 
             // 開始撮合
             boolean transactionOccurred = true;
@@ -405,16 +663,17 @@ public class OrderBook {
                         "開始第 %d 輪撮合，買單數量：%d，賣單數量：%d",
                         currentRound, buyOrders.size(), sellOrders.size()
                 ), "ORDER_PROCESSING");
+                LogicAudit.info("ORDER_MATCH", String.format("round=%d", currentRound));
 
                 if (buyOrders.isEmpty() || sellOrders.isEmpty()) {
                     logger.info("買單或賣單為空，中止撮合", "ORDER_PROCESSING");
                     break;
                 }
 
-                int i = 0;
-                while (i < buyOrders.size() && i < sellOrders.size()) {
-                    Order buyOrder = buyOrders.get(i);
-                    Order sellOrder = sellOrders.get(i);
+                // 標準撮合：以買一與賣一進行配對
+                while (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
+                    Order buyOrder = buyOrders.get(0);
+                    Order sellOrder = sellOrders.get(0);
 
                     // 自我交易檢查
 //                    if (buyOrder.getTrader() == sellOrder.getTrader()) {
@@ -446,20 +705,27 @@ public class OrderBook {
                                     txVolume
                             ), "ORDER_PROCESSING");
 
-                            // 更新 UI，替換原有的 simulation 調用
+                            // 稽核：價格跳躍與量能
+                            LogicAudit.checkPriceJump("ORDER_TX", stock.getPreviousPrice(), stock.getPrice(), 0.05);
+                            LogicAudit.checkTransaction("ORDER_TX", stock.getPrice(), txVolume, "engine");
+
+                            // 更新 UI
                             if (model != null) {
                                 model.updateVolumeChart(txVolume);
                             } else {
-                                System.out.println("警告：無法更新 UI，updateVolumeChart 為 null");
+                                logger.warn("無法更新 UI，model 參考為 null（updateVolumeChart）", "ORDER_BOOK");
                             }
                             notifyListeners();
 
-                            i = 0; // 重新開始
+                            // 成交後重新以買一/賣一繼續判斷
+                            continue;
                         } else {
-                            i++;
+                            // 無實際成交，嘗試退出以避免死循環
+                            break;
                         }
                     } else {
-                        i++;
+                        // 當前買一、賣一無法成交，結束當前輪
+                        break;
                     }
                 }
             }
@@ -475,7 +741,7 @@ public class OrderBook {
                 model.updateLabels();
                 model.updateOrderBookDisplay();
             } else {
-                System.out.println("警告：無法更新 UI，updateLabels、updateOrderBookDisplay 為 null");
+                logger.warn("無法更新 UI，model 參考為 null（updateLabels / updateOrderBookDisplay）", "ORDER_BOOK");
             }
 
         } catch (IOException e) {
@@ -494,61 +760,8 @@ public class OrderBook {
             return true;
         }
 
-        // 標準價格比較：買價 >= 賣價則可成交
-        boolean standardMatch = buyOrder.getPrice() >= sellOrder.getPrice();
-
-        // 基於當前撮合模式的特殊判斷
-        switch (matchingMode) {
-            case STANDARD:
-                return standardMatch;
-
-            case PRICE_TIME:
-                // 標準匹配還需進一步檢查訂單優先級
-                if (standardMatch) {
-                    // 此處完全相同價格的訂單會考慮時間優先
-                    return true;
-                }
-                return false;
-
-            case VOLUME_WEIGHTED:
-                // 在標準匹配的基礎上，大單有更高優先級
-                if (standardMatch) {
-                    return true;
-                }
-                // 如果是大單，允許小幅價差
-                int maxVolume = Math.max(buyOrder.getVolume(), sellOrder.getVolume());
-                if (maxVolume > 1000) {
-                    double priceDiff = (buyOrder.getPrice() - sellOrder.getPrice()) / sellOrder.getPrice();
-                    return priceDiff > -0.01; // 允許1%價差
-                }
-                return false;
-
-            case MARKET_PRESSURE:
-                // 根據買賣單總量比例，動態調整撮合標準
-                double buyPressure = calculateBuyPressure();
-                // 買方壓力大時，即使買價稍低也可能成交
-                if (buyPressure > 1.5) {
-                    double priceDiff = (buyOrder.getPrice() - sellOrder.getPrice()) / sellOrder.getPrice();
-                    return priceDiff > -0.02; // 允許2%價差
-                } // 賣方壓力大時，要求更高買價
-                else if (buyPressure < 0.7) {
-                    return buyOrder.getPrice() >= sellOrder.getPrice() * 1.01; // 要求額外1%溢價
-                }
-                return standardMatch;
-
-            case RANDOM:
-                // 標準匹配基礎上增加隨機因素
-                if (standardMatch) {
-                    return true;
-                }
-                // 有10%機率即使不完全匹配也成交 (模擬市場噪聲)
-                Random random = new Random();
-                double priceDiff = (buyOrder.getPrice() - sellOrder.getPrice()) / sellOrder.getPrice();
-                return priceDiff > -0.01 && random.nextDouble() < 0.1;
-
-            default:
-                return standardMatch;
-        }
+        // 台股連續撮合：必須交叉才可成交（買價 >= 賣價）
+        return buyOrder.getPrice() >= sellOrder.getPrice();
     }
 
     /**
@@ -565,81 +778,11 @@ public class OrderBook {
             return buyPrice; // 市價賣，以買價成交
         }
 
-        // 根據不同撮合模式計算價格
-        switch (matchingMode) {
-            case STANDARD:
-                // 標準模式：中間價
-                return (buyPrice + sellPrice) / 2.0;
-
-            case PRICE_TIME:
-                // 價格時間優先：先到先得優勢
-                Long buyTime = orderTimestamps.getOrDefault(buyOrder, System.currentTimeMillis());
-                Long sellTime = orderTimestamps.getOrDefault(sellOrder, System.currentTimeMillis());
-
-                if (buyTime < sellTime) {
-                    // 買單先到，偏向買方價格 (60/40分)
-                    return buyPrice * 0.6 + sellPrice * 0.4;
-                } else {
-                    // 賣單先到，偏向賣方價格 (40/60分)
-                    return buyPrice * 0.4 + sellPrice * 0.6;
-                }
-
-            case VOLUME_WEIGHTED:
-                // 成交量加權定價 - 大單有議價能力
-                if (buyOrder.getVolume() > sellOrder.getVolume() * 2) {
-                    // 買方量大，偏向買方價格
-                    return buyPrice * 0.7 + sellPrice * 0.3;
-                } else if (sellOrder.getVolume() > buyOrder.getVolume() * 2) {
-                    // 賣方量大，偏向賣方價格
-                    return buyPrice * 0.3 + sellPrice * 0.7;
-                } else {
-                    // 量相近，按比例加權
-                    double buyWeight = (double) buyOrder.getVolume() / (buyOrder.getVolume() + sellOrder.getVolume());
-                    return buyPrice * (1 - buyWeight) + sellPrice * buyWeight;
-                }
-
-            case MARKET_PRESSURE:
-                // 市場壓力模式：考慮買賣壓力
-                double buyPressure = calculateBuyPressure();
-                if (buyPressure > 1.5) {
-                    // 買方壓力大，賣方有優勢
-                    return sellPrice * 0.8 + buyPrice * 0.2;
-                } else if (buyPressure < 0.7) {
-                    // 賣方壓力大，買方有優勢
-                    return sellPrice * 0.2 + buyPrice * 0.8;
-                } else {
-                    // 壓力平衡，適度偏向近期趨勢
-                    double recentTrend = 0.0;
-                    try {
-                        recentTrend = model.getMarketAnalyzer().getRecentPriceTrend();
-                    } catch (Exception e) {
-                        // 如果無法獲取趨勢，使用默認值
-                    }
-
-                    if (recentTrend > 0.01) {
-                        // 上漲趨勢，偏向賣方
-                        return sellPrice * 0.6 + buyPrice * 0.4;
-                    } else if (recentTrend < -0.01) {
-                        // 下跌趨勢，偏向買方
-                        return sellPrice * 0.4 + buyPrice * 0.6;
-                    } else {
-                        // 盤整，中間價
-                        return (buyPrice + sellPrice) / 2.0;
-                    }
-                }
-
-            case RANDOM:
-                // 隨機模式：增加隨機性但仍在買賣價之間
-                Random random = new Random();
-                double randomFactor = random.nextDouble(); // 0-1之間
-                // 額外增加少許波動
-                double extraNoise = (random.nextDouble() - 0.5) * 0.02 * sellPrice;
-                double basePrice = sellPrice * (1 - randomFactor) + buyPrice * randomFactor;
-                return basePrice + extraNoise;
-
-            default:
-                return (buyPrice + sellPrice) / 2.0;
-        }
+        // 台股：成交價以「被動方（簿內較早者）」的委託價為準
+        long buyTime = orderTimestamps.getOrDefault(buyOrder, buyOrder.getTimestamp());
+        long sellTime = orderTimestamps.getOrDefault(sellOrder, sellOrder.getTimestamp());
+        boolean buyIsPassive = buyTime <= sellTime;
+        return buyIsPassive ? buyPrice : sellPrice;
     }
 
     private int executeTransaction(Order buyOrder, Order sellOrder, Stock stock, BufferedWriter writer) throws IOException {
@@ -648,24 +791,12 @@ public class OrderBook {
             return 0;
         }
 
-        // 2. 可能隨機切換撮合模式
-        if (Math.random() < randomModeChangeProbability) {
-            matchingMode = MatchingMode.getRandom();
-            System.out.println("撮合模式隨機切換到: " + matchingMode);
-        }
+        // 2. 台股固定撮合模式：停用隨機切換
+        randomModeChangeProbability = 0.0;
 
-        // 3. 計算可成交量 - 考慮流動性因素
+        // 3. 計算可成交量：一次撮合當前價位的最大可成交量（避免逐股吃單）
         int theoreticalMax = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
-        // 根據流動性調整成交量
-        int adjustedMax = (int) (theoreticalMax * liquidityFactor);
-        // 最小成交量不變
-        int maxTransactionVolume = Math.max(MIN_PER_TRANSACTION - 1, adjustedMax / DIV_FACTOR);
-        int txVolume = Math.min(adjustedMax, maxTransactionVolume);
-
-        // 市價單優先考慮最大成交
-        if (buyOrder.isMarketOrder() || sellOrder.isMarketOrder()) {
-            txVolume = Math.min(buyOrder.getVolume(), sellOrder.getVolume());
-        }
+        int txVolume = theoreticalMax;
 
         // 4. 根據撮合模式決定成交價
         double finalPrice = calculateMatchPrice(buyOrder, sellOrder, txVolume);
@@ -725,8 +856,10 @@ public class OrderBook {
             detailedTransaction.setSellOrderRemainingVolume(sellOrderRemainingVolume);
             detailedTransaction.setMatchingMode(matchingMode.toString());
 
-            // 判斷是買方還是賣方主動
-            boolean isBuyerInitiated = buyOrder.getTimestamp() > sellOrder.getTimestamp();
+            // 判斷是買方還是賣方主動（台股：後到且穿價者為主動方）
+            long buyTime = orderTimestamps.getOrDefault(buyOrder, buyOrder.getTimestamp());
+            long sellTime = orderTimestamps.getOrDefault(sellOrder, sellOrder.getTimestamp());
+            boolean isBuyerInitiated = buyTime > sellTime; // 買單較晚進來，代表買方主動吃單
             detailedTransaction.setBuyerInitiated(isBuyerInitiated);
 
             // 添加到模型的成交記錄中
@@ -736,12 +869,34 @@ public class OrderBook {
         // 10. 傳遞給 MarketAnalyzer
         model.getMarketAnalyzer().addTransaction(finalPrice, txVolume);
 
-        // 11. 更新買方/賣方的帳戶
-        updateTraderStatus(buyOrder, sellOrder, txVolume, finalPrice);
+        // 11. 更新買方/賣方的帳戶（統一用 updateAfterTransaction 維護持股/資金）
+        if (buyOrder != null && buyOrder.getTrader() != null) {
+            buyOrder.getTrader().updateAfterTransaction("buy", txVolume, finalPrice);
+            // [FIX] 若成交價優於買方委託價（例如買方主動吃到較低賣價），需把差額退回凍結資金，否則凍結資金會永遠殘留
+            try {
+                if (!buyOrder.isMarketOrder()) {
+                    double buyPx = buyOrder.getPrice();
+                    if (buyPx > 0 && finalPrice > 0 && finalPrice < buyPx) {
+                        double diff = (buyPx - finalPrice) * txVolume;
+                        UserAccount acc = buyOrder.getTrader().getAccount();
+                        if (acc != null && diff > 0) {
+                            // 只嘗試解凍凍結資金（若該筆成交不是走 frozenFunds，unfreezeFunds 會失敗，這裡不做 increment 以免造錢）
+                            acc.unfreezeFunds(diff);
+                        }
+                    }
+                }
+            } catch (Exception ignore) {}
+        }
+        if (sellOrder != null && sellOrder.getTrader() != null) {
+            try {
+                sellOrder.getTrader().getAccount().consumeFrozenStocks(txVolume);
+            } catch (Exception ignore) {}
+            sellOrder.getTrader().updateAfterTransaction("sell", txVolume, finalPrice);
+        }
 
-        // 12. 印出詳細日誌,包括撮合模式
-        System.out.printf("交易完成 [%s模式]:成交量 %d,成交價格 %.2f%n",
-                matchingMode, txVolume, finalPrice);
+        // 12. 記錄撮合成交日誌
+        logger.info(String.format("交易完成 [%s模式]：成交量 %d，成交價格 %.2f",
+                matchingMode, txVolume, finalPrice), "ORDER_TX");
 
         return txVolume;
     }
@@ -751,11 +906,11 @@ public class OrderBook {
      */
     private boolean validateTransaction(Order buyOrder, Order sellOrder, Stock stock) {
         if (stock == null) {
-            System.out.println("Error: Stock is null. Unable to update stock price.");
+            logger.error("validateTransaction：Stock 為 null，無法更新股價", "ORDER_BOOK");
             return false;
         }
         if (buyOrder.getTraderAccount() == null || sellOrder.getTraderAccount() == null) {
-            System.out.println("Error: Trader account is null for one of the orders.");
+            logger.error("validateTransaction：買方或賣方帳戶為 null", "ORDER_BOOK");
             return false;
         }
         return true;
@@ -773,13 +928,9 @@ public class OrderBook {
      * 設置撮合模式
      */
     public void setMatchingMode(MatchingMode mode) {
-        if (mode == null) {
-            logger.warn("嘗試設置 null 撮合模式，使用默認模式", "ORDER_BOOK");
-            this.matchingMode = MatchingMode.PRICE_TIME;
-        } else {
-            logger.info("設置撮合模式：從 " + this.matchingMode + " 變更為 " + mode, "ORDER_BOOK");
-            this.matchingMode = mode;
-        }
+        // 台股固定模式：忽略外部傳入，避免切到非台股撮合
+        this.matchingMode = MatchingMode.TWSE_STRICT;
+        logger.info("撮合模式固定為台股撮合（TWSE_STRICT）", "ORDER_BOOK");
     }
 
     /**
@@ -796,13 +947,9 @@ public class OrderBook {
      * @param probability 切換概率 (0-1)
      */
     public void setRandomModeSwitching(boolean useRandom, double probability) {
-        if (useRandom) {
-            this.randomModeChangeProbability = Math.max(0, Math.min(1, probability));
-            System.out.println("已啟用隨機撮合模式切換，概率: " + this.randomModeChangeProbability);
-        } else {
-            this.randomModeChangeProbability = 0;
-            System.out.println("已禁用隨機撮合模式切換");
-        }
+        // 台股固定模式：停用隨機切換
+        this.randomModeChangeProbability = 0.0;
+        logger.info("台股撮合固定模式：隨機切換已停用", "ORDER_BOOK");
     }
 
     /**
@@ -846,7 +993,18 @@ public class OrderBook {
                 // 無法完全滿足，從訂單簿中移除
                 buyOrders.remove(fokOrder);
                 orderTimestamps.remove(fokOrder);
-                System.out.println("移除無法完全滿足的FOK買單: " + fokOrder);
+                // [FIX] FOK 被 kill 時要解凍資金，否則會留下凍結現金
+                try {
+                    if (fokOrder != null && fokOrder.getTrader() != null && fokOrder.getTrader().getAccount() != null) {
+                        UserAccount acc = fokOrder.getTrader().getAccount();
+                        double refund = Math.max(0.0, fokOrder.getPrice() * fokOrder.getVolume());
+                        double can = Math.min(acc.getFrozenFunds(), refund);
+                        if (can > 0) acc.unfreezeFunds(can);
+                    }
+                } catch (Exception e) {
+                    logger.warn("FOK買單解凍資金失敗：" + e.getMessage(), "ORDER_BOOK");
+                }
+                logger.info("FOK買單 Kill：無法完全滿足，已移除 " + fokOrder, "ORDER_BOOK");
             }
         }
 
@@ -861,220 +1019,429 @@ public class OrderBook {
                 // 無法完全滿足，從訂單簿中移除
                 sellOrders.remove(fokOrder);
                 orderTimestamps.remove(fokOrder);
-                System.out.println("移除無法完全滿足的FOK賣單: " + fokOrder);
+                // [FIX] FOK 被 kill 時要解凍庫存，否則會留下凍結持股
+                try {
+                    if (fokOrder != null && fokOrder.getTrader() != null && fokOrder.getTrader().getAccount() != null) {
+                        UserAccount acc = fokOrder.getTrader().getAccount();
+                        int refund = Math.max(0, fokOrder.getVolume());
+                        int can = Math.min(acc.getFrozenStocks(), refund);
+                        if (can > 0) acc.unfreezeStocks(can);
+                    }
+                } catch (Exception e) {
+                    logger.warn("FOK賣單解凍庫存失敗：" + e.getMessage(), "ORDER_BOOK");
+                }
+                logger.info("FOK賣單 Kill：無法完全滿足，已移除 " + fokOrder, "ORDER_BOOK");
             }
         }
     }
 
+// 在 OrderBook.java 中替換市價單方法
     /**
-     * 市價買入方法
+     * 市價買入方法 - 增強版，集成到現有Transaction系統
      */
     public void marketBuy(Trader trader, int quantity) {
+        // 創建市價單交易記錄
+        String transactionId = String.format("MKT_%d_%04d",
+                System.currentTimeMillis(),
+                (int) (Math.random() * 10000));
+
+        double currentPrice = model.getStock().getPrice();
+        Transaction transaction = new Transaction(
+                transactionId,
+                trader.getTraderType(),
+                "MARKET_BUY",
+                quantity,
+                currentPrice, // 預估價格
+                currentPrice // 交易前價格
+        );
+
         logger.info(String.format(
-                "市價買入開始：交易者=%s, 數量=%d, 可用資金=%.2f",
-                trader.getTraderType(), quantity, trader.getAccount().getAvailableFunds()
+                "市價買入開始：交易者=%s, 數量=%d, 可用資金=%.2f, 交易ID=%s",
+                trader.getTraderType(), quantity, trader.getAccount().getAvailableFunds(),
+                transaction.getId()
         ), "MARKET_BUY");
 
         double remainingFunds = trader.getAccount().getAvailableFunds();
         int remainingQuantity = quantity;
-        double totalTxValue = 0.0;
-        int totalTxVolume = 0;
+        String failureReason = null;
+
 
         // 檢查可用資金
         if (remainingFunds <= 0) {
+            failureReason = "資金不足";
+            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
+
+            // 僅在有實際成交時才加入交易記錄（避免UI誤判為成交）
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
+
             logger.warn(String.format(
-                    "市價買入失敗：交易者=%s, 原因=資金不足",
-                    trader.getTraderType()
+                    "市價買入失敗：交易者=%s, 原因=%s, 交易ID=%s",
+                    trader.getTraderType(), failureReason, transaction.getId()
             ), "MARKET_BUY");
             return;
         }
 
-        try {
-            ListIterator<Order> it = sellOrders.listIterator();
-            while (it.hasNext() && remainingQuantity > 0) {
-                Order sellOrder = it.next();
-                double sellPx = sellOrder.getPrice();
-                int chunk = Math.min(sellOrder.getVolume(), remainingQuantity);
-                double cost = chunk * sellPx;
+        // 台股模擬風控：市價單滑價保護帶（避免掃到離譜價格）
+        final double maxPx = adjustPriceToUnit(currentPrice * (1.0 + maxMarketSlippageRatio));
 
-                // 自成交檢查
-                if (sellOrder.getTrader() == trader) {
-                    logger.info(String.format(
-                            "市價買入跳過自成交：交易者=%s, 賣單價格=%.2f, 數量=%d",
-                            trader.getTraderType(), sellPx, chunk
-                    ), "MARKET_BUY");
+        int depthLevel = 1;
+        try {
+            synchronized (sellOrders) {
+            ListIterator<Order> it = sellOrders.listIterator();
+
+            while (it.hasNext() && remainingQuantity > 0 && remainingFunds > 0) {
+                Order sellOrder = it.next();
+                if (sellOrder == null) {
                     continue;
                 }
+                // 市價買：只能吃到保護帶以內的賣價
+                double sellPx = adjustPriceToUnit(sellOrder.getPrice());
+                if (sellPx <= 0) {
+                    continue;
+                }
+                if (sellPx > maxPx) {
+                    failureReason = String.format("滑價超出保護帶：賣價=%.2f > 上限=%.2f", sellPx, maxPx);
+                    break;
+                }
+                int availableVolume = sellOrder.getVolume();
+                int chunk = Math.min(availableVolume, remainingQuantity);
+                double cost = chunk * sellPx;
 
-                if (remainingFunds >= cost) {
-                    // 更新買方
-                    trader.getAccount().decrementFunds(cost);
-                    trader.getAccount().incrementStocks(chunk);
+
+
+                // 允許自成交
+
+                // 資金檢查
+                if (remainingFunds < cost) {
+                    // 部分資金不足，計算能買多少
+                    int affordableQuantity = (int) Math.floor(remainingFunds / sellPx);
+                    if (affordableQuantity > 0) {
+                        chunk = affordableQuantity;
+                        cost = chunk * sellPx;
+                    } else {
+                        failureReason = remainingQuantity == quantity
+                                ? "資金完全不足" : "剩餘資金不足";
+                        break;
+                    }
+                }
+
+                // 執行交易
+                try {
+                    // 更新買方帳戶與成本（由交易者實作處理平均成本與資金變化）
+                    trader.updateAverageCostPrice("buy", chunk, sellPx);
                     remainingFunds -= cost;
                     remainingQuantity -= chunk;
 
-                    // 更新賣方
+                    // 先消耗賣方凍結庫存，再更新賣方帳戶
+                    try {
+                        sellOrder.getTrader().getAccount().consumeFrozenStocks(chunk);
+                    } catch (Exception ignore) {}
+                    // 更新賣方帳戶
                     sellOrder.getTrader().updateAfterTransaction("sell", chunk, sellPx);
 
+                    // 記錄填單到Transaction
+                    transaction.addFillRecord(sellPx, chunk,
+                            sellOrder.getTrader().getTraderType(), depthLevel);
+
                     logger.info(String.format(
-                            "市價買入成交：買入 %d 股，價格=%.2f，成本=%.2f",
-                            chunk, sellPx, cost
+                            "市價買入成交：買入 %d 股@%.2f，成本=%.2f，深度=%d，對手=%s，交易ID=%s",
+                            chunk, sellPx, cost, depthLevel,
+                            sellOrder.getTrader().getTraderType(),
+                            transaction.getId()
                     ), "MARKET_BUY");
 
-                    totalTxValue += cost;
-                    totalTxVolume += chunk;
-
-                    // 更新賣單
+                    // 更新賣單數量
                     sellOrder.setVolume(sellOrder.getVolume() - chunk);
                     if (sellOrder.getVolume() <= 0) {
                         it.remove();
-                        logger.info("賣單已全部成交，從列表中移除", "MARKET_BUY");
+                        orderTimestamps.remove(sellOrder);
+                        logger.debug("賣單已全部成交，從列表中移除", "MARKET_BUY");
                     }
-                } else {
-                    logger.warn(String.format(
-                            "市價買入中斷：資金不足，剩餘資金=%.2f，需要=%.2f",
-                            remainingFunds, cost
+
+                } catch (Exception e) {
+                    logger.error(String.format(
+                            "市價買入執行交易異常：交易者=%s, 錯誤=%s, 交易ID=%s",
+                            trader.getTraderType(), e.getMessage(), transaction.getId()
                     ), "MARKET_BUY");
+                    failureReason = "交易執行異常: " + e.getMessage();
                     break;
                 }
+
+                depthLevel++;
+            }
             }
 
-            // 更新 MarketAnalyzer
-            if (totalTxVolume > 0) {
-                double avgPrice = totalTxValue / totalTxVolume;
-                model.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
-                model.getMarketAnalyzer().addPrice(avgPrice);
+            // 完成交易記錄
+            double postTradePrice = model.getStock().getPrice();
+            transaction.completeMarketOrderTransaction(postTradePrice, depthLevel - 1, failureReason);
 
-                logger.info(String.format(
-                        "市價買入總結：成交量=%d, 平均價格=%.2f, 總成交值=%.2f",
-                        totalTxVolume, avgPrice, totalTxValue
-                ), "MARKET_BUY");
+            // 設置兼容性屬性（用於現有的UI顯示）
+            if (transaction.getActualVolume() > 0) {
+                // 創建虛擬的買賣訂單用於兼容現有系統
+                Order virtualBuyOrder = new Order("buy", transaction.getAveragePrice(),
+                        transaction.getActualVolume(), trader, false, true, false);
+                transaction.setBuyOrder(virtualBuyOrder);
 
-                final int finalVolume = totalTxVolume;
-                // 更新 UI，替換原有的 simulation 調用
+                // 設置買方發起
+                transaction.setBuyerInitiated(true);
+            }
+
+            // 更新市場分析器和UI
+            if (transaction.getActualVolume() > 0) {
+                model.getMarketAnalyzer().addTransaction(
+                        transaction.getAveragePrice(),
+                        transaction.getActualVolume()
+                );
+                model.getMarketAnalyzer().addPrice(transaction.getAveragePrice());
+
+                // 更新股價為最後成交價
+                if (!transaction.getFillRecords().isEmpty()) {
+                    List<Transaction.FillRecord> fills = transaction.getFillRecords();
+                    double lastPrice = fills.get(fills.size() - 1).getPrice();
+                    model.getStock().setPrice(lastPrice);
+                }
+
+                // 通知UI更新
                 if (model != null) {
-                    model.updateVolumeChart(finalVolume);
+                    model.updateVolumeChart(transaction.getActualVolume());
                     model.updateLabels();
                     model.updateOrderBookDisplay();
-                } else {
-                    System.out.println("警告：無法更新 UI，model 為 null");
                 }
+
+                logger.info(String.format(
+                        "市價買入完成：交易ID=%s, 成交=%d/%d股, 均價=%.2f, 滑價=%.2f%%, 執行時間=%dms",
+                        transaction.getId(),
+                        transaction.getActualVolume(),
+                        transaction.getRequestedVolume(),
+                        transaction.getAveragePrice(),
+                        transaction.getSlippagePercentage(),
+                        transaction.getExecutionTimeMs()
+                ), "MARKET_BUY");
+            } else {
+                logger.warn(String.format(
+                        "市價買入無成交：交易ID=%s, 原因=%s",
+                        transaction.getId(),
+                        failureReason != null ? failureReason : "無可用賣單"
+                ), "MARKET_BUY");
             }
 
+            // 僅在有實際成交時才加入交易記錄
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
             notifyListeners();
 
         } catch (Exception e) {
             logger.error(String.format(
-                    "市價買入異常：交易者=%s, 錯誤=%s",
-                    trader.getTraderType(), e.getMessage()
+                    "市價買入整體異常：交易者=%s, 交易ID=%s, 錯誤=%s",
+                    trader.getTraderType(), transaction.getId(), e.getMessage()
             ), "MARKET_BUY");
+
+            transaction.completeMarketOrderTransaction(currentPrice, 0, "系統異常: " + e.getMessage());
         }
     }
 
     /**
-     * 市價賣出方法
+     * 市價賣出方法 - 增強版，集成到現有Transaction系統
      */
     public void marketSell(Trader trader, int quantity) {
+        // 創建市價單交易記錄
+        String transactionId = String.format("MKT_%d_%04d",
+                System.currentTimeMillis(),
+                (int) (Math.random() * 10000));
+
+        double currentPrice = model.getStock().getPrice();
+        Transaction transaction = new Transaction(
+                transactionId,
+                trader.getTraderType(),
+                "MARKET_SELL",
+                quantity,
+                currentPrice, // 預估價格
+                currentPrice // 交易前價格
+        );
+
         logger.info(String.format(
-                "市價賣出開始：交易者=%s, 數量=%d, 可用持股=%d",
-                trader.getTraderType(), quantity, trader.getAccount().getStockInventory()
+                "市價賣出開始：交易者=%s, 數量=%d, 可用持股=%d, 交易ID=%s",
+                trader.getTraderType(), quantity, trader.getAccount().getStockInventory(),
+                transaction.getId()
         ), "MARKET_SELL");
 
         int remainingQty = quantity;
-        double totalTxValue = 0.0;
-        int totalTxVolume = 0;
+		String failureReason = null;
 
         // 檢查持股
         if (trader.getAccount().getStockInventory() < quantity) {
+            failureReason = String.format("持股不足，當前持股=%d, 賣出需求=%d",
+                    trader.getAccount().getStockInventory(), quantity);
+            transaction.completeMarketOrderTransaction(currentPrice, 0, failureReason);
+
+            // 僅在有實際成交時才加入交易記錄
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
+
             logger.warn(String.format(
-                    "市價賣出失敗：交易者=%s, 原因=持股不足, 當前持股=%d, 賣出需求=%d",
-                    trader.getTraderType(),
-                    trader.getAccount().getStockInventory(),
-                    quantity
+                    "市價賣出失敗：交易者=%s, 原因=%s, 交易ID=%s",
+                    trader.getTraderType(), failureReason, transaction.getId()
             ), "MARKET_SELL");
             return;
         }
 
+        // 台股模擬風控：市價單滑價保護帶（避免掃到離譜價格）
+        final double minPx = adjustPriceToUnit(currentPrice * (1.0 - maxMarketSlippageRatio));
+
+        int depthLevel = 1;
         try {
+            synchronized (buyOrders) {
             ListIterator<Order> it = buyOrders.listIterator();
+
             while (it.hasNext() && remainingQty > 0) {
                 Order buyOrder = it.next();
-                double buyPx = buyOrder.getPrice();
-                int chunk = Math.min(buyOrder.getVolume(), remainingQty);
-
-                // 自成交檢查
-                if (buyOrder.getTrader() == trader) {
-                    logger.info(String.format(
-                            "市價賣出跳過自成交：交易者=%s, 買單價格=%.2f, 數量=%d",
-                            trader.getTraderType(), buyPx, chunk
-                    ), "MARKET_SELL");
+                if (buyOrder == null) {
                     continue;
                 }
+                double buyPx = adjustPriceToUnit(buyOrder.getPrice());
+                if (buyPx <= 0) {
+                    continue;
+                }
+                // 市價賣：只能吃到保護帶以內的買價
+                if (buyPx < minPx) {
+                    failureReason = String.format("滑價超出保護帶：買價=%.2f < 下限=%.2f", buyPx, minPx);
+                    break;
+                }
+                int availableVolume = buyOrder.getVolume();
+                int chunk = Math.min(availableVolume, remainingQty);
 
-                // 檢查賣方持股
-                if (trader.getAccount().getStockInventory() >= chunk) {
+
+
+                // 允許自成交
+
+                // 檢查賣方持股（動態檢查）
+                if (trader.getAccount().getStockInventory() < chunk) {
+                    int actualAvailable = trader.getAccount().getStockInventory();
+                    if (actualAvailable > 0) {
+                        chunk = actualAvailable;
+                    } else {
+                        failureReason = "持股已用盡";
+                        break;
+                    }
+                }
+
+                // 執行交易
+                try {
                     double revenue = buyPx * chunk;
 
-                    // 更新賣方
-                    trader.getAccount().decrementStocks(chunk);
-                    trader.getAccount().incrementFunds(revenue);
+                    // 更新賣方帳戶與賣出處理（由交易者實作）
+                    trader.updateAverageCostPrice("sell", chunk, buyPx);
                     remainingQty -= chunk;
 
-                    // 更新買方
+                    // 更新買方帳戶
                     buyOrder.getTrader().updateAfterTransaction("buy", chunk, buyPx);
 
+                    // 記錄填單到Transaction
+                    transaction.addFillRecord(buyPx, chunk,
+                            buyOrder.getTrader().getTraderType(), depthLevel);
+
                     logger.info(String.format(
-                            "市價賣出成交：賣出 %d 股，價格=%.2f，收入=%.2f",
-                            chunk, buyPx, revenue
+                            "市價賣出成交：賣出 %d 股@%.2f，收入=%.2f，深度=%d，對手=%s，交易ID=%s",
+                            chunk, buyPx, revenue, depthLevel,
+                            buyOrder.getTrader().getTraderType(),
+                            transaction.getId()
                     ), "MARKET_SELL");
 
-                    totalTxValue += revenue;
-                    totalTxVolume += chunk;
-
-                    // 更新買單
+                    // 更新買單數量
                     buyOrder.setVolume(buyOrder.getVolume() - chunk);
                     if (buyOrder.getVolume() <= 0) {
                         it.remove();
-                        logger.info("買單已全部成交，從列表中移除", "MARKET_SELL");
+                        orderTimestamps.remove(buyOrder);
+                        logger.debug("買單已全部成交，從列表中移除", "MARKET_SELL");
                     }
-                } else {
-                    logger.warn(String.format(
-                            "市價賣出中斷：持股不足，剩餘持股=%d，需要=%d",
-                            trader.getAccount().getStockInventory(), chunk
+
+                } catch (Exception e) {
+                    logger.error(String.format(
+                            "市價賣出執行交易異常：交易者=%s, 錯誤=%s, 交易ID=%s",
+                            trader.getTraderType(), e.getMessage(), transaction.getId()
                     ), "MARKET_SELL");
+                    failureReason = "交易執行異常: " + e.getMessage();
                     break;
                 }
+
+                depthLevel++;
+            }
             }
 
-            // 更新 MarketAnalyzer
-            if (totalTxVolume > 0) {
-                double avgPrice = totalTxValue / totalTxVolume;
-                model.getMarketAnalyzer().addTransaction(avgPrice, totalTxVolume);
-                model.getMarketAnalyzer().addPrice(avgPrice);
+            // 完成交易記錄
+            double postTradePrice = model.getStock().getPrice();
+            transaction.completeMarketOrderTransaction(postTradePrice, depthLevel - 1, failureReason);
 
-                logger.info(String.format(
-                        "市價賣出總結：成交量=%d, 平均價格=%.2f, 總成交值=%.2f",
-                        totalTxVolume, avgPrice, totalTxValue
-                ), "MARKET_SELL");
+            // 設置兼容性屬性（用於現有的UI顯示）
+            if (transaction.getActualVolume() > 0) {
+                // 創建虛擬的買賣訂單用於兼容現有系統
+                Order virtualSellOrder = new Order("sell", transaction.getAveragePrice(),
+                        transaction.getActualVolume(), trader, false, true, false);
+                transaction.setSellOrder(virtualSellOrder);
 
-                final int finalVolume = totalTxVolume;
-                // 更新 UI，替換原有的 simulation 調用
+                // 設置賣方發起
+                transaction.setBuyerInitiated(false);
+            }
+
+            // 更新市場分析器和UI
+            if (transaction.getActualVolume() > 0) {
+                model.getMarketAnalyzer().addTransaction(
+                        transaction.getAveragePrice(),
+                        transaction.getActualVolume()
+                );
+                model.getMarketAnalyzer().addPrice(transaction.getAveragePrice());
+
+                // 更新股價為最後成交價
+                if (!transaction.getFillRecords().isEmpty()) {
+                    List<Transaction.FillRecord> fills = transaction.getFillRecords();
+                    double lastPrice = fills.get(fills.size() - 1).getPrice();
+                    model.getStock().setPrice(lastPrice);
+                }
+
+                // 通知UI更新
                 if (model != null) {
-                    model.updateVolumeChart(finalVolume);
+                    model.updateVolumeChart(transaction.getActualVolume());
                     model.updateLabels();
                     model.updateOrderBookDisplay();
-                } else {
-                    System.out.println("警告：無法更新 UI，model 為 null");
                 }
+
+                logger.info(String.format(
+                        "市價賣出完成：交易ID=%s, 成交=%d/%d股, 均價=%.2f, 滑價=%.2f%%, 執行時間=%dms",
+                        transaction.getId(),
+                        transaction.getActualVolume(),
+                        transaction.getRequestedVolume(),
+                        transaction.getAveragePrice(),
+                        transaction.getSlippagePercentage(),
+                        transaction.getExecutionTimeMs()
+                ), "MARKET_SELL");
+            } else {
+                logger.warn(String.format(
+                        "市價賣出無成交：交易ID=%s, 原因=%s",
+                        transaction.getId(),
+                        failureReason != null ? failureReason : "無可用買單"
+                ), "MARKET_SELL");
             }
 
+            // 僅在有實際成交時才加入交易記錄
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
             notifyListeners();
 
         } catch (Exception e) {
             logger.error(String.format(
-                    "市價賣出異常：交易者=%s, 錯誤=%s",
-                    trader.getTraderType(), e.getMessage()
+                    "市價賣出整體異常：交易者=%s, 交易ID=%s, 錯誤=%s",
+                    trader.getTraderType(), transaction.getId(), e.getMessage()
             ), "MARKET_SELL");
+
+            transaction.completeMarketOrderTransaction(currentPrice, 0, "系統異常: " + e.getMessage());
+            if (transaction.getActualVolume() > 0) {
+                model.addTransaction(transaction);
+            }
         }
     }
 
@@ -1094,8 +1461,12 @@ public class OrderBook {
 
             if (canceled != null) {
                 buyOrders.remove(canceled);
+                orderTimestamps.remove(canceled);
                 double refund = canceled.getPrice() * canceled.getVolume();
-                canceled.getTrader().getAccount().incrementFunds(refund);
+                UserAccount acc = canceled.getTrader().getAccount();
+                if (!acc.unfreezeFunds(refund)) {
+                    acc.incrementFunds(refund);
+                }
                 success = true;
 
                 logger.info(String.format(
@@ -1115,7 +1486,13 @@ public class OrderBook {
 
                 if (canceled != null) {
                     sellOrders.remove(canceled);
-                    canceled.getTrader().getAccount().incrementStocks(canceled.getVolume());
+                    orderTimestamps.remove(canceled);
+                    // 撤單應解凍凍結庫存回可用
+                    try {
+                        canceled.getTrader().getAccount().unfreezeStocks(canceled.getVolume());
+                    } catch (Exception ex) {
+                        canceled.getTrader().getAccount().incrementStocks(canceled.getVolume());
+                    }
                     success = true;
 
                     logger.info(String.format(
@@ -1161,6 +1538,86 @@ public class OrderBook {
      */
     public void removeOrderBookListener(OrderBookListener listener) {
         listeners.remove(listener);
+    }
+
+    /**
+     * [SAFETY] 對帳凍結資金/股票：以訂單簿現存委託計算應凍結量，將多餘凍結解凍。
+     * 目的：修正「訂單已不在簿上但帳戶仍有凍結」的長時間累積問題。
+     */
+    private void reconcileOrphanFrozen() {
+        if (model == null) return;
+
+        // 計算簿上應凍結
+        Map<UserAccount, Double> needFunds = new HashMap<>();
+        Map<UserAccount, Integer> needStocks = new HashMap<>();
+
+        try {
+            synchronized (buyOrders) {
+                for (Order o : buyOrders) {
+                    if (o == null || o.getTrader() == null || o.getTrader().getAccount() == null) continue;
+                    if (o.isMarketOrder()) continue;
+                    if (o.getPrice() <= 0 || o.getVolume() <= 0) continue;
+                    UserAccount acc = o.getTrader().getAccount();
+                    double v = adjustPriceToUnit(o.getPrice()) * o.getVolume();
+                    needFunds.put(acc, needFunds.getOrDefault(acc, 0.0) + v);
+                }
+            }
+            synchronized (sellOrders) {
+                for (Order o : sellOrders) {
+                    if (o == null || o.getTrader() == null || o.getTrader().getAccount() == null) continue;
+                    if (o.isMarketOrder()) continue;
+                    if (o.getVolume() <= 0) continue;
+                    UserAccount acc = o.getTrader().getAccount();
+                    int v = o.getVolume();
+                    needStocks.put(acc, needStocks.getOrDefault(acc, 0) + v);
+                }
+            }
+        } catch (Exception ignore) {}
+
+        // 收集已知帳戶（主力/個人/做市/噪音/散戶）
+        List<UserAccount> accounts = new ArrayList<>();
+        try {
+            if (model.getMainForce() != null && model.getMainForce().getAccount() != null) accounts.add(model.getMainForce().getAccount());
+        } catch (Exception ignore) {}
+        try {
+            if (model.getUserInvestor() != null && model.getUserInvestor().getAccount() != null) accounts.add(model.getUserInvestor().getAccount());
+        } catch (Exception ignore) {}
+        try {
+            List<MarketBehavior> mms = model.getMarketMakers();
+            if (mms != null) for (MarketBehavior mm : mms) if (mm != null && mm.getAccount() != null) accounts.add(mm.getAccount());
+        } catch (Exception ignore) {}
+        try {
+            List<NoiseTraderAI> nts = model.getNoiseTraders();
+            if (nts != null) for (NoiseTraderAI nt : nts) if (nt != null && nt.getAccount() != null) accounts.add(nt.getAccount());
+        } catch (Exception ignore) {}
+        try {
+            List<RetailInvestorAI> ris = model.getRetailInvestors();
+            if (ris != null) for (RetailInvestorAI ri : ris) if (ri != null && ri.getAccount() != null) accounts.add(ri.getAccount());
+        } catch (Exception ignore) {}
+
+        for (UserAccount acc : accounts) {
+            if (acc == null) continue;
+            double needF = needFunds.getOrDefault(acc, 0.0);
+            int needS = needStocks.getOrDefault(acc, 0);
+
+            // 多餘凍結資金
+            try {
+                double haveF = acc.getFrozenFunds();
+                double extraF = haveF - needF;
+                if (extraF > 0.01) {
+                    acc.unfreezeFunds(extraF);
+                }
+            } catch (Exception ignore) {}
+
+            // 多餘凍結股票
+            try {
+                int haveS = acc.getFrozenStocks();
+                int extraS = haveS - needS;
+                if (extraS > 0) {
+                    acc.unfreezeStocks(extraS);
+                }
+            } catch (Exception ignore) {}
+        }
     }
 
     /**
@@ -1295,5 +1752,94 @@ public class OrderBook {
                 .filter(order -> order.getPrice() <= price)
                 .mapToInt(Order::getVolume)
                 .sum();
+    }
+
+    // [RISK] 在滑價保護帶內可取得的賣量（買方視角）
+    private int getAvailableSellVolumeWithin(double maxPrice) {
+        return sellOrders.stream()
+                .filter(o -> o.isMarketOrder() || o.getPrice() <= maxPrice)
+                .mapToInt(Order::getVolume)
+                .sum();
+    }
+
+    // [RISK] 在滑價保護帶內可取得的買量（賣方視角）
+    private int getAvailableBuyVolumeWithin(double minPrice) {
+        return buyOrders.stream()
+                .filter(o -> o.isMarketOrder() || o.getPrice() >= minPrice)
+                .mapToInt(Order::getVolume)
+                .sum();
+    }
+
+    // 風控參數存取
+    public double getMaxMarketSlippageRatio() { return maxMarketSlippageRatio; }
+    public void setMaxMarketSlippageRatio(double ratio) {
+        this.maxMarketSlippageRatio = Math.max(0.0, Math.min(0.5, ratio)); // 上限50%
+        logger.info("更新市價單滑價保護帶：" + this.maxMarketSlippageRatio, "ORDER_BOOK");
+    }
+    
+    public double getTickSize(double price) {
+        if (price < 10) return 0.01;
+        if (price < 50) return 0.05;
+        if (price < 100) return 0.10;
+        if (price < 500) return 0.50;
+        if (price < 1000) return 1.00;
+        return 5.00;
+    }
+    
+    public double[][] generateFiveLevelPrices(double currentPrice) {
+        double[] buyPrices = new double[5];
+        double[] sellPrices = new double[5];
+        
+        // 買1-5：從當前價開始往下遞減
+        double price = currentPrice;
+        for (int i = 0; i < 5; i++) {
+            buyPrices[i] = price;
+            price -= getTickSize(price);
+            if (price < 0.01) price = 0.01;
+        }
+        
+        // 賣1-5：從當前價開始往上遞增（修正：不再+tick，讓當前價的買賣單都能顯示）
+        price = currentPrice;
+        for (int i = 0; i < 5; i++) {
+            sellPrices[i] = price;
+            price += getTickSize(price);
+        }
+        
+        return new double[][] { buyPrices, sellPrices };
+    }
+    
+    public int getBuyVolumeAtPrice(double targetPrice, double tolerance) {
+        synchronized (buyOrders) {
+            int totalVolume = 0;
+            for (Order order : buyOrders) {
+                if (Math.abs(order.getPrice() - targetPrice) <= tolerance) {
+                    totalVolume += order.getVolume();
+                }
+            }
+            return totalVolume;
+        }
+    }
+    
+    public int getSellVolumeAtPrice(double targetPrice, double tolerance) {
+        synchronized (sellOrders) {
+            int totalVolume = 0;
+            for (Order order : sellOrders) {
+                if (Math.abs(order.getPrice() - targetPrice) <= tolerance) {
+                    totalVolume += order.getVolume();
+                }
+            }
+            return totalVolume;
+        }
+    }
+    
+    public double getCurrentStockPrice() {
+        try {
+            if (model != null && model.getStock() != null) {
+                return model.getStock().getPrice();
+            }
+        } catch (Exception e) {
+            logger.warn("無法取得當前股價：" + e.getMessage(), "ORDER_BOOK");
+        }
+        return 10.0;
     }
 }

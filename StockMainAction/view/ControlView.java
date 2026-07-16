@@ -5,6 +5,7 @@ import StockMainAction.MatchingEnginePanel;
 import StockMainAction.view.components.PriceAlertPanel;
 import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.view.components.QuickTradePanel;
+import StockMainAction.util.logging.MarketLogger;
 import javax.swing.*;
 import java.awt.*;
 
@@ -12,6 +13,8 @@ import java.awt.*;
  * 控制視圖 - 分頁式設計
  */
 public class ControlView extends JFrame {
+
+    private static final MarketLogger logger = MarketLogger.getInstance();
 
     // UI組件
     private JButton stopButton, limitBuyButton, limitSellButton;
@@ -22,6 +25,13 @@ public class ControlView extends JFrame {
     private PriceAlertPanel priceAlertPanel;
     private PersonalStatsPanel personalStatsPanel;
     private QuickTradePanel quickTradePanel;
+
+    // 主力狀態面板元件
+    private JLabel mainForcePhaseLabel;
+    private JLabel mainForceTrendLabel;
+    private JComboBox<String> mainForcePhaseCombo;
+    private JCheckBox mainForceLockCheck;
+    private JButton mainForceApplyButton;
 
     // 分頁面板
     private JTabbedPane tabbedPane;
@@ -34,6 +44,7 @@ public class ControlView extends JFrame {
         setTitle("股票市場模擬 - 控制視窗");
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         setSize(700, 750);
+        setMinimumSize(new Dimension(620, 650)); // [UX] 防止縮太小造成排版爆版
         setLocationRelativeTo(null);
 
         // 創建主面板
@@ -55,6 +66,7 @@ public class ControlView extends JFrame {
         addPriceAlertTab();     // 價格提醒分頁
         addPersonalStatsTab();  // 個人統計分頁
         addMatchingEngineTab(); // 撮合引擎分頁
+        addMainForceStatusTab(); // 主力狀態分頁
 
         // 設置分頁圖標（可選）
         setTabIcons();
@@ -103,7 +115,7 @@ public class ControlView extends JFrame {
                 BorderFactory.createEmptyBorder(5, 5, 5, 5)
         ));
 
-        stopButton = new JButton("停止");
+        stopButton = new JButton("暫停");
         stopButton.setPreferredSize(new Dimension(120, 35));
         stopButton.setFont(new Font("Microsoft JhengHei", Font.BOLD, 14));
         stopButton.setBackground(new Color(255, 100, 100));
@@ -111,6 +123,21 @@ public class ControlView extends JFrame {
         stopButton.setFocusPainted(false);
 
         panel.add(stopButton);
+
+        // [PERF] 效能模式選擇
+        panel.add(Box.createHorizontalStrut(12));
+        panel.add(new JLabel("效能模式:"));
+        JComboBox<String> perfCombo = new JComboBox<>(new String[]{"節能", "平衡", "效能"}); // [PERF]
+        perfCombo.setSelectedIndex(1);
+        perfCombo.addActionListener(e -> {
+            String mode = (String) perfCombo.getSelectedItem();
+            try {
+                MainView.applyPerfMode(mode); // [PERF]
+            } catch (Throwable t) {
+                logger.warn("applyPerfMode failed: " + t.getMessage(), "UI");
+            }
+        });
+        panel.add(perfCombo);
 
         return panel;
     }
@@ -131,13 +158,13 @@ public class ControlView extends JFrame {
         gbc.weighty = 1.0;
 
         // 創建交易按鈕
-        limitBuyButton = createTradeButton("限價買入", new Color(0, 150, 0));
-        limitSellButton = createTradeButton("限價賣出", new Color(200, 0, 0));
-        marketBuyButton = createTradeButton("市價買入", new Color(0, 200, 0));
-        marketSellButton = createTradeButton("市價賣出", new Color(255, 0, 0));
-        cancelOrderButton = createTradeButton("取消訂單", new Color(100, 100, 100));
-        viewOrdersButton = createTradeButton("查看訂單", new Color(0, 100, 200));
-        transactionHistoryButton = createTradeButton("成交記錄", new Color(156, 39, 176));
+        limitBuyButton = createFixedButton("限價買入", new Color(0, 150, 0));
+        limitSellButton = createFixedButton("限價賣出", new Color(200, 0, 0));
+        marketBuyButton = createFixedButton("市價買入", new Color(0, 200, 0));
+        marketSellButton = createFixedButton("市價賣出", new Color(255, 0, 0));
+        cancelOrderButton = createFixedButton("取消訂單", new Color(100, 100, 100));
+        viewOrdersButton = createFixedButton("查看訂單", new Color(0, 100, 200));
+        transactionHistoryButton = createFixedButton("成交記錄", new Color(156, 39, 176));
         
         gbc.gridx = 0;
         gbc.gridy = 0;
@@ -218,6 +245,18 @@ public class ControlView extends JFrame {
 
         tabbedPane.addTab("個人統計", scrollPane);
     }
+    
+    private JButton createFixedButton(String text, Color bgColor) {
+        JButton button = new JButton(text);
+        button.setFont(new Font("微軟正黑體", Font.BOLD, 18));
+        button.setPreferredSize(new Dimension(150, 70));
+        button.setBackground(bgColor);
+        button.setForeground(Color.WHITE);
+        button.setContentAreaFilled(true);
+        button.setOpaque(true);
+        button.setUI(new javax.swing.plaf.basic.BasicButtonUI());
+        return button;
+    }
 
     /**
      * 添加撮合引擎分頁
@@ -234,29 +273,60 @@ public class ControlView extends JFrame {
     }
 
     /**
-     * 創建統一風格的交易按鈕
+     * 添加主力狀態分頁（只讀顯示 + 手動干預）
      */
-    private JButton createTradeButton(String text, Color color) {
-        JButton button = new JButton(text);
-        button.setPreferredSize(new Dimension(150, 60));
-        button.setFont(new Font("Microsoft JhengHei", Font.BOLD, 16));
-        button.setBackground(color);
-        button.setForeground(Color.WHITE);
-        button.setFocusPainted(false);
-        button.setBorder(BorderFactory.createRaisedBevelBorder());
+    private void addMainForceStatusTab() {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BorderLayout(10, 10));
+        panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
 
-        // 添加滑鼠效果
-        button.addMouseListener(new java.awt.event.MouseAdapter() {
-            public void mouseEntered(java.awt.event.MouseEvent evt) {
-                button.setBackground(color.brighter());
-            }
+        // 顯示區
+        JPanel infoPanel = new JPanel(new GridLayout(2, 2, 10, 10));
+        infoPanel.setBorder(BorderFactory.createTitledBorder("主力狀態（只讀）"));
+        infoPanel.add(new JLabel("當前階段:"));
+        mainForcePhaseLabel = new JLabel("IDLE");
+        infoPanel.add(mainForcePhaseLabel);
+        infoPanel.add(new JLabel("近期趨勢:"));
+        mainForceTrendLabel = new JLabel("0.0000");
+        infoPanel.add(mainForceTrendLabel);
 
-            public void mouseExited(java.awt.event.MouseEvent evt) {
-                button.setBackground(color);
-            }
+        // 控制區
+        JPanel ctrlPanel = new JPanel(new GridBagLayout());
+        ctrlPanel.setBorder(BorderFactory.createTitledBorder("手動干預"));
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(8, 8, 8, 8);
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+
+        gbc.gridx = 0; gbc.gridy = 0;
+        ctrlPanel.add(new JLabel("切換階段:"), gbc);
+        gbc.gridx = 1;
+        mainForcePhaseCombo = new JComboBox<>(new String[]{
+                "IDLE", "ACCUMULATE", "MARKUP", "DISTRIBUTE", "WASH"
         });
+        ctrlPanel.add(mainForcePhaseCombo, gbc);
 
-        return button;
+        gbc.gridx = 0; gbc.gridy = 1;
+        ctrlPanel.add(new JLabel("鎖定手動階段:"), gbc);
+        gbc.gridx = 1;
+        mainForceLockCheck = new JCheckBox("鎖定");
+        ctrlPanel.add(mainForceLockCheck, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2;
+        ctrlPanel.add(new JLabel("撤換間隔(ticks):"), gbc);
+        gbc.gridx = 1;
+        JSpinner replaceSpinner = new JSpinner(new SpinnerNumberModel(10, 1, 200, 1));
+        ctrlPanel.add(replaceSpinner, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
+        mainForceApplyButton = new JButton("套用");
+        ctrlPanel.add(mainForceApplyButton, gbc);
+
+        panel.add(infoPanel, BorderLayout.NORTH);
+        panel.add(ctrlPanel, BorderLayout.CENTER);
+        tabbedPane.addTab("主力狀態", panel);
+
+        // 透過客製屬性暫存 spinner 以供控制器讀取
+        panel.putClientProperty("replaceSpinner", replaceSpinner);
     }
 
     /**
@@ -274,6 +344,7 @@ public class ControlView extends JFrame {
         tabbedPane.setToolTipTextAt(2, "設置價格提醒");
         tabbedPane.setToolTipTextAt(3, "查看個人交易統計");
         tabbedPane.setToolTipTextAt(4, "調整撮合引擎參數");
+        tabbedPane.setToolTipTextAt(5, "查看並手動干預主力策略"); // [FIX] 補齊第6個分頁的提示
     }
 
     /**
@@ -358,5 +429,38 @@ public class ControlView extends JFrame {
 
     public JButton getTransactionHistoryButton() {
         return transactionHistoryButton;
+    }
+
+    // 主力狀態面板：更新 & 控制器取用
+    public void updateMainForceStatus(String phase, double recentTrend) {
+        SwingUtilities.invokeLater(() -> {
+            if (mainForcePhaseLabel != null) mainForcePhaseLabel.setText(phase);
+            if (mainForceTrendLabel != null) mainForceTrendLabel.setText(String.format("%.4f", recentTrend));
+        });
+    }
+
+    public JButton getMainForceApplyButton() {
+        return mainForceApplyButton;
+    }
+
+    public JComboBox<String> getMainForcePhaseCombo() {
+        return mainForcePhaseCombo;
+    }
+
+    public JCheckBox getMainForceLockCheck() {
+        return mainForceLockCheck;
+    }
+
+    public Integer getMainForceReplaceIntervalOrNull() {
+        try {
+            Component comp = getTabbedPane().getComponentAt(getTabbedPane().getTabCount() - 1);
+            if (comp instanceof JPanel) {
+                Object v = ((JPanel) comp).getClientProperty("replaceSpinner");
+                if (v instanceof JSpinner) {
+                    return (Integer) ((JSpinner) v).getValue();
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 }

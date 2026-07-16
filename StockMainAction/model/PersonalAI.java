@@ -5,6 +5,7 @@ import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
 import StockMainAction.StockMarketSimulation;
 import StockMainAction.model.user.UserAccount;
+import StockMainAction.util.logging.MarketLogger;
 
 /**
  * 個人戶 AI，繼承自散戶 AI RetailInvestorAI， 但可以覆寫部分方法，以符合個人戶的行為需求。
@@ -22,11 +23,18 @@ public class PersonalAI extends RetailInvestorAI {
     private Stock stock;  // 股票實例
     private StockMarketModel model;
 
+    // 標記：個人戶不使用自動撤單
+    private boolean disableAutoCancellation = true;
+
+    private static final MarketLogger logger = MarketLogger.getInstance();
+    
     public PersonalAI(double initialCash, String traderID, StockMarketModel model, OrderBook orderBook, Stock stock) {
         super(initialCash, traderID, model);  // 修正：使用 model 參數
         this.model = model;  // 修正：使用 model 參數
         this.orderBook = orderBook;
         this.stock = stock;
+        
+        logger.info("個人戶 AI 初始化完成，自動撤單已禁用", "PERSONAL_AI");
     }
 
     /**
@@ -35,6 +43,40 @@ public class PersonalAI extends RetailInvestorAI {
     @Override
     public String getTraderType() {
         return "PERSONAL";
+    }
+
+    /**
+     * 覆寫 makeDecision 方法，移除自動撤單邏輯
+     * 個人戶由用戶完全手動控制，不進行自動撤單
+     */
+    @Override
+    public void makeDecision(Stock stock, OrderBook orderBook, StockMarketModel model) {
+        // 如果傳入的 model 不為 null，更新當前實例的 model 引用
+        if (model != null) {
+            this.model = model;
+        }
+        
+        // ❌ 個人戶不執行自動撤單
+        // orderCancelCounter++;
+        // if (orderCancelCounter >= ORDER_CANCEL_INTERVAL) {
+        //     orderCancelCounter = 0;
+        //     cancelOutdatedOrders();
+        // }
+        
+        // ✅ 直接調用父類的決策邏輯（不包含撤單部分）
+        // 因為父類的 makeDecision 包含撤單邏輯，我們需要重新實現簡化版
+        // 個人戶主要由UI手動操作，這裡僅保留基本初始化
+        
+        try {
+            this.orderBook = orderBook;
+            this.stock = stock;
+            
+            // 個人戶不執行自動交易決策，完全由用戶手動控制
+            // 如果未來需要自動策略，可以在這裡添加
+            
+        } catch (Exception e) {
+            logger.warn("個人戶 AI 決策過程發生錯誤：" + e.getMessage(), "PERSONAL_AI");
+        }
     }
 
     /**
@@ -214,10 +256,9 @@ public class PersonalAI extends RetailInvestorAI {
     }
 
     public void onOrderCancelled(Order order) {
-        System.out.println("[個人AI] 訂單已取消，ID：" + order.getId()
-                + "，價格：" + order.getPrice()
-                + "，數量：" + order.getVolume()
-                + "，類型：" + order.getType());
+        logger.info(String.format("個人戶訂單已取消 ID=%s 價格=%.2f 數量=%d 類型=%s",
+                order.getId(), order.getPrice(), order.getVolume(), order.getType()),
+                "PERSONAL_AI");
 
         // 你可以在這裡加入更多動作（如重設目標價、通知 UI、統計等）
     }
@@ -227,7 +268,11 @@ public class PersonalAI extends RetailInvestorAI {
         double transactionAmount = price * volume;
 
         if (type.equals("buy")) {
-            // 更新持有股數
+            try {
+                getAccount().consumeFrozenFunds(transactionAmount);
+            } catch (Exception e) {
+                getAccount().decrementFunds(transactionAmount);
+            }
             getAccount().incrementStocks(volume);
 
             // 更新個人平均成本
@@ -239,8 +284,8 @@ public class PersonalAI extends RetailInvestorAI {
             // 設定止盈價 (例如 +10% 利潤)
             personalTakeProfitPrice = personalAverageCost * 1.1;
 
-            System.out.println(String.format("[個人AI] 買入 %d 股，成交價 %.2f，更新後均價 %.2f，目標止盈價 %.2f",
-                    volume, price, personalAverageCost, personalTakeProfitPrice));
+            logger.info(String.format("個人戶買入 %d 股，成交價 %.2f，更新後均價 %.2f，目標止盈價 %.2f",
+                    volume, price, personalAverageCost, personalTakeProfitPrice), "PERSONAL_AI");
 
         } else if (type.equals("sell")) {
             // 增加可用資金
@@ -252,8 +297,47 @@ public class PersonalAI extends RetailInvestorAI {
                 personalTakeProfitPrice = null;
             }
 
-            System.out.println(String.format("[個人AI] 賣出 %d 股，成交價 %.2f，剩餘持股 %d 股，更新後均價 %.2f",
-                    volume, price, getAccount().getStockInventory(), personalAverageCost));
+            logger.info(String.format("個人戶賣出 %d 股，成交價 %.2f，剩餘持股 %d 股，更新後均價 %.2f",
+                    volume, price, getAccount().getStockInventory(), personalAverageCost), "PERSONAL_AI");
+        }
+
+        // 更新 UI 標籤
+        model.updateLabels();
+    }
+
+    @Override
+    public void updateAverageCostPrice(String type, int volume, double price) {
+        double transactionAmount = price * volume;
+
+        if ("buy".equals(type)) {
+            getAccount().decrementFunds(transactionAmount);
+            getAccount().incrementStocks(volume);
+
+            // 更新個人平均成本
+            int totalStocks = getAccount().getStockInventory();
+            if (totalStocks > 0) {
+                personalAverageCost = ((personalAverageCost * (totalStocks - volume)) + transactionAmount) / totalStocks;
+            }
+
+            // 設定止盈價 (例如 +10%)
+            personalTakeProfitPrice = personalAverageCost * 1.1;
+
+            logger.info(String.format("個人戶市價買入 %d 股，成交價 %.2f，更新後均價 %.2f，目標止盈價 %.2f",
+                    volume, price, personalAverageCost, personalTakeProfitPrice), "PERSONAL_AI");
+
+        } else if ("sell".equals(type)) {
+            // 扣股並增加可用資金
+            getAccount().decrementStocks(volume);
+            getAccount().incrementFunds(transactionAmount);
+
+            // 若全部賣掉，重置均價
+            if (getAccount().getStockInventory() == 0) {
+                personalAverageCost = 0.0;
+                personalTakeProfitPrice = null;
+            }
+
+            logger.info(String.format("個人戶市價賣出 %d 股，成交價 %.2f，剩餘持股 %d 股，更新後均價 %.2f",
+                    volume, price, getAccount().getStockInventory(), personalAverageCost), "PERSONAL_AI");
         }
 
         // 更新 UI 標籤
