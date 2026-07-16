@@ -68,7 +68,9 @@ public final class DecisionFactorLogger {
                             inPct, outPct, delta, tps, vps, imbalance, effThreshold, positionScale, macdHist, kVal, hasBuyWall, hasSellWall);
                     bw.write(line);
                 }
-            } catch (IOException ignore) {
+            } catch (IOException ex) {
+                MarketLogger.getInstance().warn("決策因子 CSV 寫入失敗：" + ex.getMessage(),
+                        "DECISION_FACTOR_LOG");
             }
         }
     }

@@ -1,0 +1,18 @@
+package StockMainAction.model.account;
+
+public enum AccountOperation {
+    RESERVE_FUNDS,
+    RESERVE_STOCKS,
+    RELEASE_FUNDS,
+    RELEASE_STOCKS,
+    SETTLE_LIMIT_BUY,
+    SETTLE_LIMIT_SELL,
+    SETTLE_MARKET_BUY,
+    SETTLE_MARKET_SELL,
+    CONSUME_FROZEN_FUNDS,
+    CONSUME_FROZEN_STOCKS,
+    ADD_FUNDS,
+    SUBTRACT_FUNDS,
+    ADD_STOCKS,
+    SUBTRACT_STOCKS
+}

@@ -17,6 +17,11 @@ import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.model.core.PersonalStatistics;
 import StockMainAction.model.core.QuickTradeConfig;
 import StockMainAction.model.core.Transaction;
+import StockMainAction.model.core.ExecutionResult;
+import StockMainAction.model.core.TradeExecuted;
+import StockMainAction.controller.trading.PersonalTradeCoordinator;
+import StockMainAction.controller.trading.TradeOutcome;
+import StockMainAction.controller.trading.TradeOutcomeStatus;
 import StockMainAction.model.user.UserAccount;
 import StockMainAction.model.core.Trader;
 import StockMainAction.view.TransactionHistoryViewer;
@@ -48,6 +53,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     // 新增快捷交易相關屬性
     private QuickTradePanel quickTradePanel;
     private QuickTradeManager quickTradeManager;
+    private final PersonalTradeCoordinator tradeCoordinator;
 
     // 市場介入背景執行緒池：daemon thread，確保 JVM 退出時不會被阻塞
     // 使用 newCachedThreadPool 支援多次同時介入，但實務上建議一次一個
@@ -70,6 +76,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         this.model = model;
         this.mainView = mainView;
         this.controlView = controlView;
+        this.tradeCoordinator = new PersonalTradeCoordinator(model);
 
         // 將模型注入主視圖，供工具列事件直接呼叫模型參數
         try {
@@ -109,6 +116,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             logger.error("初始化個人統計管理器失敗: " + e.getMessage(), "CONTROLLER_INIT");
         }
 
+        if (model.getOrderBook() != null) {
+            model.getOrderBook().addTradeExecutedListener(this::recordPersonalTrade);
+        }
+
         // 註冊為模型監聽器
         model.addModelListener(this);
         // 註冊成交逐筆監聽：即時推給 OrderBookView/主視窗 Tape
@@ -127,7 +138,13 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                     final double fBestBid = bestBid, fBestAsk = bestAsk;
                     javax.swing.SwingUtilities.invokeLater(() -> {
                         // pushTapeTrade 為純 UI 更新，失敗可安全忽略（避免每筆成交刷 log）
-                        try { mainView.pushTapeTrade(transaction.isBuyerInitiated(), transaction.getPrice(), transaction.getVolume(), fBestBid, fBestAsk); } catch (Throwable ignore) {}
+                        try {
+                            mainView.pushTapeTrade(transaction.isBuyerInitiated(), transaction.getPrice(),
+                                    transaction.getVolume(), fBestBid, fBestAsk);
+                        } catch (RuntimeException ex) {
+                            logger.debugThrottled("逐筆成交 UI 更新失敗：" + ex.getMessage(),
+                                    "UI_UPDATE", "tape-trade", 60_000);
+                        }
                     });
                 } catch (Throwable tt) {
                     logger.warn("成交逐筆推送處理失敗：" + tt.getMessage(), "CONTROLLER_INIT");
@@ -364,20 +381,14 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             }
 
             // 送出限價買單
-            boolean success = model.executeLimitBuy(quantity, limitPrice);
-            if (!success) {
+            TradeOutcome outcome = tradeCoordinator.limitBuy(quantity, limitPrice);
+            if (!outcome.successful()) {
                 mainView.showErrorMessage("限價買入失敗：可能資金不足、市場無對應賣單，或價格超出允許範圍。", "失敗");
                 return;
             }
 
-            mainView.appendToInfoArea(String.format("限價買入 %d 股 @ %.2f，總成本 %.2f", quantity, limitPrice, totalCost));
-
-            double currentPrice = model.getStock().getPrice();
-            final int fQty = quantity; final double fPrice = limitPrice;
-            personalStatsMgr.ifPresent(mgr -> {
-                mgr.recordBuyTrade(fQty, fPrice, currentPrice);
-                controlView.getPersonalStatsPanel().updateStatistics(mgr.getStatistics());
-            });
+            mainView.appendToInfoArea(String.format("限價買入委託已送出：%d 股 @ %.2f，預留金額 %.2f",
+                    quantity, limitPrice, totalCost));
 
         } catch (NumberFormatException ex) {
             mainView.showErrorMessage("請輸入有效的數字。", "錯誤");
@@ -417,20 +428,14 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             double totalRevenue = limitPrice * quantity;
 
             // 送出限價賣單
-            boolean success = model.executeLimitSell(quantity, limitPrice);
-            if (!success) {
+            TradeOutcome outcome = tradeCoordinator.limitSell(quantity, limitPrice);
+            if (!outcome.successful()) {
                 mainView.showErrorMessage("限價賣出失敗：可能持股不足、市場無對應買單，或價格超出允許範圍。", "失敗");
                 return;
             }
 
-            mainView.appendToInfoArea(String.format("限價賣出 %d 股 @ %.2f，總收入 %.2f", quantity, limitPrice, totalRevenue));
-
-            double currentPrice = model.getStock().getPrice();
-            final int fQty = quantity; final double fPrice = limitPrice;
-            personalStatsMgr.ifPresent(mgr -> {
-                mgr.recordSellTrade(fQty, fPrice, currentPrice);
-                controlView.getPersonalStatsPanel().updateStatistics(mgr.getStatistics());
-            });
+            mainView.appendToInfoArea(String.format("限價賣出委託已送出：%d 股 @ %.2f，預估金額 %.2f",
+                    quantity, limitPrice, totalRevenue));
 
         } catch (NumberFormatException ex) {
             mainView.showErrorMessage("請輸入有效的數字。", "錯誤");
@@ -453,38 +458,16 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                 return;
             }
 
-            // 計算實際成交數量和成本
-            SimpleEntry<Integer, Double> result = model.calculateActualCost(
-                    model.getOrderBook().getSellOrders(), quantity);
-            int actualQuantity = result.getKey();
-            double actualCost = result.getValue();
-
-            // 檢查資金是否足夠
-            if (actualQuantity > 0 && model.getUserInvestor().getAccount().getAvailableFunds() >= actualCost) {
-                // 執行市價單
-                boolean success = model.executeMarketBuy(actualQuantity);
-                if (success) {
-                    mainView.appendToInfoArea("市價買入 " + actualQuantity + " 股，實際成本：" + String.format("%.2f", actualCost));
-
-            double avgPrice = actualCost / actualQuantity;
-            double currentPrice = model.getStock().getPrice();
-            final int fActualQty = actualQuantity; final double fAvgPrice = avgPrice;
-            personalStatsMgr.ifPresent(mgr -> {
-                mgr.recordBuyTrade(fActualQty, fAvgPrice, currentPrice);
-                controlView.getPersonalStatsPanel().updateStatistics(mgr.getStatistics());
-            });
-
-                    if (actualQuantity < quantity) {
-                        mainView.showInfoMessage("市價買入部分成交，已完成 " + actualQuantity
-                                + " 股，剩餘需求未滿足。", "部分成交");
-                    }
-                } else {
-                    mainView.showErrorMessage("市價買入執行失敗。", "錯誤");
-                }
-            } else if (actualQuantity == 0) {
-                mainView.showErrorMessage("市場中無足夠賣單，無法完成市價買入。", "錯誤");
-            } else {
-                mainView.showErrorMessage("資金不足以完成交易，需要 " + String.format("%.2f", actualCost) + "。", "錯誤");
+            TradeOutcome result = tradeCoordinator.marketBuy(quantity);
+            if (!result.successful()) {
+                mainView.showErrorMessage("市價買入未成交：" + result.reason(), "錯誤");
+                return;
+            }
+            mainView.appendToInfoArea(String.format("市價買入成交 %d 股，均價 %.2f，實際成本 %.2f",
+                    result.filledQuantity(), result.averagePrice(), result.totalValue()));
+            if (result.status() == TradeOutcomeStatus.PARTIALLY_FILLED) {
+                mainView.showInfoMessage("市價買入部分成交，已完成 " + result.filledQuantity()
+                        + " 股，剩餘需求未滿足。", "部分成交");
             }
         } catch (NumberFormatException ex) {
             mainView.showErrorMessage("請輸入有效的股數。", "錯誤");
@@ -507,40 +490,16 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                 return;
             }
 
-            // 檢查用戶是否有足夠的持股
-            if (model.getUserInvestor().getAccount().getStockInventory() >= quantity) {
-                // 計算實際成交數量和收入
-            SimpleEntry<Integer, Double> result = model.calculateActualRevenue(
-                        model.getOrderBook().getBuyOrders(), quantity);
-            int actualQuantity = result.getKey();
-            double actualRevenue = result.getValue();
-
-                // 執行市價賣出
-                if (actualQuantity > 0) {
-                    boolean success = model.executeMarketSell(actualQuantity);
-                    if (success) {
-                        mainView.appendToInfoArea("市價賣出 " + actualQuantity + " 股，實際收入：" + String.format("%.2f", actualRevenue));
-
-                        double avgPrice = actualRevenue / actualQuantity;
-                        double currentPrice = model.getStock().getPrice();
-                        final int fAQ = actualQuantity; final double fAP = avgPrice;
-                        personalStatsMgr.ifPresent(mgr -> {
-                            mgr.recordSellTrade(fAQ, fAP, currentPrice);
-                            controlView.getPersonalStatsPanel().updateStatistics(mgr.getStatistics());
-                        });
-
-                        if (actualQuantity < quantity) {
-                            mainView.showInfoMessage("市價賣出部分成交，已完成 " + actualQuantity
-                                    + " 股，剩餘需求未滿足。", "部分成交");
-                        }
-                    } else {
-                        mainView.showErrorMessage("市價賣出執行失敗。", "錯誤");
-                    }
-                } else {
-                    mainView.showErrorMessage("市場中無足夠買單，無法完成市價賣出。", "錯誤");
-                }
-            } else {
-                mainView.showErrorMessage("持股不足以賣出 " + quantity + " 股。", "錯誤");
+            TradeOutcome result = tradeCoordinator.marketSell(quantity);
+            if (!result.successful()) {
+                mainView.showErrorMessage("市價賣出未成交：" + result.reason(), "錯誤");
+                return;
+            }
+            mainView.appendToInfoArea(String.format("市價賣出成交 %d 股，均價 %.2f，實際收入 %.2f",
+                    result.filledQuantity(), result.averagePrice(), result.totalValue()));
+            if (result.status() == TradeOutcomeStatus.PARTIALLY_FILLED) {
+                mainView.showInfoMessage("市價賣出部分成交，已完成 " + result.filledQuantity()
+                        + " 股，剩餘需求未滿足。", "部分成交");
             }
         } catch (NumberFormatException ex) {
             mainView.showErrorMessage("請輸入有效的股數。", "錯誤");
@@ -943,6 +902,24 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         });
     }
 
+    private void recordPersonalTrade(TradeExecuted event) {
+        boolean personalBuy = "PERSONAL".equalsIgnoreCase(event.buyerType());
+        boolean personalSell = "PERSONAL".equalsIgnoreCase(event.sellerType());
+        if (!personalBuy && !personalSell) {
+            return;
+        }
+        personalStatsMgr.ifPresent(manager -> {
+            if (personalBuy) {
+                manager.recordBuyTrade(event.volume(), event.price(), event.price());
+            }
+            if (personalSell) {
+                manager.recordSellTrade(event.volume(), event.price(), event.price());
+            }
+            SwingUtilities.invokeLater(() ->
+                    controlView.getPersonalStatsPanel().updateStatistics(manager.getStatistics()));
+        });
+    }
+
     // ======== 快捷交易事件監聽器方法 ========
     @Override
     public void onQuickTradeExecute(QuickTradeConfig config) {
@@ -964,38 +941,43 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             }
 
             // 執行交易
-            boolean success = false;
+            boolean success;
+            ExecutionResult execution = null;
             if (config.isBuy()) {
                 if (config.isMarketOrder()) {
-                    success = model.executeMarketBuy(result.getQuantity());
+                    execution = model.executeMarketBuyResult(result.getQuantity());
+                    success = execution.filledVolume() > 0;
                 } else {
                     success = model.executeLimitBuy(result.getQuantity(), result.getPrice());
                 }
             } else {
                 if (config.isMarketOrder()) {
-                    success = model.executeMarketSell(result.getQuantity());
+                    execution = model.executeMarketSellResult(result.getQuantity());
+                    success = execution.filledVolume() > 0;
                 } else {
                     success = model.executeLimitSell(result.getQuantity(), result.getPrice());
                 }
             }
 
             if (success) {
-                // 記錄交易到統計系統
-                final boolean fBuy = config.isBuy();
-                final int fQty = result.getQuantity(); final double fPx = result.getPrice();
-                personalStatsMgr.ifPresent(mgr -> {
-                    if (fBuy) mgr.recordBuyTrade(fQty, fPx, currentPrice);
-                    else      mgr.recordSellTrade(fQty, fPx, currentPrice);
-                    controlView.getPersonalStatsPanel().updateStatistics(mgr.getStatistics());
-                });
-
+                int reportedQuantity = config.isMarketOrder()
+                        ? execution.filledVolume() : result.getQuantity();
+                double reportedPrice = config.isMarketOrder()
+                        ? execution.averagePrice() : result.getPrice();
+                double reportedTotal = config.isMarketOrder()
+                        ? execution.totalValue() : result.getTotalAmount();
                 // 顯示成功訊息
                 String tradeType = config.isBuy() ? "買入" : "賣出";
-                mainView.appendToInfoArea(String.format("快捷交易成功：%s %d 股 @ %.2f，總金額 %.2f",
-                        tradeType, result.getQuantity(), result.getPrice(), result.getTotalAmount()));
+                if (config.isMarketOrder()) {
+                    mainView.appendToInfoArea(String.format("快捷交易成交：%s %d 股 @ %.2f，總金額 %.2f",
+                            tradeType, reportedQuantity, reportedPrice, reportedTotal));
+                } else {
+                    mainView.appendToInfoArea(String.format("快捷交易委託已送出：%s %d 股 @ %.2f",
+                            tradeType, reportedQuantity, reportedPrice));
+                }
 
-                logger.info(String.format("快捷交易執行成功：%s - %s %d 股",
-                        config.getName(), tradeType, result.getQuantity()), "QUICK_TRADE");
+                logger.info(String.format("快捷交易已處理：%s - %s %d 股",
+                        config.getName(), tradeType, reportedQuantity), "QUICK_TRADE");
             } else {
                 mainView.showErrorMessage("快捷交易執行失敗", "錯誤");
             }
@@ -1170,7 +1152,8 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                             minPx, maxPx, ob);
                 }
             }
-        } catch (Exception ignore) {
+        } catch (Exception ex) {
+            logger.warn("建立市場深度掛單失敗：" + ex.getMessage(), "MARKET_INTERVENTION");
         }
     }
 
@@ -1183,6 +1166,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             // 若無法判定，退回原 actor（最壞情況仍可運作）
             return actor;
         } catch (Exception e) {
+            logger.warn("選擇墊腳交易者失敗：" + e.getMessage(), "MARKET_INTERVENTION");
             return actor;
         }
     }
@@ -1216,7 +1200,8 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                 placeBuyLayers(actor, counterTotal, depthLevels,
                         last * (1.0 - 0.0005), last * (1.0 - Math.min(span, slip * 0.8)), minPx, maxPx, ob);
             }
-        } catch (Exception ignore) {
+        } catch (Exception ex) {
+            logger.warn("建立自成交對手牆失敗：" + ex.getMessage(), "MARKET_INTERVENTION");
         }
     }
 

@@ -4,6 +4,8 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.Trader;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
+import StockMainAction.model.core.OrderSide;
+import StockMainAction.model.strategy.OrderIntent;
 import StockMainAction.StockMarketSimulation;
 import StockMainAction.model.user.UserAccount;
 import java.util.List;
@@ -18,7 +20,7 @@ import java.io.StringWriter;
  */
 public class MarketBehavior implements Trader {
 
-    private Random random = new Random();
+    private final Random random;
     private double marketTrend = 0.0;    // 市場趨勢，正值表示牛市，負值表示熊市
     private double longTermMeanPrice;    // 長期平均價格
     private int timeStep = 0;           // 時間步長，用於模擬時間因素
@@ -53,11 +55,16 @@ public class MarketBehavior implements Trader {
      * @param model 引用 StockMarketModel 實例
      */
     public MarketBehavior(double initialPrice, double initialFunds, int initialStocks, StockMarketModel model, OrderBook orderBook) {
+        this(initialPrice, initialFunds, initialStocks, model, orderBook, new Random());
+    }
+
+    public MarketBehavior(double initialPrice, double initialFunds, int initialStocks,
+            StockMarketModel model, OrderBook orderBook, Random random) {
         this.longTermMeanPrice = initialPrice;
         this.account = new UserAccount(initialFunds, initialStocks);
         this.model = model;
         this.orderBook = orderBook;
-        this.random = new Random();
+        this.random = java.util.Objects.requireNonNull(random, "random");
 
         if (this.account != null) {
             logger.info("【市場行為】UserAccount 建立成功，初始資金: " + initialFunds
@@ -80,19 +87,10 @@ public class MarketBehavior implements Trader {
 
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {
-        double transactionAmount = price * volume;
-
         if (type.equals("buy")) {
-            try {
-                account.consumeFrozenFunds(transactionAmount);
-            } catch (Exception e) {
-                account.decrementFunds(transactionAmount);
-            }
-            account.incrementStocks(volume);
             logger.info(String.format("限價買入後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
         } else if (type.equals("sell")) {
             // 限價單賣出：增加現金
-            account.incrementFunds(transactionAmount);
             logger.info(String.format("限價賣出後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
         }
         // 可在此更新介面標籤或其他 UI
@@ -101,13 +99,10 @@ public class MarketBehavior implements Trader {
     @Override
     public void updateAverageCostPrice(String type, int volume, double price) {
         // 市價單的狀態更新，如需更細緻的平均成本計算，可在此實作
-        double transactionAmount = price * volume;
         if ("buy".equals(type)) {
             logger.info(String.format("市價買入後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
-            account.incrementStocks(volume);
         } else if ("sell".equals(type)) {
             logger.info(String.format("市價賣出後更新：%d 股，成交價 %.2f", volume, price), "MARKET_BEHAVIOR");
-            account.incrementFunds(transactionAmount);
         }
     }
 
@@ -352,7 +347,8 @@ public class MarketBehavior implements Trader {
 
                 if (buyVolume > 0 && buyPrice > 0) {
                     Order buyOrder = Order.createLimitBuyOrder(buyPrice, buyVolume, this);
-                    orderBook.submitBuyOrder(buyOrder, buyPrice);
+                    executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                            buyOrder.getVolume(), buyPrice, "market maker quote buy"));
                     placed = true;
                     logger.info(String.format("做市掛買：%d 股 @ %.2f (mid=%.2f, spread=%.3f%%)",
                             buyVolume, buyPrice, mid, spreadRatio * 100), "MARKET_BEHAVIOR_MM");
@@ -360,7 +356,8 @@ public class MarketBehavior implements Trader {
 
                 if (sellVolume > 0 && sellPrice > 0) {
                     Order sellOrder = Order.createLimitSellOrder(sellPrice, sellVolume, this);
-                    orderBook.submitSellOrder(sellOrder, sellPrice);
+                    executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                            sellOrder.getVolume(), sellPrice, "market maker quote sell"));
                     placed = true;
                     logger.info(String.format("做市掛賣：%d 股 @ %.2f (mid=%.2f, spread=%.3f%%)",
                             sellVolume, sellPrice, mid, spreadRatio * 100), "MARKET_BEHAVIOR_MM");
@@ -408,7 +405,9 @@ public class MarketBehavior implements Trader {
                         }
                     }
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ex) {
+                logger.warn("做市撤單失敗：" + ex.getMessage(), "MARKET_BEHAVIOR_MM");
+            }
 
             // 更新長期平均價格
             double oldLongTermMeanPrice = longTermMeanPrice;
@@ -479,7 +478,8 @@ public class MarketBehavior implements Trader {
 
             // 使用工廠方法創建限價買單
             Order buyOrder = Order.createLimitBuyOrder(orderPrice, orderVolume, this);
-            orderBook.submitBuyOrder(buyOrder, orderPrice);
+            executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                    orderVolume, orderPrice, "market behavior limit buy"));
 
             logger.info(String.format(
                     "限價買單提交成功：數量=%d, 價格=%.2f, 預計成本=%.2f",
@@ -530,7 +530,8 @@ public class MarketBehavior implements Trader {
 
             // 使用工廠方法創建限價賣單
             Order sellOrder = Order.createLimitSellOrder(orderPrice, orderVolume, this);
-            orderBook.submitSellOrder(sellOrder, orderPrice);
+            executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                    orderVolume, orderPrice, "market behavior limit sell"));
 
             logger.info(String.format(
                     "限價賣單提交成功：數量=%d, 價格=%.2f, 預計收入=%.2f",
@@ -587,7 +588,8 @@ public class MarketBehavior implements Trader {
                     orderVolume, estimatedPrice
             ), "MARKET_BEHAVIOR_BUY");
 
-            orderBook.marketBuy(this, orderVolume);
+            executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+                    orderVolume, "market behavior market buy"));
 
             logger.info(String.format(
                     "市價買單提交成功：數量=%d, 估計成本=%.2f",
@@ -641,7 +643,8 @@ public class MarketBehavior implements Trader {
                     orderVolume
             ), "MARKET_BEHAVIOR_SELL");
 
-            orderBook.marketSell(this, orderVolume);
+            executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+                    orderVolume, "market behavior market sell"));
 
             logger.info(String.format(
                     "市價賣單提交成功：數量=%d",
@@ -697,7 +700,8 @@ public class MarketBehavior implements Trader {
                     orderPrice, orderVolume
             ), "MARKET_BEHAVIOR_FOK_BUY");
 
-            boolean success = orderBook.submitFokBuyOrder(orderPrice, orderVolume, this);
+            boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.BUY,
+                    orderVolume, orderPrice, "market behavior FOK buy")).accepted();
 
             if (success) {
                 logger.info(String.format(
@@ -759,7 +763,8 @@ public class MarketBehavior implements Trader {
                     orderPrice, orderVolume
             ), "MARKET_BEHAVIOR_FOK_SELL");
 
-            boolean success = orderBook.submitFokSellOrder(orderPrice, orderVolume, this);
+            boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.SELL,
+                    orderVolume, orderPrice, "market behavior FOK sell")).accepted();
 
             if (success) {
                 logger.info(String.format(

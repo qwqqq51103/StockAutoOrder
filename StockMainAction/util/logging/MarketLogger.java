@@ -7,29 +7,35 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 市場日誌記錄器，提供高效、線程安全的日誌記錄功能
  */
 public class MarketLogger {
 
-    // 將日誌輸出到使用者桌面
-    private static final String LOG_DIRECTORY = System.getProperty("user.home") + File.separator + "Desktop";
+    private static final int LOG_QUEUE_CAPACITY = 10_000;
     private static final DateTimeFormatter FILE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss");
     private static final DateTimeFormatter LOG_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
     private PrintWriter writer;
-    private ConcurrentLinkedQueue<String> logQueue;
-    private ExecutorService logExecutor;
-    private boolean isRunning;
+    private final BlockingQueue<String> logQueue = new ArrayBlockingQueue<>(LOG_QUEUE_CAPACITY);
+    private final AtomicLong droppedLogCount = new AtomicLong();
+    private final ExecutorService logExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable, "market-log-writer");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private volatile boolean isRunning;
 
     // 新增日誌級別常量
     public static final int LEVEL_DEBUG = 1;
@@ -56,7 +62,7 @@ public class MarketLogger {
         void onNewLog(String timestamp, String level, String category, String message);
     }
 
-    private List<LogListener> logListeners = new ArrayList<>();
+    private final List<LogListener> logListeners = new CopyOnWriteArrayList<>();
 
     private static class SingletonHolder {
 
@@ -68,34 +74,32 @@ public class MarketLogger {
     }
 
     private MarketLogger() {
+        applySystemProperties();
+        isRunning = true;
         try {
-            // 讀取 system properties（方便你不用改碼也能調整）
-            applySystemProperties();
-
-            // 確保日誌目錄存在
-            File logDir = new File(LOG_DIRECTORY);
-            if (!logDir.exists()) {
-                logDir.mkdirs();
-            }
-
-            // 創建帶時間戳的日誌文件
-            String fileName = LOG_DIRECTORY + File.separator
-                    + "market_simulation_" + LocalDateTime.now().format(FILE_FORMATTER) + ".log";
-
-            writer = new PrintWriter(new FileWriter(fileName, true));
-            logQueue = new ConcurrentLinkedQueue<>();
-            logExecutor = Executors.newSingleThreadExecutor();
-            isRunning = true;
-
-            // 啟動日誌寫入線程
-            startLogWriter();
-
-            // 添加JVM關閉鉤子
-            Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown));
-        } catch (IOException e) {
-            System.err.println("無法初始化日誌系統：" + e.getMessage());
-            e.printStackTrace();
+            writer = createWriter();
+        } catch (IOException | RuntimeException e) {
+            System.err.println("無法初始化檔案日誌，已切換為無檔案模式：" + e.getMessage());
         }
+        startLogWriter();
+        try {
+            Runtime.getRuntime().addShutdownHook(new Thread(this::shutdown, "market-log-shutdown"));
+        } catch (RuntimeException ignored) {
+            // Logging remains available even when shutdown hooks are restricted.
+        }
+    }
+
+    private static PrintWriter createWriter() throws IOException {
+        String configured = System.getProperty("market.log.dir", "").trim();
+        File logDir = configured.isEmpty()
+                ? new File(System.getProperty("user.home"), ".stock-main-action" + File.separator + "logs")
+                : new File(configured);
+        if ((!logDir.exists() && !logDir.mkdirs()) || !logDir.isDirectory()) {
+            throw new IOException("無法建立日誌目錄：" + logDir.getAbsolutePath());
+        }
+        File logFile = new File(logDir,
+                "market_simulation_" + LocalDateTime.now().format(FILE_FORMATTER) + ".log");
+        return new PrintWriter(new FileWriter(logFile, true));
     }
 
     /**
@@ -181,6 +185,10 @@ public class MarketLogger {
                     if (writer != null) {
                         writer.println(logMessage);
                         writer.flush();
+                        if (writer.checkError()) {
+                            writer.close();
+                            writer = null;
+                        }
                     }
                 }
                 try {
@@ -203,11 +211,17 @@ public class MarketLogger {
         }
 
         // 加入隊列
-        logQueue.offer(logEntry);
+        if (!logQueue.offer(logEntry)) {
+            droppedLogCount.incrementAndGet();
+        }
 
         // 通知所有監聽器
         for (LogListener listener : logListeners) {
-            listener.onNewLog(timestamp, level, category, message);
+            try {
+                listener.onNewLog(timestamp, level, category, message);
+            } catch (RuntimeException ignored) {
+                // A UI listener must never break the caller's business operation.
+            }
         }
     }
 
@@ -218,6 +232,10 @@ public class MarketLogger {
 
     public int getLogLevel() {
         return currentLogLevel;
+    }
+
+    public long getDroppedLogCount() {
+        return droppedLogCount.get();
     }
 
     public void setConsoleEnabled(boolean enabled) {
@@ -267,12 +285,16 @@ public class MarketLogger {
             else if ("INFO".equals(lv)) currentLogLevel = LEVEL_INFO;
             else if ("WARN".equals(lv) || "WARNING".equals(lv)) currentLogLevel = LEVEL_WARN;
             else if ("ERROR".equals(lv)) currentLogLevel = LEVEL_ERROR;
-        } catch (Exception ignore) {}
+        } catch (RuntimeException ex) {
+            System.err.println("無法讀取 market.log.level：" + ex.getMessage());
+        }
 
         try {
             String c = System.getProperty("market.log.console", "false").trim().toLowerCase();
             consoleEnabled = "1".equals(c) || "true".equals(c) || "yes".equals(c) || "on".equals(c);
-        } catch (Exception ignore) {}
+        } catch (RuntimeException ex) {
+            System.err.println("無法讀取 market.log.console：" + ex.getMessage());
+        }
 
         // -Dmarket.log.disabledCategories=RETAIL_INVESTOR_DECISION,ORDER_PROCESSING
         try {
@@ -283,7 +305,9 @@ public class MarketLogger {
                     if (!cat.isEmpty()) disabledCategories.add(cat);
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (RuntimeException ex) {
+            System.err.println("無法讀取 market.log.disabledCategories：" + ex.getMessage());
+        }
 
         // -Dmarket.log.categoryMinLevels=ORDER_PROCESSING=WARN;RETAIL_INVESTOR_DECISION=ERROR
         try {
@@ -304,7 +328,9 @@ public class MarketLogger {
                     if (!cat.isEmpty()) categoryMinLevel.put(cat, v);
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (RuntimeException ex) {
+            System.err.println("無法讀取 market.log.categoryMinLevels：" + ex.getMessage());
+        }
     }
 
     /**
@@ -312,7 +338,7 @@ public class MarketLogger {
      */
     public void shutdown() {
         isRunning = false;
-        logExecutor.shutdown();
+        logExecutor.shutdownNow();
         if (writer != null) {
             writer.close();
         }

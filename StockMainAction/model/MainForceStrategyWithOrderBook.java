@@ -6,6 +6,8 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.Trader;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
+import StockMainAction.model.core.OrderSide;
+import StockMainAction.model.strategy.OrderIntent;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.Queue;
@@ -56,6 +58,11 @@ public class MainForceStrategyWithOrderBook implements Trader {
     private double maxOffsetRatio = 0.10;   // 最多 ±10 %
 
     private static final MarketLogger logger = MarketLogger.getInstance();
+
+    private static void logOptionalFailure(Exception ex) {
+        logger.debugThrottled("主力策略選配訊號降級：" + ex.getMessage(),
+                "STRATEGY_FALLBACK", "main-force", 60_000);
+    }
 
     // ===== 主力狀態機（更像主力的操作） =====
     private enum Phase { 待機, 吸籌, 拉抬, 出貨, 洗盤 }
@@ -323,11 +330,16 @@ public class MainForceStrategyWithOrderBook implements Trader {
      * @param initialCash 初始現金
      */
     public MainForceStrategyWithOrderBook(OrderBook orderBook, Stock stock, StockMarketModel model, double initialCash) {
+        this(orderBook, stock, model, initialCash, new Random());
+    }
+
+    public MainForceStrategyWithOrderBook(OrderBook orderBook, Stock stock,
+            StockMarketModel model, double initialCash, Random random) {
         this.orderBook = orderBook;
         this.stock = stock;
         this.model = model;
         this.tradeLog = new StringBuilder();
-        this.random = new Random();
+        this.random = java.util.Objects.requireNonNull(random, "random");
         this.recentVolumes = new LinkedList<>();
         this.recentPrices = new LinkedList<>();
         this.volatility = 0.0;
@@ -366,12 +378,6 @@ public class MainForceStrategyWithOrderBook implements Trader {
     public void updateAfterTransaction(String type, int volume, double price) {
         double transactionAmount = price * volume;
         if ("buy".equals(type)) {
-            try {
-                account.consumeFrozenFunds(transactionAmount);
-            } catch (Exception e) {
-                account.decrementFunds(transactionAmount);
-            }
-            account.incrementStocks(volume);
             // 更新平均成本價
             double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
             averageCostPrice = totalInvestment / getAccumulatedStocks();
@@ -381,7 +387,6 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     volume, price, averageCostPrice), "TRANSACTION_UPDATE");
         } else if ("sell".equals(type)) {
             // 限價單賣出：增加現金
-            account.incrementFunds(transactionAmount);
             // 若持股為零，重置平均成本價
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
@@ -415,8 +420,6 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
         if ("buy".equals(type)) {
             // 扣款並加股
-            account.decrementFunds(transactionAmount);
-            account.incrementStocks(volume);
 
             // 更新平均成本
             double totalInvestment = averageCostPrice * (getAccumulatedStocks() - volume) + transactionAmount;
@@ -428,8 +431,6 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
         } else if ("sell".equals(type)) {
             // 扣股並加款
-            account.decrementStocks(volume);
-            account.incrementFunds(transactionAmount);
 
             if (getAccumulatedStocks() == 0) {
                 averageCostPrice = 0.0;
@@ -570,7 +571,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     switch (phase) {
                         case 吸籌: {
                             double speedFactor = 1.0 + Math.min(1.0, sig.vps / 800.0);
-                            double evtScale = 1.0; try { if (model != null) evtScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+                            double evtScale = 1.0;
+                            try { if (model != null) evtScale = model.getEventPositionScale(); }
+                            catch (Exception ignore) { logOptionalFailure(ignore); }
                             int vol = Math.max(50, (int)(calculateValueBuyVolume() * 0.2 * speedFactor * evtScale * computeTechScale()));
                             // 分層掛單：在現價下方多層吸籌
                             int placed = 0;
@@ -578,7 +581,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                 double px = computeBuyLimitPrice(currentPrice * (1 - i * 0.005), sma, rsi, volatility);
                                 Order o = Order.createLimitBuyOrder(px, Math.max(10, vol / 3), this);
                                 trackOrderCreation(o.getId());
-                                orderBook.submitBuyOrder(o, px);
+                                executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                                        o.getVolume(), px, "main force ladder buy"));
                                 placed += o.getVolume();
                                 LogicAudit.info("MAIN_FORCE_ORDER", String.format("ACCUM buy %d @ %.4f", o.getVolume(), px));
                             }
@@ -604,7 +608,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                         }
                                     }
                                 }
-                            } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
                             decisionLog.append(String.format("【ACCUMULATE】分層吸籌下單共 %d 股\n", placed));
                             cooldownTicks = 2;
                             phaseActed = true;
@@ -616,7 +620,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             // 若賣側牆存在，適度加大拉抬量以突破
                             double wallBoost = wall.sellWall ? 1.3 : 1.0;
                             double flowBoost = 1.0 + Math.max(0.0, Math.min(0.5, sig.tickImbalance)); // 失衡偏多時增加至+50%
-                            double evtScale = 1.0; try { if (model != null) evtScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+                            double evtScale = 1.0;
+                            try { if (model != null) evtScale = model.getEventPositionScale(); }
+                            catch (Exception ignore) { logOptionalFailure(ignore); }
                             // 指標倉位縮放：MACD 直方 >0 放大、<0 縮小；K>80 減倉，K<20 放大
                             double techScale = 1.0;
                             try {
@@ -624,16 +630,17 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                 double kVal = model.getLastK();
                                 if (!Double.isNaN(macdHist)) techScale *= (1.0 + Math.max(-0.2, Math.min(0.2, macdHist * 0.5)));
                                 if (!Double.isNaN(kVal)) { if (kVal > 80) techScale *= 0.85; else if (kVal < 20) techScale *= 1.15; }
-                            } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
                             int vol = Math.max(50, (int)(calculateLiftVolume() * speedFactor * wallBoost * flowBoost * evtScale * techScale));
                             拉抬操作(vol);
                             decisionLog.append(String.format("【MARKUP】市價拉抬 %d 股\n", vol));
                             // 撤掉靠近買一之上的賣單（減少上方阻力）
                             try {
-                                if (!orderBook.getSellOrders().isEmpty()) {
-                                    int maxCancel = Math.min(3, orderBook.getSellOrders().size());
+                                java.util.List<Order> sellSnapshot = orderBook.getSellOrders();
+                                if (!sellSnapshot.isEmpty()) {
+                                    int maxCancel = Math.min(3, sellSnapshot.size());
                                     for (int i = 0; i < maxCancel; i++) {
-                                        Order so = orderBook.getSellOrders().get(i);
+                                        Order so = sellSnapshot.get(i);
                                         // 只允許主力撤自己的賣單，避免誤傷用戶掛單
                                         if (so != null && so.getTrader() == this && so.getPrice() <= currentPrice * 1.01) {
                                             boolean ok = orderBook.cancelOrder(so.getId());
@@ -644,7 +651,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                         }
                                     }
                                 }
-                            } catch (Exception ignore) { }
+                            } catch (Exception ignore) { logOptionalFailure(ignore); }
                             cooldownTicks = 1;
                             phaseActed = true;
                             break;
@@ -654,7 +661,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             int hold = getAccumulatedStocks();
                             if (hold > 0) {
                                 double speedFactor = 1.0 + Math.min(1.0, sig.vps / 800.0);
-                                double evtScale = 1.0; try { if (model != null) evtScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+                                double evtScale = 1.0;
+                                try { if (model != null) evtScale = model.getEventPositionScale(); }
+                                catch (Exception ignore) { logOptionalFailure(ignore); }
                                 int chunk = Math.max(20, (int)(hold / 5 * speedFactor * evtScale * computeTechScale()));
                                 int placed = 0;
                                 for (int i = 1; i <= 3 && placed < hold; i++) {
@@ -662,7 +671,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                     int size = Math.min(chunk, hold - placed);
                                     Order o = Order.createLimitSellOrder(px, size, this);
                                     trackOrderCreation(o.getId());
-                                    orderBook.submitSellOrder(o, px);
+                                    executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                                            size, px, "main force ladder sell"));
                                     placed += size;
                                     LogicAudit.info("MAIN_FORCE_ORDER", String.format("DIST sell %d @ %.4f", size, px));
                                 }
@@ -688,7 +698,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                                             }
                                         }
                                     }
-                                } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
                                 decisionLog.append(String.format("【DISTRIBUTE】分層出貨下單共 %d 股\n", placed));
                                 cooldownTicks = 2;
                                 phaseActed = true;
@@ -696,7 +706,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             break;
                         }
                         case 洗盤: {
-                            double evtScale = 1.0; try { if (model != null) evtScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+                            double evtScale = 1.0;
+                            try { if (model != null) evtScale = model.getEventPositionScale(); }
+                            catch (Exception ignore) { logOptionalFailure(ignore); }
                             int wash = (int)(calculateWashVolume(volatility) * (sig.inPct >= model.getEventEffectiveThresholdOr(65) ? 1.3 : 1.0) * evtScale);
                             洗盤操作(wash);
                             decisionLog.append(String.format("【WASH】洗盤賣出 %d 股\n", wash));
@@ -789,8 +801,9 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
                     // 8. 隨機取消掛單（log only，實際 cancel 已注解）
                     } else if (actionProbability < 0.4) {
-                        if (!orderBook.getBuyOrders().isEmpty()) {
-                            Order orderToCancel = orderBook.getBuyOrders().get(0);
+                        java.util.List<Order> buySnapshot = orderBook.getBuyOrders();
+                        if (!buySnapshot.isEmpty()) {
+                            Order orderToCancel = buySnapshot.get(0);
                             decisionLog.append(String.format("【隨機取消掛單】取消買單 ID: %s，數量: %d 股",
                                     orderToCancel.getId(), orderToCancel.getVolume()));
                         }
@@ -874,7 +887,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             // 創建並提交買單
             Order buyOrder = Order.createLimitBuyOrder(limitPrice, volume, this);
             trackOrderCreation(buyOrder.getId());
-            orderBook.submitBuyOrder(buyOrder, limitPrice);
+            executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                    volume, limitPrice, "main force limit buy"));
 
             logger.info(String.format(
                     "吸籌操作成功：買入 %d 股 @ %.2f",
@@ -930,7 +944,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             // 創建並提交賣單
             Order sellOrder = Order.createLimitSellOrder(limitPrice, volume, this);
             trackOrderCreation(sellOrder.getId());
-            orderBook.submitSellOrder(sellOrder, limitPrice);
+            executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                    volume, limitPrice, "main force limit sell"));
 
             logger.info(String.format(
                     "賣出操作成功：賣出 %d 股 @ %.2f",
@@ -971,7 +986,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             // 根據洗盤需求決定訂單類型
             if (random.nextDouble() < 0.3) {
                 // FOK賣單
-                boolean success = orderBook.submitFokSellOrder(price * 0.99, volume, this);
+                boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.SELL,
+                        volume, price * 0.99, "main force wash FOK sell")).accepted();
                 if (success) {
                     logger.info(String.format(
                             "洗盤操作成功：FOK賣出 %d 股 @ %.2f",
@@ -986,7 +1002,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 // 普通限價賣單
                 Order sellOrder = Order.createLimitSellOrder(price, volume, this);
                 trackOrderCreation(sellOrder.getId());
-                orderBook.submitSellOrder(sellOrder, price);
+                executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                        volume, price, "main force wash limit sell"));
 
                 logger.info(String.format(
                         "洗盤操作成功：限價賣出 %d 股 @ %.2f",
@@ -1031,17 +1048,20 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 double imb = model != null ? model.getRecentTickImbalance(40) : 0.0;
                 boolean strongFlow = (tps >= 2.5) && (imb > 0.20);
                 if (strongFlow) {
-                    orderBook.marketBuy(this, volume);
+                    executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+                            volume, "main force market buy"));
                     usedMarket = true;
                 } else {
                     double px = stock.getPrice() * 1.001; // 小幅抬價
                     px = orderBook.adjustPriceToUnit(px);
                     Order o = Order.createLimitBuyOrder(px, volume, this);
                     trackOrderCreation(o.getId());
-                    orderBook.submitBuyOrder(o, px);
+                    executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                            volume, px, "main force limit buy"));
                 }
             } catch (Exception ex) {
-                orderBook.marketBuy(this, volume);
+                executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+                        volume, "main force market buy"));
                 usedMarket = true;
             }
 
@@ -1063,7 +1083,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                         "MainForce", getPhaseName(), "LIFT", usedMarket?"MARKET":"LIMIT",
                         volume, price, sig.inPct, sig.outPct, delta, sig.tps, sig.vps, sig.tickImbalance,
                         effTh, posScale, macdHist, kVal, wall.buyWall, wall.sellWall);
-            } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
             return volume;
         } catch (Exception e) {
@@ -1101,17 +1121,20 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 double imb = model != null ? model.getRecentTickImbalance(40) : 0.0;
                 boolean strongFlow = (tps >= 2.5) && (imb < -0.20);
                 if (strongFlow) {
-                    orderBook.marketSell(this, volume);
+                    executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+                            volume, "main force market sell"));
                     usedMarket = true;
                 } else {
                     double px = stock.getPrice() * 0.999; // 小幅讓價
                     px = orderBook.adjustPriceToUnit(px);
                     Order o = Order.createLimitSellOrder(px, volume, this);
                     trackOrderCreation(o.getId());
-                    orderBook.submitSellOrder(o, px);
+                    executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                            volume, px, "main force limit sell"));
                 }
             } catch (Exception ex) {
-                orderBook.marketSell(this, volume);
+                executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+                        volume, "main force market sell"));
                 usedMarket = true;
             }
 
@@ -1133,7 +1156,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                         "MainForce", getPhaseName(), "SELL", usedMarket?"MARKET":"LIMIT",
                         volume, stock.getPrice(), sig.inPct, sig.outPct, delta, sig.tps, sig.vps, sig.tickImbalance,
                         effTh, posScale, macdHist, kVal, wall.buyWall, wall.sellWall);
-            } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
             return volume;
         } catch (Exception e) {
@@ -1165,7 +1188,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             }
 
             // 使用FOK買單
-            boolean success = orderBook.submitFokBuyOrder(price, volume, this);
+            boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.BUY,
+                    volume, price, "main force precise FOK buy")).accepted();
 
             if (success) {
                 logger.info(String.format(
@@ -1209,7 +1233,8 @@ public class MainForceStrategyWithOrderBook implements Trader {
             }
 
             // 使用FOK賣單
-            boolean success = orderBook.submitFokSellOrder(price, volume, this);
+            boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.SELL,
+                    volume, price, "main force precise FOK sell")).accepted();
 
             if (success) {
                 logger.info(String.format(
@@ -1459,7 +1484,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                 if (model != null && model.getMarketAnalyzer() != null) {
                     vol = Math.max(0.0, model.getMarketAnalyzer().calculateVolatility());
                 }
-            } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
             double volatilityRisk = clamp(vol / Math.max(0.005, riskVolatilityFull), 0.0, 1.0);
 
             // 5) 下行趨勢風險（僅在持倉曝險高時加重）
@@ -1469,7 +1494,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                     double trend = model.getMarketAnalyzer().getRecentPriceTrend();
                     trendRisk = clamp((-trend) / Math.max(0.005, riskTrendDownFull), 0.0, 1.0) * exposureRisk;
                 }
-            } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
             double risk = riskExposureWeight * exposureRisk
                     + riskUnrealizedWeight * unrealizedLossRisk
@@ -1519,7 +1544,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             s.vps = vol / Math.max(1.0, secs);
             int n = Math.max(1, buyTicks + sellTicks);
             s.tickImbalance = (buyTicks - sellTicks) / (double) n; // >0 偏多，<0 偏空
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
         return s;
     }
 
@@ -1535,7 +1560,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             int maxS = sells.stream().mapToInt(StockMainAction.model.core.Order::getVolume).max().orElse(0);
             w.buyWall = buySum>0 && maxB*100/buySum>=40 && maxB>= (int)(1.5 * Math.max(1, maxS));
             w.sellWall = sellSum>0 && maxS*100/sellSum>=40 && maxS>= (int)(1.5 * Math.max(1, maxB));
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
         return w;
     }
 
@@ -1552,7 +1577,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
             if (!Double.isNaN(kVal)) {
                 if (kVal > 80) scale *= 0.85; else if (kVal < 20) scale *= 1.15;
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
         return scale;
     }
     

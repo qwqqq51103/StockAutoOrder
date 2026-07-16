@@ -58,14 +58,8 @@ public class PersonalTrader implements Trader {
     public void updateAfterTransaction(String type, int volume, double price) {
         if (type.equalsIgnoreCase("buy")) {
             // 買入後更新帳戶狀態
-            account.incrementStocks(volume);
-            account.decrementFunds(price * volume);
-            System.out.println("個人戶 " + name + " 買入 " + volume + " 股，每股價格 " + price);
         } else if (type.equalsIgnoreCase("sell")) {
             // 賣出後更新帳戶狀態
-            account.decrementStocks(volume);
-            account.incrementFunds(price * volume);
-            System.out.println("個人戶 " + name + " 賣出 " + volume + " 股，每股價格 " + price);
         } else {
             throw new IllegalArgumentException("未知的交易類型: " + type);
         }
@@ -82,8 +76,7 @@ public class PersonalTrader implements Trader {
     public void updateAverageCostPrice(String type, int transactionVolume, double transactionPrice) {
         // 這裡可以實現更複雜的邏輯來更新平均成本價格
         // 目前僅作為示例，打印交易資訊
-        System.out.println("個人戶 " + name + " 更新平均成本價格: 類型=" + type
-                + ", 數量=" + transactionVolume + ", 價格=" + transactionPrice);
+        // Statistics are updated from TradeExecuted events.
     }
 
     /**

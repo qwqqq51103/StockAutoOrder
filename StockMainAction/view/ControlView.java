@@ -16,6 +16,11 @@ public class ControlView extends JFrame {
 
     private static final MarketLogger logger = MarketLogger.getInstance();
 
+    private static void reportUiFailure(Throwable failure) {
+        logger.debugThrottled("控制畫面選配更新失敗：" + failure.getMessage(),
+                "UI_FALLBACK", "control-view", 60_000);
+    }
+
     // UI組件
     private JButton stopButton, limitBuyButton, limitSellButton;
     private JButton marketBuyButton, marketSellButton, cancelOrderButton, viewOrdersButton;
@@ -460,7 +465,7 @@ public class ControlView extends JFrame {
                     return (Integer) ((JSpinner) v).getValue();
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) { reportUiFailure(ignored); }
         return null;
     }
 }

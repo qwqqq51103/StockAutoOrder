@@ -27,7 +27,11 @@ public class StockMarketSimulation {
         try {
             UIManager.setLookAndFeel("com.formdev.flatlaf.FlatDarkLaf");
         } catch (Exception ignore) {
-            try { UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
+            try {
+                UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            } catch (Exception ex) {
+                System.err.println("無法套用系統外觀，將使用 Swing 預設外觀：" + ex.getMessage());
+            }
         }
 
         // 使用Swing的事件分派線程初始化UI

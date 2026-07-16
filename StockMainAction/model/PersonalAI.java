@@ -3,9 +3,18 @@ package StockMainAction.model;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
+import StockMainAction.model.core.ExecutionResult;
+import StockMainAction.model.core.OrderSubmissionResult;
+import StockMainAction.model.core.OrderSide;
+import StockMainAction.model.strategy.OrderIntent;
+import StockMainAction.model.strategy.SignalAction;
+import StockMainAction.model.strategy.StrategyExecutionResult;
+import StockMainAction.model.strategy.StrategyPipeline;
+import StockMainAction.model.strategy.TradingSignal;
 import StockMainAction.StockMarketSimulation;
 import StockMainAction.model.user.UserAccount;
 import StockMainAction.util.logging.MarketLogger;
+import java.util.Random;
 
 /**
  * 個人戶 AI，繼承自散戶 AI RetailInvestorAI， 但可以覆寫部分方法，以符合個人戶的行為需求。
@@ -29,7 +38,12 @@ public class PersonalAI extends RetailInvestorAI {
     private static final MarketLogger logger = MarketLogger.getInstance();
     
     public PersonalAI(double initialCash, String traderID, StockMarketModel model, OrderBook orderBook, Stock stock) {
-        super(initialCash, traderID, model);  // 修正：使用 model 參數
+        this(initialCash, traderID, model, orderBook, stock, new Random());
+    }
+
+    public PersonalAI(double initialCash, String traderID, StockMarketModel model,
+            OrderBook orderBook, Stock stock, Random random) {
+        super(initialCash, traderID, model, random);
         this.model = model;  // 修正：使用 model 參數
         this.orderBook = orderBook;
         this.stock = stock;
@@ -107,6 +121,59 @@ public class PersonalAI extends RetailInvestorAI {
         this.personalTakeProfitPrice = price;
     }
 
+    public ExecutionResult executeMarketBuyResult(int quantity) {
+        if (orderBook == null) {
+            return new ExecutionResult(quantity, 0, 0, 0, "order book unavailable");
+        }
+        return immediateResult(quantity, executeIntent(
+                OrderIntent.market(OrderSide.BUY, quantity, "personal market buy")));
+    }
+
+    public ExecutionResult executeMarketSellResult(int quantity) {
+        if (orderBook == null) {
+            return new ExecutionResult(quantity, 0, 0, 0, "order book unavailable");
+        }
+        return immediateResult(quantity, executeIntent(
+                OrderIntent.market(OrderSide.SELL, quantity, "personal market sell")));
+    }
+
+    public OrderSubmissionResult submitLimitBuy(int quantity, double price) {
+        StrategyExecutionResult result = executeIntent(
+                OrderIntent.limit(OrderSide.BUY, quantity, price, "personal limit buy"));
+        return result.submission() != null ? result.submission()
+                : new OrderSubmissionResult(null, false, result.failureReason());
+    }
+
+    public OrderSubmissionResult submitLimitSell(int quantity, double price) {
+        StrategyExecutionResult result = executeIntent(
+                OrderIntent.limit(OrderSide.SELL, quantity, price, "personal limit sell"));
+        return result.submission() != null ? result.submission()
+                : new OrderSubmissionResult(null, false, result.failureReason());
+    }
+
+    public ExecutionResult executeFokBuyResult(int quantity, double price) {
+        StrategyExecutionResult result = executeIntent(
+                OrderIntent.fok(OrderSide.BUY, quantity, price, "personal FOK buy"));
+        return immediateResult(quantity, result);
+    }
+
+    public ExecutionResult executeFokSellResult(int quantity, double price) {
+        StrategyExecutionResult result = executeIntent(
+                OrderIntent.fok(OrderSide.SELL, quantity, price, "personal FOK sell"));
+        return immediateResult(quantity, result);
+    }
+
+    private StrategyExecutionResult executeIntent(OrderIntent intent) {
+        SignalAction action = intent.side() == OrderSide.BUY ? SignalAction.BUY : SignalAction.SELL;
+        return StrategyPipeline.standard().execute(
+                new TradingSignal(action, 1.0, intent.reason()), intent, this, orderBook);
+    }
+
+    private static ExecutionResult immediateResult(int quantity, StrategyExecutionResult result) {
+        return result.execution() != null ? result.execution()
+                : new ExecutionResult(quantity, 0, 0, 0, result.failureReason());
+    }
+
     // ========== 實際掛單操作 (成功/失敗印出) ==========
     /**
      * 市價買入操作：先檢查資金，再呼叫 orderBook.marketBuy
@@ -135,9 +202,9 @@ public class PersonalAI extends RetailInvestorAI {
         }
 
         // 使用 orderBook 的 marketBuy 方法（已經實現了市價單邏輯）
-        orderBook.marketBuy(this, buyAmount);
+        ExecutionResult result = executeMarketBuyResult(buyAmount);
         // 若有部分成交亦可視情況而定，這裡直接回傳 buyAmount
-        return buyAmount;
+        return result.filledVolume();
     }
 
     /**
@@ -154,8 +221,7 @@ public class PersonalAI extends RetailInvestorAI {
         }
 
         // 使用 orderBook 的 marketSell 方法（已經實現了市價單邏輯）
-        orderBook.marketSell(this, sellAmount);
-        return sellAmount;
+        return executeMarketSellResult(sellAmount).filledVolume();
     }
 
     /**
@@ -180,9 +246,7 @@ public class PersonalAI extends RetailInvestorAI {
         //    return 0;
         //}
         // 成功掛限價買單 - 使用工廠方法
-        Order buyOrder = Order.createLimitBuyOrder(currentPrice, amount, this);
-        orderBook.submitBuyOrder(buyOrder, currentPrice);
-        return amount;
+        return submitLimitBuy(amount, currentPrice).accepted() ? amount : 0;
     }
 
     /**
@@ -203,9 +267,7 @@ public class PersonalAI extends RetailInvestorAI {
         //}
 
         // 成功掛限價賣單 - 使用工廠方法
-        Order sellOrder = Order.createLimitSellOrder(currentPrice, amount, this);
-        orderBook.submitSellOrder(sellOrder, currentPrice);
-        return amount;
+        return submitLimitSell(amount, currentPrice).accepted() ? amount : 0;
     }
 
     /**
@@ -225,12 +287,7 @@ public class PersonalAI extends RetailInvestorAI {
         }
 
         // 使用 orderBook 的 submitFokBuyOrder 方法
-        boolean success = orderBook.submitFokBuyOrder(currentPrice, amount, this);
-        if (success) {
-            return amount;
-        } else {
-            return 0; // FOK單失敗，無法完全滿足
-        }
+        return executeFokBuyResult(amount, currentPrice).filledVolume();
     }
 
     /**
@@ -247,12 +304,7 @@ public class PersonalAI extends RetailInvestorAI {
         }
 
         // 使用 orderBook 的 submitFokSellOrder 方法
-        boolean success = orderBook.submitFokSellOrder(currentPrice, amount, this);
-        if (success) {
-            return amount;
-        } else {
-            return 0; // FOK單失敗，無法完全滿足
-        }
+        return executeFokSellResult(amount, currentPrice).filledVolume();
     }
 
     public void onOrderCancelled(Order order) {
@@ -268,12 +320,6 @@ public class PersonalAI extends RetailInvestorAI {
         double transactionAmount = price * volume;
 
         if (type.equals("buy")) {
-            try {
-                getAccount().consumeFrozenFunds(transactionAmount);
-            } catch (Exception e) {
-                getAccount().decrementFunds(transactionAmount);
-            }
-            getAccount().incrementStocks(volume);
 
             // 更新個人平均成本
             int totalStocks = getAccount().getStockInventory();
@@ -289,7 +335,6 @@ public class PersonalAI extends RetailInvestorAI {
 
         } else if (type.equals("sell")) {
             // 增加可用資金
-            getAccount().incrementFunds(transactionAmount);
 
             // 如果全部賣掉，重置均價
             if (getAccount().getStockInventory() == 0) {
@@ -310,8 +355,6 @@ public class PersonalAI extends RetailInvestorAI {
         double transactionAmount = price * volume;
 
         if ("buy".equals(type)) {
-            getAccount().decrementFunds(transactionAmount);
-            getAccount().incrementStocks(volume);
 
             // 更新個人平均成本
             int totalStocks = getAccount().getStockInventory();
@@ -327,8 +370,6 @@ public class PersonalAI extends RetailInvestorAI {
 
         } else if ("sell".equals(type)) {
             // 扣股並增加可用資金
-            getAccount().decrementStocks(volume);
-            getAccount().incrementFunds(transactionAmount);
 
             // 若全部賣掉，重置均價
             if (getAccount().getStockInventory() == 0) {

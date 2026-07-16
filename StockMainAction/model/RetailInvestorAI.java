@@ -5,6 +5,8 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.Trader;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
+import StockMainAction.model.core.OrderSide;
+import StockMainAction.model.strategy.OrderIntent;
 import StockMainAction.StockMarketSimulation;
 import java.util.Random;
 import java.util.LinkedList;
@@ -28,7 +30,7 @@ import java.util.stream.Collectors;
 public class RetailInvestorAI implements Trader {
 
     private StockMarketSimulation simulation;
-    private static final Random random = new Random();
+    private final Random random;
     private final Random randProfile; // 每位散戶專屬隨機源（由 traderID 決定）
     private double buyThreshold = 0.95; // 調低門檻以增加買入機會
     private double sellThreshold = 3.5; // 調低門檻以增加賣出機會
@@ -42,6 +44,11 @@ public class RetailInvestorAI implements Trader {
     private boolean autoInputOrderAmount = true; // 是否自動輸入訂單金額
     private DecimalFormat decimalFormat = new DecimalFormat("#,##0.00"); // 格式化價格顯示
     private static final MarketLogger logger = MarketLogger.getInstance();
+
+    private static void logOptionalFailure(Exception ex) {
+        logger.debugThrottled("散戶策略選配訊號降級：" + ex.getMessage(),
+                "STRATEGY_FALLBACK", "retail", 60_000);
+    }
     private StockMarketModel model;
 
     // 訂單管理相關
@@ -95,8 +102,13 @@ public class RetailInvestorAI implements Trader {
      * @param model 市場模型
      */
     public RetailInvestorAI(double initialCash, String traderID, StockMarketModel model) {
+        this(initialCash, traderID, model, new Random());
+    }
+
+    public RetailInvestorAI(double initialCash, String traderID, StockMarketModel model, Random random) {
         this.traderID = traderID;
         this.model = model;
+        this.random = java.util.Objects.requireNonNull(random, "random");
         this.randProfile = new Random(traderID.hashCode());
         this.initialCash = initialCash;
 
@@ -181,14 +193,8 @@ public class RetailInvestorAI implements Trader {
 
         if ("buy".equals(type)) {
             // === 平均成本更新（限價買成交）===
-            int prevPos = getTotalPosition();
-            try {
-                account.consumeFrozenFunds(transactionAmount);
-            } catch (Exception e) {
-                account.decrementFunds(transactionAmount);
-            }
-            account.incrementStocks(volume);
-            int newPos = Math.max(0, prevPos + volume);
+            int newPos = getTotalPosition();
+            int prevPos = Math.max(0, newPos - volume);
             if (newPos > 0) {
                 averageCostPrice = (averageCostPrice * prevPos + price * volume) / newPos;
                 peakPriceSinceEntry = Math.max(peakPriceSinceEntry, price);
@@ -197,7 +203,6 @@ public class RetailInvestorAI implements Trader {
             logger.info(String.format("【散戶-限價買入更新】散戶 %s 買入 %d 股，價格 %.2f", traderID, volume, price), "RETAIL_TRANSACTION");
         } else if ("sell".equals(type)) {
             // 限價單賣出
-            account.incrementFunds(transactionAmount);
             // === 已實現損益更新（限價賣成交；庫存已由撮合端 consumeFrozenStocks）===
             double pnlDelta = 0.0;
             if (averageCostPrice > 0) {
@@ -228,10 +233,8 @@ public class RetailInvestorAI implements Trader {
 
         if ("buy".equals(type)) {
             // 扣款並加股
-            int prevPos = getTotalPosition();
-            account.decrementFunds(transactionAmount);
-            account.incrementStocks(volume);
-            int newPos = Math.max(0, prevPos + volume);
+            int newPos = getTotalPosition();
+            int prevPos = Math.max(0, newPos - volume);
             if (newPos > 0) {
                 averageCostPrice = (averageCostPrice * prevPos + price * volume) / newPos;
                 peakPriceSinceEntry = Math.max(peakPriceSinceEntry, price);
@@ -246,8 +249,6 @@ public class RetailInvestorAI implements Trader {
                 pnlDelta = (price - averageCostPrice) * volume;
                 realizedPnl += pnlDelta;
             }
-            account.decrementStocks(volume);
-            account.incrementFunds(transactionAmount);
             onRealizedPnlDelta(pnlDelta);
             int posNow = getTotalPosition();
             if (posNow <= 0) {
@@ -325,7 +326,7 @@ public class RetailInvestorAI implements Trader {
                 if (!topBuys.isEmpty() && topBuys.get(0) != null) bestBid = topBuys.get(0).getPrice();
                 if (!topSells.isEmpty() && topSells.get(0) != null) bestAsk = topSells.get(0).getPrice();
                 if (bestBid > 0 && bestAsk > 0 && bestBid <= bestAsk) mid = (bestBid + bestAsk) / 2.0;
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { logOptionalFailure(ignore); }
             double spreadRatio = (bestBid > 0 && bestAsk > 0 && mid > 0) ? (bestAsk - bestBid) / mid : 0.0;
             double spreadLimit = Math.max(0.0, Math.min(0.05, cfg.spreadLimitRatio));
             if (spreadRatio > spreadLimit) {
@@ -334,10 +335,13 @@ public class RetailInvestorAI implements Trader {
 
             // === 訊號：趨勢 + MACD/KDJ + RSI ===
             double trend = 0.0;
-            try { trend = model.getMarketAnalyzer().getTrendUsingMA(); } catch (Exception ignore) {}
+            try { trend = model.getMarketAnalyzer().getTrendUsingMA(); }
+            catch (Exception ignore) { logOptionalFailure(ignore); }
             double macdHist = Double.NaN, k = Double.NaN;
-            try { macdHist = model.getLastMacdHist(); } catch (Exception ignore) {}
-            try { k = model.getLastK(); } catch (Exception ignore) {}
+            try { macdHist = model.getLastMacdHist(); }
+            catch (Exception ignore) { logOptionalFailure(ignore); }
+            try { k = model.getLastK(); }
+            catch (Exception ignore) { logOptionalFailure(ignore); }
 
             boolean hasPos = getTotalPosition() > 0;
             // 更新移動停損參考
@@ -935,7 +939,8 @@ public class RetailInvestorAI implements Trader {
                         traderID, orderTypeRandom, buyPrice
                 ), "RETAIL_INVESTOR_RANDOM");
 
-                boolean success = orderBook.submitFokBuyOrder(buyPrice, buyAmount, this);
+                boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.BUY,
+                        buyAmount, buyPrice, "retail random FOK buy")).accepted();
                 if (success) {
                     logger.info(String.format(
                             "散戶%s 隨機FOK買入成功：買入 %d 股，價格=%.2f",
@@ -1009,7 +1014,8 @@ public class RetailInvestorAI implements Trader {
                         traderID, orderTypeRandom, sellPrice
                 ), "RETAIL_INVESTOR_RANDOM");
 
-                boolean success = orderBook.submitFokSellOrder(sellPrice, sellAmount, this);
+                boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.SELL,
+                        sellAmount, sellPrice, "retail random FOK sell")).accepted();
                 if (success) {
                     logger.info(String.format(
                             "散戶%s 隨機FOK賣出成功：賣出 %d 股，價格=%.2f",
@@ -1054,7 +1060,7 @@ public class RetailInvestorAI implements Trader {
             List<Order> topSells = orderBook.getTopSellOrders(1);
             if (!topBuys.isEmpty() && topBuys.get(0) != null) bestBid = topBuys.get(0).getPrice();
             if (!topSells.isEmpty() && topSells.get(0) != null) bestAsk = topSells.get(0).getPrice();
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         // 波動以「比例」處理（MarketAnalyzer 的 volatility 是價格標準差，需除以價格）
         double volRatio = (currentPrice > 0) ? Math.abs(volatility) / currentPrice : 0.0;
@@ -1096,7 +1102,7 @@ public class RetailInvestorAI implements Trader {
             List<Order> topSells = orderBook.getTopSellOrders(1);
             if (!topBuys.isEmpty() && topBuys.get(0) != null) bestBid = topBuys.get(0).getPrice();
             if (!topSells.isEmpty() && topSells.get(0) != null) bestAsk = topSells.get(0).getPrice();
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         double volRatio = (currentPrice > 0) ? Math.abs(volatility) / currentPrice : 0.0;
 
@@ -1160,17 +1166,19 @@ public class RetailInvestorAI implements Trader {
                         px = bestBid + tick; // 只加一檔，提高成交但不跨太多
                     }
                     if (bestAsk > 0) px = Math.min(px, bestAsk);
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { logOptionalFailure(ignore); }
                 px = orderBook.adjustPriceToUnit(px);
                 Order buyOrder = Order.createLimitBuyOrder(px, buyAmount, this);
                 trackOrderCreation(buyOrder.getId());
-                orderBook.submitBuyOrder(buyOrder, px);
+                executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                        buyAmount, px, "retail limit buy"));
                 return buyAmount;
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         // 使用新的市價買單API
-        orderBook.marketBuy(this, buyAmount);
+        executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+                buyAmount, "retail market buy"));
         return buyAmount;
     }
 
@@ -1202,17 +1210,19 @@ public class RetailInvestorAI implements Trader {
                         px = bestAsk - tick; // 只讓一檔，提高成交但不砍太多
                     }
                     if (bestBid > 0) px = Math.max(px, bestBid);
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { logOptionalFailure(ignore); }
                 px = orderBook.adjustPriceToUnit(px);
                 Order sellOrder = Order.createLimitSellOrder(px, sellAmount, this);
                 trackOrderCreation(sellOrder.getId());
-                orderBook.submitSellOrder(sellOrder, px);
+                executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                        sellAmount, px, "retail limit sell"));
                 return sellAmount;
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         // 使用新的市價賣單API
-        orderBook.marketSell(this, sellAmount);
+        executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+                sellAmount, "retail market sell"));
         return sellAmount;
     }
 
@@ -1246,7 +1256,8 @@ public class RetailInvestorAI implements Trader {
         // 決定訂單類型 (根據隨機性和當前模式)
         if (random.nextDouble() < 0.1) {
             // 10% 機率使用FOK訂單
-            boolean success = orderBook.submitFokBuyOrder(finalPrice, amount, this);
+            boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.BUY,
+                    amount, finalPrice, "retail FOK buy")).accepted();
             if (success) {
                 logger.info("提交FOK買單成功：" + amount + " 股，價格 " + finalPrice, "RETAIL_INVESTOR_DECISION");
                 return amount;
@@ -1258,7 +1269,8 @@ public class RetailInvestorAI implements Trader {
             // 90% 機率使用普通限價單
             Order buyOrder = Order.createLimitBuyOrder(finalPrice, amount, this);
             trackOrderCreation(buyOrder.getId());
-            orderBook.submitBuyOrder(buyOrder, finalPrice);
+            executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY,
+                    amount, finalPrice, "retail limit buy"));
             return amount;
         }
     }
@@ -1443,7 +1455,8 @@ public class RetailInvestorAI implements Trader {
         // 決定訂單類型 (根據隨機性和當前模式)
         if (random.nextDouble() < 0.1) {
             // 10% 機率使用FOK訂單
-            boolean success = orderBook.submitFokSellOrder(finalPrice, amount, this);
+            boolean success = executeIntent(orderBook, OrderIntent.fok(OrderSide.SELL,
+                    amount, finalPrice, "retail FOK sell")).accepted();
             if (success) {
                 logger.info("提交FOK賣單成功：" + amount + " 股，價格 " + finalPrice, "RETAIL_INVESTOR_DECISION");
                 return amount;
@@ -1455,7 +1468,8 @@ public class RetailInvestorAI implements Trader {
             // 90% 機率使用普通限價單
             Order sellOrder = Order.createLimitSellOrder(finalPrice, amount, this);
             trackOrderCreation(sellOrder.getId());
-            orderBook.submitSellOrder(sellOrder, finalPrice);
+            executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL,
+                    amount, finalPrice, "retail limit sell"));
             return amount;
         }
     }
@@ -1679,7 +1693,8 @@ public class RetailInvestorAI implements Trader {
         // 散戶保守：單筆使用資金比例（riskPerTrade）再乘個人風格，但有硬上限
         double base = riskPerTrade; // 例如 3%
         double eventScale = 1.0;
-        try { if (model != null) eventScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+        try { if (model != null) eventScale = model.getEventPositionScale(); }
+        catch (Exception ignore) { logOptionalFailure(ignore); }
         // 指標倉位縮放：MACD 多頭偏 >0 放大、空頭 <0 縮小；K>80 減倉，K<20 放大
         double techScale = 1.0;
         try {
@@ -1691,7 +1706,7 @@ public class RetailInvestorAI implements Trader {
             if (!Double.isNaN(k)) {
                 if (k > 80) techScale *= 0.85; else if (k < 20) techScale *= 1.15;
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
         double desiredShares = maxShares * base * this.riskFactor * eventScale * techScale;
 
         // 波動越大越縮（比原先更強）
@@ -1715,7 +1730,8 @@ public class RetailInvestorAI implements Trader {
      */
     private int calculateSellVolume(double priceDifferenceRatio, double volatility) {
         double eventScale = 1.0;
-        try { if (model != null) eventScale = model.getEventPositionScale(); } catch (Exception ignore) {}
+        try { if (model != null) eventScale = model.getEventPositionScale(); }
+        catch (Exception ignore) { logOptionalFailure(ignore); }
         double positionSize = getAccumulatedStocks() * (0.15 + 0.45 * random.nextDouble()) * (1 / (1 + volatility)) * eventScale;
         int result = (int) Math.max(1, positionSize);
 
@@ -1752,7 +1768,8 @@ public class RetailInvestorAI implements Trader {
     }
 
     private void touchTradeStep() {
-        try { if (model != null) lastTradeStep = model.getTimeStep(); } catch (Exception ignore) {}
+        try { if (model != null) lastTradeStep = model.getTimeStep(); }
+        catch (Exception ignore) { logOptionalFailure(ignore); }
     }
 
     private void onRealizedPnlDelta(double pnlDelta) {
@@ -1767,7 +1784,7 @@ public class RetailInvestorAI implements Trader {
             try {
                 StockMarketModel.RetailStrategyConfig cfg = retailCfgCache != null ? retailCfgCache : StockMarketModel.RetailStrategyConfig.defaults();
                 perLoss = Math.max(0, Math.min(500, cfg.lossCooldownPerLoss));
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { logOptionalFailure(ignore); }
             cooldownSteps = Math.min(500, perLoss * consecutiveLosses);
         }
     }
@@ -1779,12 +1796,12 @@ public class RetailInvestorAI implements Trader {
         try {
             StockMarketModel.RetailStrategyConfig cfg = retailCfgCache != null ? retailCfgCache : StockMarketModel.RetailStrategyConfig.defaults();
             minWait = Math.max(0, Math.min(200, cfg.minTradeWaitTicks)) + Math.min(20, consecutiveLosses * 2);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
         try {
             if (model != null && (model.getTimeStep() - lastTradeStep) < minWait) {
                 cooldownSteps = Math.max(cooldownSteps, minWait - (model.getTimeStep() - lastTradeStep));
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
     }
 
     /**
@@ -1911,7 +1928,8 @@ public class RetailInvestorAI implements Trader {
                             int buyAmount = (int) Math.max(1, calculateTransactionVolume(availableFunds, currentPrice, volatility) * 0.4 * riskAdj);
                             double px = computeBuyLimitPrice(currentPrice, sma, rsi, volatility * 1.2);
                             if (random.nextDouble() < fokBias) {
-                                boolean ok = orderBook.submitFokBuyOrder(px, buyAmount, this);
+                                boolean ok = executeIntent(orderBook, OrderIntent.fok(OrderSide.BUY,
+                                        buyAmount, px, "retail value FOK buy")).accepted();
                                 if (ok) {
                                     decisionReason.append("[VALUE] FOK 價值買入 ").append(buyAmount).append(" 股 @").append(px).append("\n");
                                     setStopLossAndTakeProfit(currentPrice, volatility);

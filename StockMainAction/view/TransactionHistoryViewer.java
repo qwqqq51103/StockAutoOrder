@@ -62,6 +62,11 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
     private JTextArea statsAnalysisTextArea;
     private DefaultTableModel traderAnalysisModel;
     private static final MarketLogger logger = MarketLogger.getInstance();
+
+    private static void reportUiFailure(Throwable failure) {
+        logger.debugThrottled("成交歷史畫面選配更新失敗：" + failure.getMessage(),
+                "UI_FALLBACK", "transaction-history", 60_000);
+    }
     // [PERF] 表格與記錄上限
     private static final int MAX_ROWS = 2000;
 
@@ -423,7 +428,7 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
                         if (type.contains("買")) base = blend(base, new Color(220, 245, 230), 0.85);
                         if (type.contains("賣")) base = blend(base, new Color(245, 220, 220), 0.85);
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
 
                 // 數值欄位微加強（更深）
                 if (column == 5 || column == 7) base = blend(base, new Color(230, 238, 255), 0.5);
@@ -1592,7 +1597,7 @@ public class TransactionHistoryViewer extends JFrame implements StockMarketModel
                 double t   = parseDoubleOrZero(m.getValueAt(i, TIME_COL));
                 if (isMarket) { sumMarketP += p; sumMarketVol += v; sumMarketSlip += sl; sumMarketTime += t; cntMarket++; }
                 else          { sumLimitP  += p; sumLimitVol  += v; sumLimitSlip  += sl; sumLimitTime  += t; cntLimit++;  }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         }
 
         String fmt = "%-20s %-14s %-14s%n";
