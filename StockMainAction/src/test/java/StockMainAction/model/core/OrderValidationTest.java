@@ -1,6 +1,9 @@
 package StockMainAction.model.core;
 
 import StockMainAction.model.user.UserAccount;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import org.junit.Test;
 
 import static org.junit.Assert.*;
@@ -34,6 +37,28 @@ public class OrderValidationTest {
         assertIllegalArgument(() -> Order.createMarketBuyOrder(-1, trader));
         assertIllegalArgument(() -> new Order("hold", 10, 1, trader, false, false, false));
         assertIllegalArgument(() -> new Order("buy", 10, 1, trader, false, true, false));
+    }
+
+    @Test
+    public void orderUsesInjectedClock() {
+        Clock clock = Clock.fixed(Instant.parse("2026-03-04T05:06:07Z"), ZoneOffset.UTC);
+        Order order = new Order(OrderSide.BUY, 10, 1, trader, false, OrderType.LIMIT, clock);
+
+        assertEquals(clock.millis(), order.getTimestamp());
+    }
+
+    @Test
+    public void closedOrderBookRejectsNewOrders() {
+        OrderBook orderBook = new OrderBook(null);
+        orderBook.close();
+
+        try {
+            orderBook.submitBuyOrder(Order.createLimitBuyOrder(10, 1, trader), 10);
+            fail("Expected IllegalStateException");
+        } catch (IllegalStateException expected) {
+            assertEquals("OrderBook is closed", expected.getMessage());
+        }
+        orderBook.close();
     }
 
     private static void assertIllegalArgument(Runnable action) {

@@ -26,10 +26,10 @@ public class StockMarketModelConcurrencyTest {
         Clock clock = Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
         StockMarketModel model = new StockMarketModel(42L, clock);
         SwingUtilities.invokeAndWait(() -> { });
-        ExecutorService pool = Executors.newFixedThreadPool(4);
+        ExecutorService pool = Executors.newFixedThreadPool(8);
         List<Future<?>> futures = new ArrayList<>();
 
-        for (int i = 0; i < 40; i++) {
+        for (int i = 0; i < 200; i++) {
             futures.add(pool.submit(i % 2 == 0
                     ? model::startAutoPriceFluctuation
                     : model::stopAutoPriceFluctuation));
@@ -40,6 +40,7 @@ public class StockMarketModelConcurrencyTest {
 
         model.stopAutoPriceFluctuation();
         assertFalse(model.isRunning());
+        model.close();
     }
 
     @Test
@@ -71,6 +72,22 @@ public class StockMarketModelConcurrencyTest {
 
         assertEquals(100, model.getTransactionHistory().size());
         assertTrue(allOnEdt.get());
+        model.close();
+    }
+
+    @Test
+    public void closedModelCannotRestart() {
+        StockMarketModel model = new StockMarketModel(42L,
+                Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+        model.close();
+
+        try {
+            model.startAutoPriceFluctuation();
+            fail("Expected IllegalStateException");
+        } catch (IllegalStateException expected) {
+            assertEquals("StockMarketModel is closed", expected.getMessage());
+        }
+        model.close();
     }
 
     private static final class TestTrader implements Trader {

@@ -39,8 +39,6 @@
     </dependencies>
 
     <build>
-        <!-- Transitional layout: production sources stay where the Swing launcher expects them. -->
-        <sourceDirectory>${project.basedir}/..</sourceDirectory>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -54,12 +52,6 @@
                                 <!-- Swing components are never Java-serialized in this application. -->
                                 <arg>-Xlint:all,-serial</arg>
                             </compilerArgs>
-                            <includes>
-                                <include>StockMainAction/**/*.java</include>
-                            </includes>
-                            <excludes>
-                                <exclude>StockMainAction/src/test/**</exclude>
-                            </excludes>
                         </configuration>
                     </execution>
                 </executions>

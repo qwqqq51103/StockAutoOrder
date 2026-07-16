@@ -21,15 +21,15 @@ public class OrderBookStressTest {
             Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC);
 
     @Test
-    public void deterministicTenThousandTickSmokeTestHasNoAssetDrift() {
+    public void deterministicHundredThousandTickSmokeTestHasNoAssetDrift() {
         OrderBook book = new OrderBook(null, FIXED_CLOCK);
-        TestTrader buyer = new TestTrader("buyer", 2_000_000, 0);
-        TestTrader seller = new TestTrader("seller", 0, 20_000);
+        TestTrader buyer = new TestTrader("buyer", 20_000_000, 0);
+        TestTrader seller = new TestTrader("seller", 0, 200_000);
         Totals before = totals(buyer, seller);
         Random random = new Random(20260716L);
         Stock stock = new Stock("T", 100, 0);
 
-        for (int tick = 0; tick < 10_000; tick++) {
+        for (int tick = 0; tick < 100_000; tick++) {
             double price = 90 + random.nextInt(41) * 0.5;
             book.submitSellOrder(Order.createLimitSellOrder(price, 1, seller), price);
             book.submitBuyOrder(Order.createLimitBuyOrder(price, 1, buyer), price);
@@ -46,6 +46,7 @@ public class OrderBookStressTest {
         assertEquals(0, buyer.getAccount().snapshot().frozenCashCents());
         assertEquals(0, seller.getAccount().snapshot().frozenStocks());
         assertEquals(before, totals(buyer, seller));
+        book.close();
     }
 
     @Test
@@ -55,7 +56,7 @@ public class OrderBookStressTest {
         TestTrader seller = new TestTrader("seller", 0, 50_000);
         Totals before = totals(buyer, seller);
         Stock stock = new Stock("T", 100, 0);
-        ExecutorService pool = Executors.newFixedThreadPool(4);
+        ExecutorService pool = Executors.newFixedThreadPool(8);
         CountDownLatch start = new CountDownLatch(1);
 
         Future<?> submitter = pool.submit(() -> {
@@ -105,6 +106,7 @@ public class OrderBookStressTest {
         assertEquals(0, buyer.getAccount().snapshot().frozenCashCents());
         assertEquals(0, seller.getAccount().snapshot().frozenStocks());
         assertEquals(before, totals(buyer, seller));
+        book.close();
     }
 
     private static void await(CountDownLatch latch) {
