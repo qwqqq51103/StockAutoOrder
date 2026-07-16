@@ -51,6 +51,12 @@ game:
   ai-retail-count: 10
   ai-noise-count: 5
 
+  admin:
+    auto-create: true
+    username: admin
+    email: admin@stockgame.local
+    password: admin123456
+
 logging:
   level:
     com.stockgame: INFO

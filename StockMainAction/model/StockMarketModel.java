@@ -279,20 +279,20 @@ public class StockMarketModel {
     private Random random = new Random();
 
     // 配置參數
-    private double initialRetailCash = 500000, initialMainForceCash = 500000;
+    private double initialRetailCash = 5000000, initialMainForceCash = 8000000;
     // 個人戶（PERSONAL）初始資金：獨立於散戶初始資金，避免共用造成統計/行為混淆
-    private double initialPersonalCash = 1000000;
-    private int initialRetails = 30;
+    private double initialPersonalCash = 10000000;
+    private int initialRetails = 15;
     private int marketBehaviorStock = 0;
     private double marketBehaviorGash = -9999999.0;
 
     // === 玩法參數（可自行調整）===
-    private int marketMakerCount = 2;     // 建議 2~5
+    private int marketMakerCount = 10;     // 建議 2~5
     private int noiseTraderCount = 10;     // 建議 3~10
-    private double marketMakerInitialCash = 500000; // 每個做市商初始現金
-    private int marketMakerInitialStocks = 25000;     // 每個做市商初始持股
-    private double noiseTraderInitialCash = 500000;   // 每個噪音交易者初始現金
-    private int noiseTraderInitialStocks = 500;      // 每個噪音交易者初始持股
+    private double marketMakerInitialCash = 6500000; // 每個做市商初始現金
+    private int marketMakerInitialStocks = 50000;     // 每個做市商初始持股
+    private double noiseTraderInitialCash = 3000000;   // 每個噪音交易者初始現金
+    private int noiseTraderInitialStocks = 50000;      // 每個噪音交易者初始持股
 
     // 用於報酬率計算：記錄初始化時的股價（讓初始持股能換算成初始淨值）
     private double initialStockPrice = 10.0;

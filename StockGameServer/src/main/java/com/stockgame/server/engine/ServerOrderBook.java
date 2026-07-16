@@ -2,220 +2,456 @@ package com.stockgame.server.engine;
 
 import com.stockgame.server.dto.OrderBookDto;
 import com.stockgame.server.entity.StockOrder;
-import lombok.extern.slf4j.Slf4j;
-
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalDouble;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
+import lombok.extern.slf4j.Slf4j;
 
-/**
- * 線程安全的記憶體訂單簿。
- *
- * 買方：ConcurrentSkipListMap（降序，買一在最前）
- * 賣方：ConcurrentSkipListMap（升序，賣一在最前）
- *
- * 移植自桌面版 OrderBook.java；移除 Swing UI 回呼，改為回傳事件供 MatchingEngine 處理。
- */
 @Slf4j
 public class ServerOrderBook {
 
-    // 買方：價格降序（最高買價優先）
     private final ConcurrentSkipListMap<Double, List<StockOrder>> buyLevels =
             new ConcurrentSkipListMap<>(Comparator.reverseOrder());
-
-    // 賣方：價格升序（最低賣價優先）
     private final ConcurrentSkipListMap<Double, List<StockOrder>> sellLevels =
             new ConcurrentSkipListMap<>();
 
-    // 今日統計
-    private volatile double lastPrice    = 0.0;
-    private volatile double openPrice    = 0.0;
-    private volatile double highPrice    = 0.0;
-    private volatile double lowPrice     = Double.MAX_VALUE;
-    private final AtomicInteger totalVolume  = new AtomicInteger(0);
-    private final java.util.concurrent.atomic.AtomicLong buyVolume  = new java.util.concurrent.atomic.AtomicLong(0);
-    private final java.util.concurrent.atomic.AtomicLong sellVolume = new java.util.concurrent.atomic.AtomicLong(0);
-    private volatile double totalAmount  = 0.0;
+    private volatile double lastPrice = 0.0;
+    private volatile double openPrice = 0.0;
+    private volatile double highPrice = 0.0;
+    private volatile double lowPrice = Double.MAX_VALUE;
+    private final AtomicInteger totalVolume = new AtomicInteger(0);
+    private final AtomicLong buyVolume = new AtomicLong(0);
+    private final AtomicLong sellVolume = new AtomicLong(0);
+    private volatile double totalAmount = 0.0;
 
-    // 台股漲跌停幅度（10%）
     private static final double LIMIT_RATIO = 0.10;
 
-    // ── 委託送入 ─────────────────────────────────────────────────────────────
-
     public synchronized void addBuyOrder(StockOrder order) {
-        buyLevels.computeIfAbsent(order.getPrice(), k -> new ArrayList<>()).add(order);
+        buyLevels.computeIfAbsent(priceKey(order), k -> new ArrayList<>()).add(order);
     }
 
     public synchronized void addSellOrder(StockOrder order) {
-        sellLevels.computeIfAbsent(order.getPrice(), k -> new ArrayList<>()).add(order);
+        sellLevels.computeIfAbsent(priceKey(order), k -> new ArrayList<>()).add(order);
     }
 
     public synchronized void removeOrder(StockOrder order) {
         if (order.getSide() == StockOrder.Side.BUY) {
-            removeFromLevel(buyLevels, order.getPrice(), order);
+            removeFromLevel(buyLevels, priceKey(order), order);
         } else {
-            removeFromLevel(sellLevels, order.getPrice(), order);
+            removeFromLevel(sellLevels, priceKey(order), order);
         }
     }
 
-    private void removeFromLevel(Map<Double, List<StockOrder>> levels, double price, StockOrder order) {
-        List<StockOrder> level = levels.get(price);
-        if (level != null) {
-            level.remove(order);
-            if (level.isEmpty()) levels.remove(price);
+    public synchronized OptionalDouble findMarketBuyLimitPrice(int quantity) {
+        int remaining = quantity;
+        double highestPrice = 0.0;
+
+        for (Map.Entry<Double, List<StockOrder>> entry : sellLevels.entrySet()) {
+            for (StockOrder order : entry.getValue()) {
+                if (!order.isActive()) {
+                    continue;
+                }
+                double askPrice = effectiveAskPrice(order, entry.getKey());
+                if (askPrice <= 0) {
+                    continue;
+                }
+                highestPrice = Math.max(highestPrice, askPrice);
+                remaining -= order.getRemainingQuantity();
+                if (remaining <= 0) {
+                    return OptionalDouble.of(highestPrice);
+                }
+            }
         }
+
+        return OptionalDouble.empty();
     }
 
-    // ── 撮合觸發：找到可成交的買賣對 ──────────────────────────────────────
+    public synchronized boolean canFullyFillLimitBuy(double limitPrice, int quantity) {
+        int remaining = quantity;
 
-    /**
-     * 嘗試撮合一輪。回傳所有這輪產生的成交事件。
-     */
-    public synchronized List<MatchEvent> matchOrders() {
+        for (Map.Entry<Double, List<StockOrder>> entry : sellLevels.entrySet()) {
+            for (StockOrder order : entry.getValue()) {
+                if (!order.isActive()) {
+                    continue;
+                }
+                double askPrice = effectiveAskPrice(order, entry.getKey());
+                if (askPrice > limitPrice) {
+                    return false;
+                }
+                remaining -= order.getRemainingQuantity();
+                if (remaining <= 0) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public synchronized boolean canFullyFillLimitSell(double limitPrice, int quantity) {
+        int remaining = quantity;
+
+        for (Map.Entry<Double, List<StockOrder>> entry : buyLevels.entrySet()) {
+            for (StockOrder order : entry.getValue()) {
+                if (!order.isActive()) {
+                    continue;
+                }
+                double bidPrice = effectiveBidPrice(order, entry.getKey());
+                if (bidPrice < limitPrice) {
+                    return false;
+                }
+                remaining -= order.getRemainingQuantity();
+                if (remaining <= 0) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public synchronized MatchResult matchOrders() {
         List<MatchEvent> events = new ArrayList<>();
+        List<StockOrder> expiredOrders = new ArrayList<>();
 
         while (!buyLevels.isEmpty() && !sellLevels.isEmpty()) {
             Map.Entry<Double, List<StockOrder>> bestBidEntry = buyLevels.firstEntry();
             Map.Entry<Double, List<StockOrder>> bestAskEntry = sellLevels.firstEntry();
+            StockOrder buyOrder = firstActive(bestBidEntry.getValue());
+            StockOrder sellOrder = firstActive(bestAskEntry.getValue());
 
-            double bestBid = bestBidEntry.getKey();
-            double bestAsk = bestAskEntry.getKey();
+            if (buyOrder == null) {
+                buyLevels.remove(bestBidEntry.getKey());
+                continue;
+            }
+            if (sellOrder == null) {
+                sellLevels.remove(bestAskEntry.getKey());
+                continue;
+            }
 
-            // 台股撮合規則：買一 >= 賣一 才能成交
-            if (bestBid < bestAsk) break;
-
-            StockOrder buyOrder  = bestBidEntry.getValue().get(0);
-            StockOrder sellOrder = bestAskEntry.getValue().get(0);
-
-            // 成交價：以先掛單者為主（時間優先）；簡化為以賣價為成交價
-            double matchPrice = sellOrder.isMarketOrder() ? bestBid :
-                                buyOrder.isMarketOrder()  ? bestAsk : bestAsk;
+            if (!canCross(buyOrder, sellOrder, bestBidEntry.getKey(), bestAskEntry.getKey())) {
+                if (buyOrder.isMarketOrder()) {
+                    expireOrder(buyLevels, bestBidEntry.getKey(), buyOrder, expiredOrders);
+                    continue;
+                }
+                if (sellOrder.isMarketOrder()) {
+                    expireOrder(sellLevels, bestAskEntry.getKey(), sellOrder, expiredOrders);
+                    continue;
+                }
+                break;
+            }
 
             int qty = Math.min(buyOrder.getRemainingQuantity(), sellOrder.getRemainingQuantity());
-            if (qty <= 0) break;
+            if (qty <= 0) {
+                break;
+            }
 
-            // 更新委託剩餘量
+            double matchPrice = resolveMatchPrice(buyOrder, sellOrder, bestBidEntry.getKey(), bestAskEntry.getKey());
+            boolean buyerInitiated = resolveBuyerInitiated(buyOrder, sellOrder);
             buyOrder.setFilledQuantity(buyOrder.getFilledQuantity() + qty);
             sellOrder.setFilledQuantity(sellOrder.getFilledQuantity() + qty);
 
-            boolean buyFilled  = buyOrder.isFullyFilled();
-            boolean sellFilled = sellOrder.isFullyFilled();
-
-            if (buyFilled) {
+            if (buyOrder.isFullyFilled()) {
                 buyOrder.setStatus(StockOrder.Status.FILLED);
-                removeFromLevel(buyLevels, buyOrder.getPrice(), buyOrder);
+                removeFromLevel(buyLevels, bestBidEntry.getKey(), buyOrder);
             } else {
                 buyOrder.setStatus(StockOrder.Status.PARTIAL);
             }
 
-            if (sellFilled) {
+            if (sellOrder.isFullyFilled()) {
                 sellOrder.setStatus(StockOrder.Status.FILLED);
-                removeFromLevel(sellLevels, sellOrder.getPrice(), sellOrder);
+                removeFromLevel(sellLevels, bestAskEntry.getKey(), sellOrder);
             } else {
                 sellOrder.setStatus(StockOrder.Status.PARTIAL);
             }
 
-            // 判斷主動方（市價單為主動，限價對沖時買方為主動）
-            boolean buyerInitiated = buyOrder.isMarketOrder() || !sellOrder.isMarketOrder();
-
-            // 更新行情統計
             updateStats(matchPrice, qty, buyerInitiated);
-
             events.add(new MatchEvent(buyOrder, sellOrder, matchPrice, qty, buyerInitiated));
-            log.debug("撮合成交：{} 股 @ {}", qty, matchPrice);
+            log.debug("Matched {} @ {}", qty, matchPrice);
         }
 
-        return events;
+        expireRestingMarketOrders(buyLevels, expiredOrders);
+        expireRestingMarketOrders(sellLevels, expiredOrders);
+        return new MatchResult(events, expiredOrders);
     }
 
-    // ── 行情查詢 ─────────────────────────────────────────────────────────────
-
     public synchronized Optional<StockOrder> getBestBid() {
-        return buyLevels.isEmpty() ? Optional.empty() :
-               Optional.of(buyLevels.firstEntry().getValue().get(0));
+        return buyLevels.isEmpty() ? Optional.empty() : Optional.ofNullable(firstActive(buyLevels.firstEntry().getValue()));
     }
 
     public synchronized Optional<StockOrder> getBestAsk() {
-        return sellLevels.isEmpty() ? Optional.empty() :
-               Optional.of(sellLevels.firstEntry().getValue().get(0));
+        return sellLevels.isEmpty() ? Optional.empty() : Optional.ofNullable(firstActive(sellLevels.firstEntry().getValue()));
     }
 
-    public double getBestBidPrice() {
-        return buyLevels.isEmpty() ? 0.0 : buyLevels.firstKey();
+    public synchronized double getBestBidPrice() {
+        if (buyLevels.isEmpty()) {
+            return 0.0;
+        }
+        Map.Entry<Double, List<StockOrder>> entry = buyLevels.firstEntry();
+        StockOrder order = firstActive(entry.getValue());
+        return order == null ? 0.0 : displayPrice(order, entry.getKey());
     }
 
-    public double getBestAskPrice() {
-        return sellLevels.isEmpty() ? 0.0 : sellLevels.firstKey();
+    public synchronized double getBestAskPrice() {
+        if (sellLevels.isEmpty()) {
+            return 0.0;
+        }
+        Map.Entry<Double, List<StockOrder>> entry = sellLevels.firstEntry();
+        StockOrder order = firstActive(entry.getValue());
+        return order == null ? 0.0 : displayPrice(order, entry.getKey());
     }
 
-    /**
-     * 轉換為 DTO（前 10 檔）
-     */
     public synchronized OrderBookDto toDto() {
         List<OrderBookDto.Level> bids = buyLevels.entrySet().stream()
                 .limit(10)
                 .map(e -> new OrderBookDto.Level(
-                        e.getKey(),
-                        e.getValue().stream().mapToInt(StockOrder::getRemainingQuantity).sum(),
-                        e.getValue().size()))
+                        displayPrice(firstActive(e.getValue()), e.getKey()),
+                        e.getValue().stream().filter(StockOrder::isActive).mapToInt(StockOrder::getRemainingQuantity).sum(),
+                        (int) e.getValue().stream().filter(StockOrder::isActive).count()))
+                .filter(level -> level.getOrderCount() > 0)
                 .collect(Collectors.toList());
 
         List<OrderBookDto.Level> asks = sellLevels.entrySet().stream()
                 .limit(10)
                 .map(e -> new OrderBookDto.Level(
-                        e.getKey(),
-                        e.getValue().stream().mapToInt(StockOrder::getRemainingQuantity).sum(),
-                        e.getValue().size()))
+                        displayPrice(firstActive(e.getValue()), e.getKey()),
+                        e.getValue().stream().filter(StockOrder::isActive).mapToInt(StockOrder::getRemainingQuantity).sum(),
+                        (int) e.getValue().stream().filter(StockOrder::isActive).count()))
+                .filter(level -> level.getOrderCount() > 0)
                 .collect(Collectors.toList());
 
         return new OrderBookDto(bids, asks);
     }
 
-    // ── 行情統計 ─────────────────────────────────────────────────────────────
+    private boolean canCross(StockOrder buyOrder, StockOrder sellOrder, double bidLevelPrice, double askLevelPrice) {
+        double bidPrice = effectiveBidPrice(buyOrder, bidLevelPrice);
+        double askPrice = effectiveAskPrice(sellOrder, askLevelPrice);
+
+        if (buyOrder.isMarketOrder() && buyOrder.getPrice() > 0 && askPrice > buyOrder.getPrice()) {
+            return false;
+        }
+        if (sellOrder.isMarketOrder() && sellOrder.getPrice() > 0 && bidPrice < sellOrder.getPrice()) {
+            return false;
+        }
+
+        return buyOrder.isMarketOrder() || sellOrder.isMarketOrder() || bidPrice >= askPrice;
+    }
+
+    private double resolveMatchPrice(StockOrder buyOrder, StockOrder sellOrder, double bidLevelPrice, double askLevelPrice) {
+        if (buyOrder.isMarketOrder() && sellOrder.isMarketOrder()) {
+            if (lastPrice > 0) {
+                return lastPrice;
+            }
+            double buyFallback = buyOrder.getPrice() > 0 ? buyOrder.getPrice() : 0.0;
+            double sellFallback = sellOrder.getPrice() > 0 ? sellOrder.getPrice() : 0.0;
+            return Math.max(buyFallback, sellFallback);
+        }
+        if (buyOrder.isMarketOrder()) {
+            return effectiveAskPrice(sellOrder, askLevelPrice);
+        }
+        if (sellOrder.isMarketOrder()) {
+            return effectiveBidPrice(buyOrder, bidLevelPrice);
+        }
+        return sellOrder.getPrice();
+    }
+
+    private boolean resolveBuyerInitiated(StockOrder buyOrder, StockOrder sellOrder) {
+        if (buyOrder.isMarketOrder()) {
+            return true;
+        }
+        if (sellOrder.isMarketOrder()) {
+            return false;
+        }
+        if (buyOrder.getCreatedAt() == null || sellOrder.getCreatedAt() == null) {
+            return true;
+        }
+        return buyOrder.getCreatedAt().isAfter(sellOrder.getCreatedAt());
+    }
+
+    private double priceKey(StockOrder order) {
+        if (!order.isMarketOrder()) {
+            return order.getPrice();
+        }
+        return order.getSide() == StockOrder.Side.BUY ? Double.MAX_VALUE : 0.0;
+    }
+
+    private double effectiveBidPrice(StockOrder order, double levelPrice) {
+        if (!order.isMarketOrder()) {
+            return levelPrice;
+        }
+        if (order.getPrice() > 0) {
+            return order.getPrice();
+        }
+        return Double.MAX_VALUE;
+    }
+
+    private double effectiveAskPrice(StockOrder order, double levelPrice) {
+        if (!order.isMarketOrder()) {
+            return levelPrice;
+        }
+        if (order.getPrice() > 0) {
+            return order.getPrice();
+        }
+        return lastPrice > 0 ? lastPrice : 0.0;
+    }
+
+    private double displayPrice(StockOrder order, double levelPrice) {
+        if (order == null) {
+            return levelPrice == Double.MAX_VALUE ? 0.0 : levelPrice;
+        }
+        if (!order.isMarketOrder()) {
+            return levelPrice;
+        }
+        return order.getPrice() > 0 ? order.getPrice() : 0.0;
+    }
+
+    private StockOrder firstActive(List<StockOrder> orders) {
+        return orders.stream()
+                .filter(StockOrder::isActive)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private void removeFromLevel(Map<Double, List<StockOrder>> levels, double price, StockOrder order) {
+        List<StockOrder> level = levels.get(price);
+        if (level == null) {
+            return;
+        }
+        level.removeIf(existing -> sameOrder(existing, order));
+        if (level.isEmpty()) {
+            levels.remove(price);
+        }
+    }
+
+    private boolean sameOrder(StockOrder left, StockOrder right) {
+        if (left.getId() != null && right.getId() != null) {
+            return left.getId().equals(right.getId());
+        }
+        return left == right;
+    }
+
+    private void expireOrder(
+            Map<Double, List<StockOrder>> levels,
+            double price,
+            StockOrder order,
+            List<StockOrder> expiredOrders
+    ) {
+        if (order.isActive()) {
+            order.setStatus(StockOrder.Status.CANCELLED);
+            expiredOrders.add(order);
+        }
+        removeFromLevel(levels, price, order);
+    }
+
+    private void expireRestingMarketOrders(
+            ConcurrentSkipListMap<Double, List<StockOrder>> levels,
+            List<StockOrder> expiredOrders
+    ) {
+        Iterator<Map.Entry<Double, List<StockOrder>>> levelIterator = levels.entrySet().iterator();
+        while (levelIterator.hasNext()) {
+            Map.Entry<Double, List<StockOrder>> entry = levelIterator.next();
+            Iterator<StockOrder> orderIterator = entry.getValue().iterator();
+            while (orderIterator.hasNext()) {
+                StockOrder order = orderIterator.next();
+                if (order.isMarketOrder() && order.isActive()) {
+                    order.setStatus(StockOrder.Status.CANCELLED);
+                    expiredOrders.add(order);
+                    orderIterator.remove();
+                }
+            }
+            if (entry.getValue().isEmpty()) {
+                levelIterator.remove();
+            }
+        }
+    }
 
     private void updateStats(double price, int qty, boolean buyerInitiated) {
-        if (openPrice == 0.0) openPrice = price;
-        lastPrice  = price;
-        highPrice  = Math.max(highPrice, price);
-        lowPrice   = Math.min(lowPrice, price);
+        if (openPrice == 0.0) {
+            openPrice = price;
+        }
+        lastPrice = price;
+        highPrice = Math.max(highPrice, price);
+        lowPrice = Math.min(lowPrice, price);
         totalVolume.addAndGet(qty);
         totalAmount += price * qty;
-        if (buyerInitiated) buyVolume.addAndGet(qty);
-        else                sellVolume.addAndGet(qty);
+        if (buyerInitiated) {
+            buyVolume.addAndGet(qty);
+        } else {
+            sellVolume.addAndGet(qty);
+        }
     }
 
     public void setLastPrice(double price) {
-        if (openPrice == 0.0) openPrice = price;
+        if (openPrice == 0.0) {
+            openPrice = price;
+        }
         lastPrice = price;
         highPrice = Math.max(highPrice, price);
-        lowPrice  = Math.min(lowPrice == Double.MAX_VALUE ? price : lowPrice, price);
+        lowPrice = Math.min(lowPrice == Double.MAX_VALUE ? price : lowPrice, price);
     }
 
-    public double getLastPrice()   { return lastPrice; }
-    public double getOpenPrice()   { return openPrice; }
-    public double getHighPrice()   { return highPrice; }
-    public double getLowPrice()    { return lowPrice == Double.MAX_VALUE ? 0.0 : lowPrice; }
-    public int    getTotalVolume() { return totalVolume.get(); }
-    public double getTotalAmount() { return totalAmount; }
-    public long   getBuyVolume()   { return buyVolume.get(); }
-    public long   getSellVolume()  { return sellVolume.get(); }
+    public double getLastPrice() {
+        return lastPrice;
+    }
 
-    /** 計算漲跌停價 */
-    public double getUpperLimit(double prevClose) { return Math.round(prevClose * (1 + LIMIT_RATIO) * 10.0) / 10.0; }
-    public double getLowerLimit(double prevClose) { return Math.round(prevClose * (1 - LIMIT_RATIO) * 10.0) / 10.0; }
+    public double getOpenPrice() {
+        return openPrice;
+    }
 
-    /** 調整到 tick（0.01 元為最小單位） */
-    public double adjustToTick(double price) { return Math.round(price * 100.0) / 100.0; }
+    public double getHighPrice() {
+        return highPrice;
+    }
 
-    // ── 成交事件 ─────────────────────────────────────────────────────────────
+    public double getLowPrice() {
+        return lowPrice == Double.MAX_VALUE ? 0.0 : lowPrice;
+    }
 
-    /** 撮合引擎回傳的單筆成交事件 */
+    public int getTotalVolume() {
+        return totalVolume.get();
+    }
+
+    public double getTotalAmount() {
+        return totalAmount;
+    }
+
+    public long getBuyVolume() {
+        return buyVolume.get();
+    }
+
+    public long getSellVolume() {
+        return sellVolume.get();
+    }
+
+    public double getUpperLimit(double prevClose) {
+        return Math.round(prevClose * (1 + LIMIT_RATIO) * 10.0) / 10.0;
+    }
+
+    public double getLowerLimit(double prevClose) {
+        return Math.round(prevClose * (1 - LIMIT_RATIO) * 10.0) / 10.0;
+    }
+
+    public double adjustToTick(double price) {
+        return Math.round(price * 100.0) / 100.0;
+    }
+
+    public record MatchResult(
+            List<MatchEvent> events,
+            List<StockOrder> expiredOrders
+    ) {}
+
     public record MatchEvent(
             StockOrder buyOrder,
             StockOrder sellOrder,
-            double     price,
-            int        quantity,
-            boolean    buyerInitiated
+            double price,
+            int quantity,
+            boolean buyerInitiated
     ) {}
 }

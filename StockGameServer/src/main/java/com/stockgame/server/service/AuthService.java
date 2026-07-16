@@ -63,7 +63,7 @@ public class AuthService {
         log.info("新玩家註冊成功：{}", user.getUsername());
 
         String token = jwtTokenProvider.generateToken(user.getUsername());
-        return new AuthResponse(token, user.getUsername(), "註冊成功，初始資金：" + initialCash);
+        return new AuthResponse(token, user.getUsername(), user.getRole().name(), "註冊成功，初始資金：" + initialCash);
     }
 
     /**
@@ -83,6 +83,6 @@ public class AuthService {
         log.info("玩家登入：{}", user.getUsername());
 
         String token = jwtTokenProvider.generateToken(user.getUsername());
-        return new AuthResponse(token, user.getUsername(), "登入成功");
+        return new AuthResponse(token, user.getUsername(), user.getRole().name(), "登入成功");
     }
 }

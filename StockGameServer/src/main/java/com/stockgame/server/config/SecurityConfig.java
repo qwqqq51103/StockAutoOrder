@@ -44,6 +44,7 @@ public class SecurityConfig {
             "/*.html",
             "/*.js",
             "/*.css",
+            "/assets/**",
             "/favicon.ico",
             "/api/auth/**",            // 登入、註冊
             "/api/market/quote",       // 即時報價（可公開）

@@ -1,17 +1,23 @@
 package com.stockgame.server.entity;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.OneToOne;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
+import jakarta.persistence.Version;
+import java.time.LocalDateTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.time.LocalDateTime;
-
-/**
- * 玩家的遊戲帳戶（資金、持股、凍結資產）。
- * 與 User 1:1 對應；分開設計以便未來支援多組帳戶（不同賽季）。
- */
 @Entity
 @Table(name = "game_accounts")
 @Data
@@ -19,6 +25,8 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 public class GameAccount {
+
+    private static final double EPSILON = 0.000001;
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -28,32 +36,26 @@ public class GameAccount {
     @JoinColumn(name = "user_id", nullable = false, unique = true)
     private User user;
 
-    /** 可動用現金（未凍結） */
     @Column(nullable = false)
     @Builder.Default
     private double availableCash = 0.0;
 
-    /** 凍結現金（已掛出買單但尚未成交的金額） */
     @Column(nullable = false)
     @Builder.Default
     private double frozenCash = 0.0;
 
-    /** 可賣持股（未凍結） */
     @Column(nullable = false)
     @Builder.Default
     private int availableStocks = 0;
 
-    /** 凍結持股（已掛出賣單但尚未成交的股數） */
     @Column(nullable = false)
     @Builder.Default
     private int frozenStocks = 0;
 
-    /** 累計已實現損益 */
     @Column(nullable = false)
     @Builder.Default
     private double realizedPnl = 0.0;
 
-    /** 平均持股成本（加權平均） */
     @Column(nullable = false)
     @Builder.Default
     private double avgCostPrice = 0.0;
@@ -64,7 +66,7 @@ public class GameAccount {
     private LocalDateTime updatedAt;
 
     @Version
-    private Long version;   // 樂觀鎖，防止並發帳戶修改衝突
+    private Long version;
 
     @PrePersist
     protected void onCreate() {
@@ -77,65 +79,98 @@ public class GameAccount {
         updatedAt = LocalDateTime.now();
     }
 
-    // ── 便利方法 ─────────────────────────────────────────────────────────────
-
-    public double getTotalCash()   { return availableCash + frozenCash; }
-    public int    getTotalStocks() { return availableStocks + frozenStocks; }
-
-    /** 凍結買單資金 */
-    public void freezeCash(double amount) {
-        if (availableCash < amount) throw new IllegalStateException("可用資金不足");
-        availableCash -= amount;
-        frozenCash    += amount;
+    public double getTotalCash() {
+        return availableCash + frozenCash;
     }
 
-    /** 解凍資金（委託取消） */
+    public int getTotalStocks() {
+        return availableStocks + frozenStocks;
+    }
+
+    public void freezeCash(double amount) {
+        if (amount <= EPSILON) {
+            return;
+        }
+        if (availableCash + EPSILON < amount) {
+            throw new IllegalStateException("可用資金不足。");
+        }
+        availableCash = Math.max(0.0, availableCash - amount);
+        frozenCash += amount;
+    }
+
     public void unfreezeCash(double amount) {
+        if (amount <= EPSILON) {
+            return;
+        }
         double unfreeze = Math.min(frozenCash, amount);
-        frozenCash    -= unfreeze;
+        frozenCash = Math.max(0.0, frozenCash - unfreeze);
         availableCash += unfreeze;
     }
 
-    /** 凍結賣單持股 */
     public void freezeStocks(int qty) {
-        if (availableStocks < qty) throw new IllegalStateException("可用持股不足");
+        if (qty <= 0) {
+            return;
+        }
+        if (availableStocks < qty) {
+            throw new IllegalStateException("可用持股不足。");
+        }
         availableStocks -= qty;
-        frozenStocks    += qty;
+        frozenStocks += qty;
     }
 
-    /** 解凍持股（委託取消） */
     public void unfreezeStocks(int qty) {
+        if (qty <= 0) {
+            return;
+        }
         int unfreeze = Math.min(frozenStocks, qty);
-        frozenStocks    -= unfreeze;
+        frozenStocks -= unfreeze;
         availableStocks += unfreeze;
     }
 
-    /**
-     * 買入成交後更新帳戶（釋放凍結資金、增加持股、更新均價）。
-     * @param qty   成交股數
-     * @param price 成交價格
-     */
     public void onBuyFilled(int qty, double price) {
-        double cost = qty * price;
-        frozenCash = Math.max(0, frozenCash - cost);
-        // 加權更新持股均價
-        int    totalStocks = availableStocks + qty;
-        double totalCost   = avgCostPrice * availableStocks + cost;
-        avgCostPrice       = totalStocks > 0 ? totalCost / totalStocks : 0.0;
-        availableStocks   += qty;
+        onBuyFilled(qty, price, price);
     }
 
-    /**
-     * 賣出成交後更新帳戶（釋放凍結持股、增加現金、計算損益）。
-     * @param qty   成交股數
-     * @param price 成交價格
-     */
+    public void onBuyFilled(int qty, double executionPrice, double reservedPrice) {
+        if (qty <= 0) {
+            return;
+        }
+
+        double reserved = Math.max(0.0, reservedPrice) * qty;
+        double cost = executionPrice * qty;
+        double released = Math.min(frozenCash, reserved);
+
+        frozenCash = Math.max(0.0, frozenCash - released);
+
+        if (released + EPSILON >= cost) {
+            availableCash += released - cost;
+        } else {
+            double shortfall = cost - released;
+            if (availableCash + EPSILON < shortfall) {
+                throw new IllegalStateException("買進成交的凍結資金不足。");
+            }
+            availableCash = Math.max(0.0, availableCash - shortfall);
+        }
+
+        int previousStocks = getTotalStocks();
+        int totalStocks = previousStocks + qty;
+        double totalCost = avgCostPrice * previousStocks + cost;
+        avgCostPrice = totalStocks > 0 ? totalCost / totalStocks : 0.0;
+        availableStocks += qty;
+    }
+
     public void onSellFilled(int qty, double price) {
-        frozenStocks  = Math.max(0, frozenStocks - qty);
+        if (qty <= 0) {
+            return;
+        }
+
+        frozenStocks = Math.max(0, frozenStocks - qty);
         double revenue = qty * price;
         availableCash += revenue;
-        realizedPnl   += (price - avgCostPrice) * qty;
-        // 若全部賣出則重置均價
-        if (getTotalStocks() == 0) avgCostPrice = 0.0;
+        realizedPnl += (price - avgCostPrice) * qty;
+
+        if (getTotalStocks() == 0) {
+            avgCostPrice = 0.0;
+        }
     }
 }
