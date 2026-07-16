@@ -4,7 +4,10 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
 import StockMainAction.model.core.Trader;
+import StockMainAction.model.core.OrderSide;
+import StockMainAction.model.strategy.OrderIntent;
 import StockMainAction.model.user.UserAccount;
+import StockMainAction.util.logging.MarketLogger;
 import java.util.List;
 import java.util.Random;
 
@@ -14,11 +17,18 @@ import java.util.Random;
  * - 不改變台股撮合規則，只是增加市場參與者與主動性
  */
 public class NoiseTraderAI implements Trader {
+    private static final MarketLogger LOGGER = MarketLogger.getInstance();
+
+    private static void logOptionalFailure(Exception ex) {
+        LOGGER.debugThrottled("噪音策略選配訊號降級：" + ex.getMessage(),
+                "STRATEGY_FALLBACK", "noise", 60_000);
+    }
+
     private final String traderId;
     private final OrderBook orderBook;
     private final Stock stock;
     private final UserAccount account;
-    private final Random random = new Random();
+    private final Random random;
 
     // 簡單節流：避免每個 tick 都下單
     private int cooldownTicks = 0;
@@ -36,10 +46,16 @@ public class NoiseTraderAI implements Trader {
 
     public NoiseTraderAI(double initialCash, int initialStocks, String traderId,
                          StockMarketModel model, OrderBook orderBook, Stock stock) {
+        this(initialCash, initialStocks, traderId, model, orderBook, stock, new Random());
+    }
+
+    public NoiseTraderAI(double initialCash, int initialStocks, String traderId,
+                         StockMarketModel model, OrderBook orderBook, Stock stock, Random random) {
         this.traderId = (traderId == null ? "NoiseTrader" : traderId);
         this.orderBook = orderBook;
         this.stock = stock;
         this.account = new UserAccount(initialCash, initialStocks);
+        this.random = java.util.Objects.requireNonNull(random, "random");
     }
 
     // 由模型每 tick 注入最新命中率
@@ -68,18 +84,10 @@ public class NoiseTraderAI implements Trader {
 
     @Override
     public void updateAfterTransaction(String type, int volume, double price) {
-        double amount = price * volume;
         if ("buy".equals(type)) {
-            // 限價買：先消耗凍結資金，再入庫
-            try {
-                account.consumeFrozenFunds(amount);
-            } catch (Exception e) {
-                account.decrementFunds(amount);
-            }
-            account.incrementStocks(volume);
+            // 帳務已由撮合引擎原子結算。
         } else if ("sell".equals(type)) {
-            // 限價賣：成交後入帳；庫存由撮合端 consumeFrozenStocks 後再更新
-            account.incrementFunds(amount);
+            // 帳務已由撮合引擎原子結算。
         }
     }
 
@@ -89,14 +97,10 @@ public class NoiseTraderAI implements Trader {
         if ("buy".equals(type)) {
             // 市價買：直接扣款+入庫（市價單不走 freeze）
             if (account.getAvailableFunds() >= amount) {
-                account.decrementFunds(amount);
-                account.incrementStocks(volume);
             }
         } else if ("sell".equals(type)) {
             // 市價賣：直接扣庫存+入帳
             if (account.getStockInventory() >= volume) {
-                account.decrementStocks(volume);
-                account.incrementFunds(amount);
             }
         }
     }
@@ -133,7 +137,7 @@ public class NoiseTraderAI implements Trader {
             if (random.nextDouble() < 0.12) {
                 cancelFarOrdersBaseline(bestBid, bestAsk);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         // 小額：10~200 股
         // --- 自適應：根據多/空命中率調整頻率/單量/順逆勢/追價/撤單 ---
@@ -196,13 +200,13 @@ public class NoiseTraderAI implements Trader {
                 return;
             }
             if (useMarket) {
-                orderBook.marketBuy(this, vol);
+                executeIntent(orderBook, OrderIntent.market(OrderSide.BUY, vol, "noise market buy"));
             } else {
                 // 限價：順勢→侵略（bestAsk+追價tick）；逆勢→保守（bestBid 附近）
                 double px = followTrend ? (bestAsk + chaseTicks * orderBook.getTickSize(bestAsk)) : bestBid;
                 px = orderBook.adjustPriceToUnit(px);
                 Order o = Order.createLimitBuyOrder(px, vol, this);
-                orderBook.submitBuyOrder(o, px);
+                executeIntent(orderBook, OrderIntent.limit(OrderSide.BUY, vol, px, "noise limit buy"));
             }
         } else {
             if (bestBid <= 0) {
@@ -214,13 +218,13 @@ public class NoiseTraderAI implements Trader {
                 return;
             }
             if (useMarket) {
-                orderBook.marketSell(this, vol);
+                executeIntent(orderBook, OrderIntent.market(OrderSide.SELL, vol, "noise market sell"));
             } else {
                 // 限價：順勢→侵略（bestBid-追價tick）；逆勢→保守（bestAsk 附近）
                 double px = followTrend ? (bestBid - chaseTicks * orderBook.getTickSize(bestBid)) : bestAsk;
                 px = orderBook.adjustPriceToUnit(px);
                 Order o = Order.createLimitSellOrder(px, vol, this);
-                orderBook.submitSellOrder(o, px);
+                executeIntent(orderBook, OrderIntent.limit(OrderSide.SELL, vol, px, "noise limit sell"));
             }
         }
 
@@ -260,7 +264,7 @@ public class NoiseTraderAI implements Trader {
                     if (orderBook.cancelOrder(os.getId())) toCancel--;
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
     }
 
     // 保底撤單策略：只撤自己的掛單（避免 traderType 比對/多交易者共用 type 時抓錯單）
@@ -298,7 +302,7 @@ public class NoiseTraderAI implements Trader {
                     if (orderBook.cancelOrder(o.getId())) toCancel--;
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { logOptionalFailure(ignore); }
     }
 }
 

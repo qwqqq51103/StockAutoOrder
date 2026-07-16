@@ -4,6 +4,7 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Transaction; // [UI] 內外盤依逐筆成交
 import StockMainAction.view.components.OrderBookTable;
+import StockMainAction.util.logging.MarketLogger;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder; // [UI]
@@ -14,6 +15,13 @@ import java.util.List;
  * 訂單簿視圖 - 負責訂單簿的顯示
  */
 public class OrderBookView {
+
+    private static final MarketLogger LOGGER = MarketLogger.getInstance();
+
+    private static void reportUiFailure(Throwable failure) {
+        LOGGER.debugThrottled("訂單簿畫面選配更新失敗：" + failure.getMessage(),
+                "UI_FALLBACK", "order-book-view", 60_000);
+    }
 
     private OrderBookTable orderBookTable;
     private JScrollPane scrollPane;
@@ -317,7 +325,7 @@ public class OrderBookView {
         ratioBar.setData(buy, sell);
         int inPct = (int)Math.round(buy*100.0/total);
         ratioSpark.pushRatio(inPct);
-        deltaPanel.pushDelta((int)(sell - buy));
+        deltaPanel.pushDelta(sell - buy);
         // 簡易門檻與事件模式判斷
         int effTh = (Integer)spTh.getValue();
         String mode = (String)cbMode.getSelectedItem();
@@ -337,8 +345,8 @@ public class OrderBookView {
                 lbSignal.setText((topBuy>topSell?"買":"賣")+"方主動");
                 lbSignal.setForeground(topBuy>topSell? new Color(27,94,32): new Color(183,28,28));
             }
-        } catch (Exception ignore) {}
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [UI] 簡易掛單牆提示：若前5檔任一側某檔量占該側總量>40% 且 > 對側任一檔 1.5x
@@ -363,7 +371,7 @@ public class OrderBookView {
             else if (sellWall && !buyWall){ lbWallHint.setText("賣側牆 @ 賣"+(idxS+1)); lbWallHint.setForeground(new Color(183,28,28)); }
             else if (buyWall && sellWall){ lbWallHint.setText("雙側牆"); lbWallHint.setForeground(new Color(66,66,66)); }
             else { lbWallHint.setText("無牆"); lbWallHint.setForeground(new Color(66,66,66)); }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     private int parseIntSafe(Object v){
@@ -394,7 +402,7 @@ public class OrderBookView {
                 }
                 // 對外回報逐筆，讓 MainView 的 Tape 顯示與分析能同步
                 if (tapeListener != null) tapeListener.onTrade(t.isBuyerInitiated(), p, v, bestBid, bestAsk);
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         }
         long total = Math.max(1, inVol + outVol);
         int outPct = (int) Math.round(outVol * 100.0 / total);
@@ -478,7 +486,7 @@ public class OrderBookView {
             if ("新聞".equals(mode)) eff = Math.min(95, th + 5);
             if ("財報".equals(mode)) eff = Math.min(95, th + 10);
             if (paramListener != null) paramListener.onParams(window, cons, th, mode, eff);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // 提供給外部（MainView）套用全域參數
@@ -489,6 +497,6 @@ public class OrderBookView {
             spTh.setValue(Math.max(30, Math.min(95, threshold)));
             cbMode.setSelectedItem(mode != null ? mode : "一般");
             notifyParamListeners();
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 }

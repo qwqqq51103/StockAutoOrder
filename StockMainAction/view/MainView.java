@@ -6,6 +6,8 @@ import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Transaction;
 import StockMainAction.model.StockMarketModel;
 import StockMainAction.util.logging.LogViewerWindow;
+import StockMainAction.util.logging.MarketLogger;
+import StockMainAction.view.chart.ChartDataLimiter;
 import org.jfree.chart.ChartFactory;
 import org.jfree.chart.ChartPanel;
 import org.jfree.chart.JFreeChart;
@@ -61,6 +63,13 @@ import javax.swing.border.EmptyBorder;
  * 主視圖類別 - 負責顯示圖表和數據 作為MVC架構中的View組件
  */
 public class MainView extends JFrame {
+
+    private static final MarketLogger LOGGER = MarketLogger.getInstance();
+
+    private static void reportUiFailure(Throwable failure) {
+        LOGGER.debugThrottled("主畫面選配更新失敗：" + failure.getMessage(),
+                "UI_FALLBACK", "main-view", 60_000);
+    }
 
     // [PERF] 圖表合併重繪排程參數
     private static volatile int chartFlushIntervalMs = 120; // 節能/平衡/效能 = 200/120/60
@@ -375,7 +384,7 @@ public class MainView extends JFrame {
                     w.setVisible(true);
                     w.toFront();
                     w.requestFocus();
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             });
         }
 
@@ -388,7 +397,7 @@ public class MainView extends JFrame {
             addWindowListener(new WindowAdapter() {
                 @Override
                 public void windowClosing(WindowEvent e) {
-                    try { if (INSTANCE == SettingsWindow.this) INSTANCE = null; } catch (Exception ignore) {}
+                    try { if (INSTANCE == SettingsWindow.this) INSTANCE = null; } catch (Exception ignore) { reportUiFailure(ignore); }
                 }
             });
 
@@ -440,7 +449,7 @@ public class MainView extends JFrame {
         try {
             marketStatsTimer = new javax.swing.Timer(1000, e -> refreshMarketStats());
             marketStatsTimer.start();
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [UI] 設定 LAF 與全域字型（JhengHei UI 13pt），FlatLaf 若不可用則使用系統 LAF
@@ -452,10 +461,10 @@ public class MainView extends JFrame {
             } catch (Throwable noFlat) {
                 UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             }
-        } catch (Throwable ignore) {}
+        } catch (Throwable ignore) { reportUiFailure(ignore); }
         try {
             applyGlobalUIFont(new Font("Microsoft JhengHei UI", Font.PLAIN, (int) globalFontSizePt)); // [UI]
-        } catch (Throwable ignore) {}
+        } catch (Throwable ignore) { reportUiFailure(ignore); }
     }
 
     // [UI] 套用全域字型
@@ -678,7 +687,7 @@ public class MainView extends JFrame {
             try {
                 resetAllCharts((JPanel) tabbedPane.getSelectedComponent());
                 scheduleChartFlush();
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         bar.add(resetBtn);
 
@@ -694,7 +703,7 @@ public class MainView extends JFrame {
                     model.getOrderBook().setMaxMarketSlippageRatio(v / 100.0);
                     appendToInfoArea("已更新市價單滑價上限為 " + v + "%", InfoType.SYSTEM);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         bar.add(spSlip);
         bar.add(btnSlipApply);
@@ -710,7 +719,7 @@ public class MainView extends JFrame {
                     model.getMainForce().setReplaceIntervalTicks(v);
                     appendToInfoArea("已更新主力撤換間隔為 " + v + " ticks", InfoType.SYSTEM);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         bar.add(spRepl);
         bar.add(btnRepl);
@@ -738,7 +747,7 @@ public class MainView extends JFrame {
                     int eff = t; if ("新聞".equals(m)) eff = Math.min(95, t+5); if ("財報".equals(m)) eff = Math.min(95, t+10);
                     inOutPanel.setParams(w, c, t, m, eff);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
 
         bar.addSeparator();
@@ -757,7 +766,7 @@ public class MainView extends JFrame {
                 visibleCandles = Math.max(5, Math.min(500, (Integer) spVisible.getValue()));
                 if (autoFollowLatest) applyCandleDomainWindow();
                 scheduleChartFlush();
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         followBtn.addActionListener(e -> {
             autoFollowLatest = !autoFollowLatest;
@@ -853,7 +862,7 @@ public class MainView extends JFrame {
             try {
                 resetAllCharts((JPanel) tabbedPane.getSelectedComponent());
                 scheduleChartFlush();
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         panel.add(resetBtn);
         panel.add(new JSeparator(SwingConstants.VERTICAL));
@@ -868,7 +877,7 @@ public class MainView extends JFrame {
                     model.getOrderBook().setMaxMarketSlippageRatio(v / 100.0);
                     appendToInfoArea("已更新市價單滑價上限為 " + v + "%", InfoType.SYSTEM);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         panel.add(spSlip);
         panel.add(btnSlipApply);
@@ -883,7 +892,7 @@ public class MainView extends JFrame {
                     model.getMainForce().setReplaceIntervalTicks(v);
                     appendToInfoArea("已更新主力撤換間隔為 " + v + " ticks", InfoType.SYSTEM);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         panel.add(spRepl);
         panel.add(btnRepl);
@@ -987,7 +996,7 @@ public class MainView extends JFrame {
                 if (autoFollowLatest) applyCandleDomainWindow();
                 scheduleChartFlush();
                 appendToInfoArea("已套用K線跟隨設定：跟隨=" + autoFollowLatest + "，N=" + visibleCandles, InfoType.SYSTEM);
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         showAllBtn.addActionListener(e -> {
             try {
@@ -996,7 +1005,7 @@ public class MainView extends JFrame {
                 resetCandleDomainToAll();
                 scheduleChartFlush();
                 appendToInfoArea("已切換為顯示全部K線", InfoType.SYSTEM);
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
 
         return p;
@@ -1039,7 +1048,7 @@ public class MainView extends JFrame {
                     avwapCount = 0L;
                     scheduleChartFlush();
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
 
         p.add(cbSma5); p.add(spSma5);
@@ -1080,12 +1089,12 @@ public class MainView extends JFrame {
                 markersMaxVisibleCandles = (Integer) spMaxC.getValue();
                 markerAlpha = (Integer) spAlpha.getValue();
                 lockRangeToOhlc = cbLockRange.isSelected();
-                try { rSMA5.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) {}
-                try { rSMA10.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) {}
-                try { rEMA12.setSeriesStroke(0, new BasicStroke(emaLineWidth)); } catch (Exception ignore) {}
+                try { rSMA5.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) { reportUiFailure(ignore); }
+                try { rSMA10.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) { reportUiFailure(ignore); }
+                try { rEMA12.setSeriesStroke(0, new BasicStroke(emaLineWidth)); } catch (Exception ignore) { reportUiFailure(ignore); }
                 applyIndicatorVisibility();
                 applyMarkerSettings();
-                try { maybeApplyCandleRangeWindow(); } catch (Exception ignore) {}
+                try { maybeApplyCandleRangeWindow(); } catch (Exception ignore) { reportUiFailure(ignore); }
                 scheduleChartFlush();
                 appendToInfoArea("已套用指標/標記設定", InfoType.SYSTEM);
             } catch (Exception ex) {
@@ -1131,7 +1140,7 @@ public class MainView extends JFrame {
                     inOutPanel.setParams(w, c, t, m, eff);
                 }
                 appendToInfoArea("已套用事件模式參數：" + m + " / " + w + " / " + c + " / " + t, InfoType.SYSTEM);
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         return p;
     }
@@ -1148,7 +1157,7 @@ public class MainView extends JFrame {
                     model.getOrderBook().setMaxMarketSlippageRatio(v / 100.0);
                     appendToInfoArea("已更新市價單滑價上限為 " + v + "%", InfoType.SYSTEM);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         p.add(spSlip);
         p.add(btn);
@@ -1167,7 +1176,7 @@ public class MainView extends JFrame {
                     model.getMainForce().setReplaceIntervalTicks(v);
                     appendToInfoArea("已更新主力撤換間隔為 " + v + " ticks", InfoType.SYSTEM);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         p.add(spRepl);
         p.add(btn);
@@ -1208,7 +1217,7 @@ public class MainView extends JFrame {
                 fullVol = c.riskVolatilityFull; fullTr = c.riskTrendDownFull;
                 reliefMax = c.riskProfitReliefMax; reliefSlope = c.riskProfitReliefSlope;
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         JSpinner spAccMin = new JSpinner(new SpinnerNumberModel(accMin, 1, 5000, 1));
         JSpinner spAccMax = new JSpinner(new SpinnerNumberModel(accMax, 1, 5000, 1));
@@ -1354,7 +1363,7 @@ public class MainView extends JFrame {
             try {
                 resetAllCharts((JPanel) tabbedPane.getSelectedComponent());
                 scheduleChartFlush();
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         p.add(resetBtn);
         return p;
@@ -1364,7 +1373,7 @@ public class MainView extends JFrame {
     public void setModel(StockMarketModel model) {
         this.model = model;
         // 注入後同步散戶策略 UI（若分頁已建立）
-        try { SwingUtilities.invokeLater(this::syncRetailConfigFromModel); } catch (Exception ignore) {}
+        try { SwingUtilities.invokeLater(this::syncRetailConfigFromModel); } catch (Exception ignore) { reportUiFailure(ignore); }
     }
     
     // [K線自動跟隨] 應用域窗口：只顯示最近N根K線
@@ -1394,7 +1403,7 @@ public class MainView extends JFrame {
                     (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
                 
                 // domainAxis 實際可能是 DateAxis（不是 NumberAxis），用 ValueAxis 才能通用
-                org.jfree.chart.axis.ValueAxis domainAxis = (org.jfree.chart.axis.ValueAxis) combinedPlot.getDomainAxis();
+                org.jfree.chart.axis.ValueAxis domainAxis = combinedPlot.getDomainAxis();
                 if (domainAxis != null) {
                     domainAxis.setRange(startMs, endMs);
                     domainAxis.setAutoRange(false);
@@ -1413,7 +1422,7 @@ public class MainView extends JFrame {
                 org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot = 
                     (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
                 
-                org.jfree.chart.axis.ValueAxis domainAxis = (org.jfree.chart.axis.ValueAxis) combinedPlot.getDomainAxis();
+                org.jfree.chart.axis.ValueAxis domainAxis = combinedPlot.getDomainAxis();
                 if (domainAxis != null) {
                     domainAxis.setAutoRange(true);
                 }
@@ -1461,7 +1470,7 @@ public class MainView extends JFrame {
             org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot = 
                 (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
             
-            org.jfree.chart.axis.ValueAxis domainAxis = (org.jfree.chart.axis.ValueAxis) combinedPlot.getDomainAxis();
+            org.jfree.chart.axis.ValueAxis domainAxis = combinedPlot.getDomainAxis();
             if (domainAxis == null) return;
             
             // 獲取當前週期的K線數據
@@ -1551,7 +1560,7 @@ public class MainView extends JFrame {
                     avwapAnchorMs = (long) r.getLowerBound();
                     avwapSeries.clear(); avwapCumPV = 0.0; avwapCount = 0L;
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
         JPanel p = new JPanel(new GridLayout(0,2,6,6));
         p.add(cbSma5); p.add(spSma5);
@@ -1586,12 +1595,12 @@ public class MainView extends JFrame {
             markersMaxVisibleCandles = (Integer) spMaxC.getValue();
             markerAlpha = (Integer) spAlpha.getValue();
             lockRangeToOhlc = cbLockRange.isSelected();
-            try { rSMA5.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) {}
-            try { rSMA10.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) {}
-            try { rEMA12.setSeriesStroke(0, new BasicStroke(emaLineWidth)); } catch (Exception ignore) {}
+            try { rSMA5.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) { reportUiFailure(ignore); }
+            try { rSMA10.setSeriesStroke(0, new BasicStroke(smaLineWidth)); } catch (Exception ignore) { reportUiFailure(ignore); }
+            try { rEMA12.setSeriesStroke(0, new BasicStroke(emaLineWidth)); } catch (Exception ignore) { reportUiFailure(ignore); }
             applyIndicatorVisibility();
             applyMarkerSettings(); // [NOISE]
-            try { maybeApplyCandleRangeWindow(); } catch (Exception ignore) {}
+            try { maybeApplyCandleRangeWindow(); } catch (Exception ignore) { reportUiFailure(ignore); }
             scheduleChartFlush();
         }
     }
@@ -1615,7 +1624,7 @@ public class MainView extends JFrame {
                     p.setRenderer(7, rAVWAP);
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [NOISE] 套用標記顏色/透明度/顯示策略
@@ -1634,8 +1643,8 @@ public class MainView extends JFrame {
                 rBig.setSeriesPaint(0, new Color(239, 83, 80, a));
                 rBig.setSeriesPaint(1, new Color(38, 166, 154, a));
             }
-        } catch (Exception ignore) {}
-        try { updateMarkerVisibilityByZoom(); } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
+        try { updateMarkerVisibilityByZoom(); } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [NOISE] 根據目前視窗寬度（可見K線根數）自動顯示/隱藏標記，避免被淹沒
@@ -1645,7 +1654,7 @@ public class MainView extends JFrame {
             if (candlePlot == null) return;
             OHLCSeries s = minuteToSeries.get(currentKlineMinutes);
             if (s == null || s.getItemCount() == 0) return;
-            org.jfree.chart.axis.ValueAxis ax = (org.jfree.chart.axis.ValueAxis) candlePlot.getDomainAxis();
+            org.jfree.chart.axis.ValueAxis ax = candlePlot.getDomainAxis();
             if (ax == null) return;
             org.jfree.data.Range r = ax.getRange();
             long lo = (long) r.getLowerBound();
@@ -1666,7 +1675,7 @@ public class MainView extends JFrame {
                 candlePlot.getRenderer(6).setSeriesVisible(0, allow && showBigMarkers);
                 candlePlot.getRenderer(6).setSeriesVisible(1, allow && showBigMarkers);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     private XYPlot getCandlePlot() {
@@ -1675,13 +1684,13 @@ public class MainView extends JFrame {
                 org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot =
                     (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
                 if (combinedPlot.getSubplots() != null && !combinedPlot.getSubplots().isEmpty()) {
-                    return (XYPlot) combinedPlot.getSubplots().get(0);
+                    return combinedPlot.getSubplots().get(0);
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
         try {
             if (candleChart != null) return candleChart.getXYPlot();
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
         return null;
     }
 
@@ -1694,7 +1703,7 @@ public class MainView extends JFrame {
             try {
                 long x = ohlcXMs((OHLCItem) s.getDataItem(i));
                 if (x >= loMs && x <= hiMs) cnt++;
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         }
         return cnt;
     }
@@ -1705,7 +1714,7 @@ public class MainView extends JFrame {
         try {
             chart.setAntiAlias(true);
             setChartFont(chart);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [CHART] 註冊圖表，以便集中觸發重繪
@@ -1728,7 +1737,7 @@ public class MainView extends JFrame {
                 java.util.List<JFreeChart> copy;
                 synchronized (registeredCharts) { copy = new java.util.ArrayList<>(registeredCharts); }
                 for (JFreeChart c : copy) {
-                    try { c.fireChartChanged(); } catch (Exception ignore) {}
+                    try { c.fireChartChanged(); } catch (Exception ignore) { reportUiFailure(ignore); }
                 }
             });
             chartFlushTimer.setRepeats(false);
@@ -1825,7 +1834,7 @@ public class MainView extends JFrame {
                     if (len > max){
                         infoTextArea.getDocument().remove(0, len - max);
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
             public void insertUpdate(javax.swing.event.DocumentEvent e){ trim(); }
             public void removeUpdate(javax.swing.event.DocumentEvent e){}
@@ -1935,7 +1944,7 @@ public class MainView extends JFrame {
                     spRepSlope.setValue(c.replaceThSlope);
                 }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         btnApply.addActionListener(e -> {
             try {
@@ -1982,7 +1991,7 @@ public class MainView extends JFrame {
                 spRepSlope.setValue(d.replaceThSlope);
                 if (model != null) model.setNoiseAdaptiveConfig(d);
                 appendToInfoArea("已重置 Noise trader 自適應參數為預設", InfoType.SYSTEM);
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
 
         JPanel cfgWrap = new JPanel(new BorderLayout(0, 6));
@@ -2047,7 +2056,7 @@ public class MainView extends JFrame {
             orderBookView.setTapeListener((buyerInitiated, price, volume, bestBid, bestAsk) -> {
                 pushTapeTrade(buyerInitiated, price, volume, bestBid, bestAsk);
             });
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         // 將左右兩部分組合
         JSplitPane mainSplitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,
@@ -2238,14 +2247,14 @@ public class MainView extends JFrame {
             retailInfoTable.setDefaultRenderer(Object.class, baseRenderer);
             retailInfoTable.setDefaultRenderer(Double.class, baseRenderer);
             retailInfoTable.setDefaultRenderer(Integer.class, baseRenderer);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         try {
             retailInfoTable.getColumnModel().getColumn(0).setPreferredWidth(120);
             retailInfoTable.getColumnModel().getColumn(1).setPreferredWidth(120);
             retailInfoTable.getColumnModel().getColumn(2).setPreferredWidth(80);
             retailInfoTable.getColumnModel().getColumn(3).setPreferredWidth(120);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
         JScrollPane sp = new JScrollPane(retailInfoTable);
         panel.add(sp, BorderLayout.CENTER);
         return panel;
@@ -2305,7 +2314,7 @@ public class MainView extends JFrame {
         resetBtn.addActionListener(e -> {
             try {
                 if (model != null) model.setRetailStrategyConfig(StockMainAction.model.StockMarketModel.RetailStrategyConfig.defaults());
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
             syncRetailConfigFromModel();
             appendToInfoArea("已重置散戶策略為預設", InfoType.SYSTEM);
         });
@@ -2409,7 +2418,7 @@ public class MainView extends JFrame {
             if (retailMacdEntrySpinner != null) retailMacdEntrySpinner.setValue(cfg.macdHistEntry);
             if (retailMinWaitSpinner != null) retailMinWaitSpinner.setValue(cfg.minTradeWaitTicks);
             if (retailLossCooldownSpinner != null) retailLossCooldownSpinner.setValue(cfg.lossCooldownPerLoss);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // 新增：市場參與者分頁（表格）
@@ -2527,7 +2536,7 @@ public class MainView extends JFrame {
                     return c;
                 }
             });
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         // 欄寬：避免太擠
         try {
@@ -2540,7 +2549,7 @@ public class MainView extends JFrame {
             traderInfoTable.getColumnModel().getColumn(6).setPreferredWidth(120);
             traderInfoTable.getColumnModel().getColumn(7).setPreferredWidth(80);
             traderInfoTable.getColumnModel().getColumn(8).setPreferredWidth(140);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         JScrollPane sp = new JScrollPane(traderInfoTable);
         panel.add(sp, BorderLayout.CENTER);
@@ -2561,7 +2570,7 @@ public class MainView extends JFrame {
         BarRenderer renderer = (BarRenderer) plot.getRenderer();
 
         renderer.setDefaultToolTipGenerator((dataset, row, column) -> {
-            CategoryDataset categoryDataset = (CategoryDataset) dataset;
+            CategoryDataset categoryDataset = dataset;
             String rowKey = categoryDataset.getRowKey(row).toString();
             String columnKey = categoryDataset.getColumnKey(column).toString();
             Number value = categoryDataset.getValue(row, column);
@@ -3099,34 +3108,10 @@ public class MainView extends JFrame {
      */
     private void limitXYPlotDataPoints(XYPlot plot, int maxPoints) {
         try {
-            // 處理所有數據集
-            for (int datasetIndex = 0; datasetIndex < plot.getDatasetCount(); datasetIndex++) {
-                XYDataset dataset = plot.getDataset(datasetIndex);
-                if (dataset instanceof XYSeriesCollection) {
-                    XYSeriesCollection collection = (XYSeriesCollection) dataset;
-
-                    // 限制每個系列的數據點
-                    for (int seriesIndex = 0; seriesIndex < collection.getSeriesCount(); seriesIndex++) {
-                        XYSeries series = collection.getSeries(seriesIndex);
-                        // 批次更新關閉通知，減少重繪
-                        boolean prev = series.getNotify();
-                        series.setNotify(false);
-
-                        // 移除多餘的數據點
-                        while (series.getItemCount() > maxPoints) {
-                            series.remove(0);
-                        }
-
-                        series.setNotify(prev);
-                    }
-                }
-            }
-
-            // 安全地調整Y軸範圍
+            ChartDataLimiter.trim(plot, maxPoints);
             adjustYAxisRangeSafely(plot);
-
-        } catch (Exception e) {
-            System.err.println("限制XY圖表數據點時發生錯誤: " + e.getMessage());
+        } catch (RuntimeException e) {
+            System.err.println("Unable to trim XY chart data: " + e.getMessage());
         }
     }
 
@@ -3135,32 +3120,9 @@ public class MainView extends JFrame {
      */
     private void limitCategoryPlotDataPoints(CategoryPlot plot, int maxPoints) {
         try {
-            CategoryDataset dataset = plot.getDataset();
-            if (dataset instanceof DefaultCategoryDataset) {
-                DefaultCategoryDataset categoryDataset = (DefaultCategoryDataset) dataset;
-
-                // 獲取所有列（時間點）
-                @SuppressWarnings("unchecked")
-                List<Comparable> columnKeys = categoryDataset.getColumnKeys();
-
-                // 如果數據點超過限制，移除最舊的數據
-                while (columnKeys.size() > maxPoints) {
-                    Comparable oldestKey = columnKeys.get(0);
-
-                    // 移除所有系列中的這個時間點數據
-                    @SuppressWarnings("unchecked")
-                    List<Comparable> rowKeys = categoryDataset.getRowKeys();
-                    for (Comparable rowKey : rowKeys) {
-                        categoryDataset.removeValue(rowKey, oldestKey);
-                    }
-
-                    // 重新獲取列鍵列表
-                    columnKeys = categoryDataset.getColumnKeys();
-                }
-            }
-
-        } catch (Exception e) {
-            System.err.println("限制分類圖表數據點時發生錯誤: " + e.getMessage());
+            ChartDataLimiter.trim(plot, maxPoints);
+        } catch (RuntimeException e) {
+            System.err.println("Unable to trim category chart data: " + e.getMessage());
         }
     }
 
@@ -3345,7 +3307,7 @@ public class MainView extends JFrame {
             // 根據週期設置不同的最大保留數量
             // 1秒: 300根(5分鐘) | 10秒: 180根(30分鐘) | 30秒: 120根(1小時) | 60秒: 60根(1小時)
             int maxItems = (s == 1) ? 300 : (s == 10) ? 180 : (s == 30) ? 120 : 60;
-            try { srs.setMaximumItemCount(maxItems); } catch (Exception ignore) {}
+            try { srs.setMaximumItemCount(maxItems); } catch (Exception ignore) { reportUiFailure(ignore); }
             minuteToSeries.put(-s, srs); // 以負值 key 表示秒
             OHLCSeriesCollection c = new OHLCSeriesCollection();
             c.addSeries(srs);
@@ -3353,7 +3315,7 @@ public class MainView extends JFrame {
         }
         for (int m : klineMinutes) {
             OHLCSeries s = new OHLCSeries("K線(" + m + "分)");
-            try { s.setMaximumItemCount(30); } catch (Exception ignore) {}
+            try { s.setMaximumItemCount(30); } catch (Exception ignore) { reportUiFailure(ignore); }
             minuteToSeries.put(m, s);
             OHLCSeriesCollection c = new OHLCSeriesCollection();
             c.addSeries(s);
@@ -3383,7 +3345,7 @@ public class MainView extends JFrame {
             candleRenderer.setAutoWidthMethod(CandlestickRenderer.WIDTHMETHOD_AVERAGE);
             candleRenderer.setAutoWidthGap(0.15); // 稍微緊湊一些
             candleRenderer.setCandleWidth(5.0); // 固定寬度
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
         
         // TradingView 配色：紅漲綠跌（中國習慣）
         candleRenderer.setUpPaint(new Color(239, 83, 80));       // 紅色上漲
@@ -3507,7 +3469,7 @@ public class MainView extends JFrame {
             candlePlot.addRangeMarker(openMarker);
             candlePlot.addRangeMarker(highMarker);
             candlePlot.addRangeMarker(lowMarker);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
 
         // [CHART] 在 dataset 1 位置加入 VWAP 與上下帶
         candlePlot.setDataset(1, dsVWAP);
@@ -3592,7 +3554,7 @@ public class MainView extends JFrame {
                             }
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
                 return new Color(100, 181, 246, 180); // 默認藍色
             }
         };
@@ -3641,7 +3603,7 @@ public class MainView extends JFrame {
         priceChart = combinedChart;
 
         // 初始就填一次覆蓋資料，避免啟動時只有 K 線
-        try { recomputeOverlayFromOHLC(); refreshOverlayIndicators(); } catch (Exception ignore) {}
+        try { recomputeOverlayFromOHLC(); refreshOverlayIndicators(); } catch (Exception ignore) { reportUiFailure(ignore); }
         // 創建MACD圖表
         XYSeriesCollection macdDataset = new XYSeriesCollection();
         macdDataset.addSeries(macdLineSeries);
@@ -3797,7 +3759,7 @@ public class MainView extends JFrame {
                 rr.setDefaultShapesVisible(false);
                 rr.setDrawSeriesLineAsPath(true);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [CHART] 從現有 K 線資料建立指定週期的只讀副本圖（簡版）
@@ -3807,7 +3769,7 @@ public class MainView extends JFrame {
             if (col == null) {
                 // 若尚未存在，臨時建立空集合避免 NPE
                 OHLCSeries s = new OHLCSeries("K線("+minutes+(minutes<0?"秒":"分")+")");
-                try { s.setMaximumItemCount(10); } catch (Exception ignore) {}
+                try { s.setMaximumItemCount(10); } catch (Exception ignore) { reportUiFailure(ignore); }
                 col = new OHLCSeriesCollection(); col.addSeries(s);
             }
             JFreeChart cc = ChartFactory.createCandlestickChart("K("+(minutes<0?(-minutes+"秒"):(minutes+"分"))+")","時間","價格", col, false);
@@ -3932,9 +3894,10 @@ public class MainView extends JFrame {
         SwingUtilities.invokeLater(() -> {
             DefaultCategoryDataset retailDataset = (DefaultCategoryDataset) retailProfitChart.getCategoryPlot().getDataset();
             // 先清理舊的列鍵
-            @SuppressWarnings("unchecked")
-            java.util.List<Comparable> colKeys = new java.util.ArrayList<>(retailDataset.getColumnKeys());
-            for (Comparable k : colKeys) {
+            java.util.List<?> currentColumnKeys = retailDataset.getColumnKeys();
+            java.util.List<?> colKeys = new java.util.ArrayList<>(currentColumnKeys);
+            for (Object keyValue : colKeys) {
+                Comparable<?> k = (Comparable<?>) keyValue;
                 retailDataset.removeColumn(k);
             }
 
@@ -4077,7 +4040,7 @@ public class MainView extends JFrame {
                                     double prevClose = prev.getCloseValue();
                                     onCandleClosed(series, prevX, prevClose);
                                 }
-                            } catch (Exception ignore) {}
+                            } catch (Exception ignore) { reportUiFailure(ignore); }
                             double prevClose = lastItem.getCloseValue();
                             double newOpen = prevClose;
                             double newHigh = Math.max(newOpen, price);
@@ -4086,20 +4049,21 @@ public class MainView extends JFrame {
                         }
                     }
                     } finally {
-                        try { series.setNotify(prevNotify); } catch (Exception ignore) {}
+                        try { series.setNotify(prevNotify); } catch (Exception ignore) { reportUiFailure(ignore); }
                     }
                     // [PERF] 若K線被裁切，對應的標誌符號（signals/big/tick imbalance）也要同步裁切，避免前面殘留幽靈點
                     if (trimmed) {
-                        try { trimSignalMarkersToOhlcWindow(series); } catch (Exception ignore) {}
+                        try { trimSignalMarkersToOhlcWindow(series); } catch (Exception ignore) { reportUiFailure(ignore); }
                     }
                 } catch (Exception ignore) {
+                    reportUiFailure(ignore);
                 }
 
                 // [CHART] 另外更新多週期資料（30秒、60秒、10分、30分）
                 int[] extraKeys = new int[]{-30, -60, 10, 30};
                 for (int key : extraKeys) {
                     if (key == currentKlineMinutes) continue;
-                    try { updateOhlcForKey(price, now, key); } catch (Exception ignore) {}
+                    try { updateOhlcForKey(price, now, key); } catch (Exception ignore) { reportUiFailure(ignore); }
                 }
 
                 // [PERF] K線疊加指標（SMA/EMA）改為增量更新 + 節流（避免每 tick 全量 clear/add）
@@ -4108,7 +4072,7 @@ public class MainView extends JFrame {
                     if (s != null && s.getItemCount() > 0) {
                         updateKOverlayIncremental(s);
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
 
                 // [CHART] 即時計算 VWAP 與上下帶（以當前窗累積）
                 try {
@@ -4133,7 +4097,7 @@ public class MainView extends JFrame {
                     keepSeriesWithinLimit(vwapSeries, indicatorMaxPoints);
                     keepSeriesWithinLimit(vwapUpperSeries, indicatorMaxPoints);
                     keepSeriesWithinLimit(vwapLowerSeries, indicatorMaxPoints);
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
 
                 // [CHART] 連續窗 + 價格創新高/低訊號
                 try {
@@ -4155,14 +4119,14 @@ public class MainView extends JFrame {
                                     int idx = bullSignals.indexOf(xMs);
                                     if (idx >= 0) bullSignals.updateByIndex(idx, price); else bullSignals.add(xMs, price);
                                     // 噪音事件：多方信號（以該K線 close 為基準，待+10根結算）
-                                    try { registerNoiseEvent(xMs, NoiseSide.LONG, NoiseType.SIGNAL, 0); } catch (Exception ignore) {}
+                                    try { registerNoiseEvent(xMs, NoiseSide.LONG, NoiseType.SIGNAL, 0); } catch (Exception ignore) { reportUiFailure(ignore); }
                                     consecOut = 0;
                                 }
                                 if (consecIn >= consecutiveRequired && newLow) {
                                     int idx = bearSignals.indexOf(xMs);
                                     if (idx >= 0) bearSignals.updateByIndex(idx, price); else bearSignals.add(xMs, price);
                                     // 噪音事件：空方信號
-                                    try { registerNoiseEvent(xMs, NoiseSide.SHORT, NoiseType.SIGNAL, 0); } catch (Exception ignore) {}
+                                    try { registerNoiseEvent(xMs, NoiseSide.SHORT, NoiseType.SIGNAL, 0); } catch (Exception ignore) { reportUiFailure(ignore); }
                                     consecIn = 0;
                                 }
                                 keepSeriesWithinLimit(bullSignals, 120);
@@ -4171,7 +4135,7 @@ public class MainView extends JFrame {
                         }
 
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
                 
                 // [CHART] 買賣盤失衡檢測（Tick Imbalance）
                 try {
@@ -4211,22 +4175,22 @@ public class MainView extends JFrame {
                         try {
                             if (tickImb > 0.25) registerNoiseEvent(xMs, NoiseSide.LONG, NoiseType.IMBALANCE, 0);
                             else if (tickImb < -0.25) registerNoiseEvent(xMs, NoiseSide.SHORT, NoiseType.IMBALANCE, 0);
-                        } catch (Exception ignore) {}
+                        } catch (Exception ignore) { reportUiFailure(ignore); }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
 
             // [K線自動跟隨] 節流域軸更新：只在新K線或間隔到期時調整，避免長時間 setRange 造成卡頓
             if (autoFollowLatest) {
-                try { maybeApplyCandleDomainWindow(); } catch (Exception ignore) {}
+                try { maybeApplyCandleDomainWindow(); } catch (Exception ignore) { reportUiFailure(ignore); }
             }
             // [NOISE] 視窗寬度變化時同步調整標記顯示/隱藏
-            try { updateMarkerVisibilityByZoom(); } catch (Exception ignore) {}
+            try { updateMarkerVisibilityByZoom(); } catch (Exception ignore) { reportUiFailure(ignore); }
             // [Y-AXIS] 長時間運行避免被指標拉爆導致K線變一條線
-            try { maybeApplyCandleRangeWindow(); } catch (Exception ignore) {}
+            try { maybeApplyCandleRangeWindow(); } catch (Exception ignore) { reportUiFailure(ignore); }
             
             // === TradingView 風格：更新 OHLC 信息面板（顯示最新K線） ===
-            try { maybeUpdateOhlcInfoLabel(); } catch (Exception ignore) {}
+            try { maybeUpdateOhlcInfoLabel(); } catch (Exception ignore) { reportUiFailure(ignore); }
             
             // === [TradingView] 更新信號指示器面板 ===
             try {
@@ -4240,7 +4204,7 @@ public class MainView extends JFrame {
                     
                     signalPanel.updateAllSignals(bullCount, bearCount, bigBuyCount, bigSellCount, tickBuyCount, tickSellCount);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
             
             scheduleChartFlush(); // [CHART]
 
@@ -4287,7 +4251,7 @@ public class MainView extends JFrame {
             series.add(p, newOpen, newHigh, newLow, price);
         }
         } finally {
-            try { series.setNotify(prevNotify); } catch (Exception ignore) {}
+            try { series.setNotify(prevNotify); } catch (Exception ignore) { reportUiFailure(ignore); }
         }
     }
 
@@ -4314,7 +4278,7 @@ public class MainView extends JFrame {
                 if (x0.longValue() < minXInclusive) s.remove(0);
                 else break;
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // === [NOISE] 事件記錄/結算 ===
@@ -4351,7 +4315,7 @@ public class MainView extends JFrame {
             try {
                 long xi = ohlcXMs((OHLCItem) s.getDataItem(i));
                 if (xi == xMs) return i;
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         }
         return -1;
     }
@@ -4432,7 +4396,7 @@ public class MainView extends JFrame {
                 OHLCItem it = (OHLCItem) s.getDataItem(i);
                 sum += it.getCloseValue();
                 cnt++;
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         }
         if (cnt <= 0) {
             try { return ((OHLCItem) s.getDataItem(end)).getCloseValue(); } catch (Exception e) { return Double.NaN; }
@@ -4453,7 +4417,7 @@ public class MainView extends JFrame {
                 }
             }
             series.add(x, y, false);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [PERF] 增量更新 SMA/EMA（僅更新最後一根，且在新K線時回填上一根的最終值）
@@ -4473,7 +4437,7 @@ public class MainView extends JFrame {
         boolean allowUpdateCurrent = isNewCandle || (nowMs - kOverlayLastRecomputeMs >= Math.max(50, kOverlayMinIntervalMs));
 
         // 批次關閉 notify，避免同一輪更新觸發多次重繪
-        try { toggleOverlayNotify(false); } catch (Exception ignore) {}
+        try { toggleOverlayNotify(false); } catch (Exception ignore) { reportUiFailure(ignore); }
         try {
             // 新K線：回填「上一根」的最終值（避免節流導致上一根指標停留在舊 close）
             if (isNewCandle && n >= 2) {
@@ -4496,7 +4460,7 @@ public class MainView extends JFrame {
                     } else if (ec == 1) {
                         emaPrevPrev = ema12Series.getY(0).doubleValue();
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
                 if (Double.isNaN(emaPrevPrev)) emaPrevPrev = prevClose;
                 double prevEma = prevClose * k + emaPrevPrev * (1.0 - k);
                 updateOrAddXY(ema12Series, prevX, prevEma);
@@ -4509,7 +4473,7 @@ public class MainView extends JFrame {
                     if (s5 != null) updateOrAddXY(s5, prevX, computeSMAAt(s, sma5Period, prevIdx));
                     if (s10 != null) updateOrAddXY(s10, prevX, computeSMAAt(s, sma10Period, prevIdx));
                     if (e12 != null) updateOrAddXY(e12, prevX, prevEma);
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
 
                 // 設定當前K線要使用的「前一根EMA」
                 ema12PrevForCurrent = prevEma;
@@ -4542,7 +4506,7 @@ public class MainView extends JFrame {
                     if (s5 != null) updateOrAddXY(s5, xMs, computeSMAAt(s, sma5Period, lastIdx));
                     if (s10 != null) updateOrAddXY(s10, xMs, computeSMAAt(s, sma10Period, lastIdx));
                     if (e12 != null) updateOrAddXY(e12, xMs, ema);
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
 
                 keepSeriesWithinLimit(sma5Series, indicatorMaxPoints);
                 keepSeriesWithinLimit(sma10Series, indicatorMaxPoints);
@@ -4550,7 +4514,7 @@ public class MainView extends JFrame {
                 kOverlayLastRecomputeMs = nowMs;
             }
         } finally {
-            try { toggleOverlayNotify(true); } catch (Exception ignore) {}
+            try { toggleOverlayNotify(true); } catch (Exception ignore) { reportUiFailure(ignore); }
         }
     }
 
@@ -4570,7 +4534,7 @@ public class MainView extends JFrame {
                 domainLastUpdateMs = now;
                 applyCandleDomainWindow();
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [Y-AXIS] 節流更新Y軸（依K線可見範圍），避免指標極值拉爆導致K線被壓扁
@@ -4588,7 +4552,7 @@ public class MainView extends JFrame {
                 rangeLastUpdateMs = now;
                 applyCandleRangeWindow(autoFollowLatest);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [Y-AXIS] 設定價格軸範圍：只取 OHLC 的 high/low（忽略指標 series）
@@ -4610,7 +4574,7 @@ public class MainView extends JFrame {
                     OHLCItem it = (OHLCItem) s.getDataItem(i);
                     min = Math.min(min, it.getLowValue());
                     max = Math.max(max, it.getHighValue());
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
             if (!Double.isFinite(min) || !Double.isFinite(max)) return;
             if (min == max) { min -= 1.0; max += 1.0; }
@@ -4625,7 +4589,7 @@ public class MainView extends JFrame {
                 rangeAxis.setAutoRange(false);
                 rangeAxis.setRange(lo, hi);
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [PERF] 節流 OHLC info label 更新（HTML setText 很吃 GC）
@@ -4663,7 +4627,7 @@ public class MainView extends JFrame {
                 timeStr, color, changeStr,
                 open, high, low, color, close
             ));
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [限制式週期切換] 切換到指定週期索引
@@ -4934,7 +4898,7 @@ public class MainView extends JFrame {
                 
                 // 更新K線圖（第一個subplot）
                 if (combinedPlot.getSubplots().size() > 0) {
-                    XYPlot candlePlot = (XYPlot) combinedPlot.getSubplots().get(0);
+                    XYPlot candlePlot = combinedPlot.getSubplots().get(0);
                     candlePlot.setNotify(false);
                     try {
                         candlePlot.setDataset(0, minuteToCollection.get(period));
@@ -4966,7 +4930,7 @@ public class MainView extends JFrame {
                 
                 // 更新成交量圖（第二個subplot）
                 if (combinedPlot.getSubplots().size() > 1) {
-                    XYPlot volumePlot = (XYPlot) combinedPlot.getSubplots().get(1);
+                    XYPlot volumePlot = combinedPlot.getSubplots().get(1);
                     volumePlot.setNotify(false);
                     try {
                         // 更新成交量數據集
@@ -4998,14 +4962,14 @@ public class MainView extends JFrame {
                 javax.swing.Timer autoRangeTimer = new javax.swing.Timer(2000, e -> {
                     try {
                         if (combinedPlot.getSubplots().size() > 0) {
-                            XYPlot candlePlot = (XYPlot) combinedPlot.getSubplots().get(0);
+                            XYPlot candlePlot = combinedPlot.getSubplots().get(0);
                             candlePlot.getRangeAxis().setAutoRange(true);
                         }
                         if (combinedPlot.getSubplots().size() > 1) {
-                            XYPlot volumePlot = (XYPlot) combinedPlot.getSubplots().get(1);
+                            XYPlot volumePlot = combinedPlot.getSubplots().get(1);
                             volumePlot.getRangeAxis().setAutoRange(true);
                         }
-                    } catch (Exception ignore) {}
+                    } catch (Exception ignore) { reportUiFailure(ignore); }
                 });
                 autoRangeTimer.setRepeats(false);
                 autoRangeTimer.start();
@@ -5121,7 +5085,7 @@ public class MainView extends JFrame {
                     
                     // 取得K線子圖（第一個subplot）
                     if (combinedPlot.getSubplots().size() > 0) {
-                        XYPlot candlePlot = (XYPlot) combinedPlot.getSubplots().get(0);
+                        XYPlot candlePlot = combinedPlot.getSubplots().get(0);
                         candlePlot.setNotify(false);
                         try {
                             candlePlot.setDataset(0, minuteToCollection.get(currentKlineMinutes));
@@ -5203,7 +5167,7 @@ public class MainView extends JFrame {
             double multSig = 2.0 / (macdSignal + 1);
             macdSignalArr[0] = macdLine[0];
             for (int i = 1; i < n; i++) macdSignalArr[i] = (macdLine[i] - macdSignalArr[i-1]) * multSig + macdSignalArr[i-1];
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // 暫停/恢復所有覆蓋序列的通知，減少重繪閃爍
@@ -5219,7 +5183,7 @@ public class MainView extends JFrame {
             if (kSeries != null) kSeries.setNotify(on);
             if (dSeries != null) dSeries.setNotify(on);
             if (jSeries != null) jSeries.setNotify(on);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // 將來源 series 的資料離線複製到目標 series（整批替換，避免逐筆觸發重繪）
@@ -5232,6 +5196,7 @@ public class MainView extends JFrame {
                 target.add(source.getX(i), source.getY(i), false);
             }
         } catch (Exception ignore) {
+            reportUiFailure(ignore);
         } finally {
             target.setNotify(true);
         }
@@ -5265,7 +5230,7 @@ public class MainView extends JFrame {
                 while (System.currentTimeMillis() - start < 3000) { // 3 秒內抽樣
                     long t0 = System.nanoTime();
                     // 嘗試只做一次輕量重算（不進 EDT 寫入）
-                    try { recomputeOverlayCostOnly(); } catch (Exception ignore) {}
+                    try { recomputeOverlayCostOnly(); } catch (Exception ignore) { reportUiFailure(ignore); }
                     long t1 = System.nanoTime();
                     long costMs = (t1 - t0) / 1_000_000;
                     sum += Math.max(1, costMs);
@@ -5289,7 +5254,9 @@ public class MainView extends JFrame {
                         indicatorMaxPoints = 400;
                     }
                 }
-            } catch (InterruptedException ignore) {}
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }, "AutoTune-Indicators").start();
     }
 
@@ -5327,7 +5294,7 @@ public class MainView extends JFrame {
                             volSeries.remove(0);
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
         }
         
@@ -5350,7 +5317,7 @@ public class MainView extends JFrame {
                             volSeries.remove(0);
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
         }
     }
@@ -5401,12 +5368,11 @@ public class MainView extends JFrame {
                             volumeXYSeries.remove(0);
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
 
             // 保留原有的 Category 數據集更新（用於獨立的成交量圖表）
-            @SuppressWarnings("unchecked")
-            java.util.List<Comparable> keys = volumeDataset.getColumnKeys();
+            java.util.List<?> keys = volumeDataset.getColumnKeys();
             if (!keys.contains(key)) {
                 while (volumeDataset.getColumnCount() >= maxVolumeColumns) {
                     String firstKey = (String) volumeDataset.getColumnKeys().get(0);
@@ -5426,7 +5392,7 @@ public class MainView extends JFrame {
                             color = (ki.getCloseValue() >= ki.getOpenValue()) ? upColor : downColor;
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
                 colorList.add(color);
             } else {
                 Number existingValue = volumeDataset.getValue("Volume", key);
@@ -5475,7 +5441,7 @@ public class MainView extends JFrame {
                         volumeMA10Series.remove(0);
                     }
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
             
             scheduleChartFlush(); // [CHART]
         });
@@ -5511,7 +5477,7 @@ public class MainView extends JFrame {
             q.addLast(tr); prune(); recompute();
             // 大單標記：若超門檻，於主圖加一點
             MainView mv = null;
-            try { mv = (MainView) SwingUtilities.getWindowAncestor(this); } catch (Exception ignore) {}
+            try { mv = (MainView) SwingUtilities.getWindowAncestor(this); } catch (Exception ignore) { reportUiFailure(ignore); }
             if (mv != null && mv.showBigMarkers && volume >= mv.bigOrderThreshold) {
                 try {
                     // 對齊到目前K線桶（避免同一秒內連續大單產生太多點）
@@ -5529,14 +5495,14 @@ public class MainView extends JFrame {
                         int idx = mv.bigBuySeries.indexOf(aligned);
                         if (idx >= 0) mv.bigBuySeries.updateByIndex(idx, price); else mv.bigBuySeries.add(aligned, price);
                         mv.keepSeriesWithinLimit(mv.bigBuySeries, mv.maxBigMarkers);
-                        try { mv.registerNoiseEvent(aligned, NoiseSide.LONG, NoiseType.BIG_ORDER, volume); } catch (Exception ignore) {}
+                        try { mv.registerNoiseEvent(aligned, NoiseSide.LONG, NoiseType.BIG_ORDER, volume); } catch (Exception ignore) { reportUiFailure(ignore); }
                     } else {
                         int idx = mv.bigSellSeries.indexOf(aligned);
                         if (idx >= 0) mv.bigSellSeries.updateByIndex(idx, price); else mv.bigSellSeries.add(aligned, price);
                         mv.keepSeriesWithinLimit(mv.bigSellSeries, mv.maxBigMarkers);
-                        try { mv.registerNoiseEvent(aligned, NoiseSide.SHORT, NoiseType.BIG_ORDER, volume); } catch (Exception ignore) {}
+                        try { mv.registerNoiseEvent(aligned, NoiseSide.SHORT, NoiseType.BIG_ORDER, volume); } catch (Exception ignore) { reportUiFailure(ignore); }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
         }
         private void prune(){ long now = System.currentTimeMillis(); while(!q.isEmpty() && now - q.peekFirst().ts > WINDOW_MS) q.removeFirst(); }
@@ -5584,7 +5550,7 @@ public class MainView extends JFrame {
                     
                     signalPanel.updateAllSignals(bullCount, bearCount, bigBuyCount, bigSellCount, tickBuyCount, tickSellCount);
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
         });
     }
 
@@ -5611,8 +5577,8 @@ public class MainView extends JFrame {
             double vps = model.getRecentVPS(60);
             double imb = model.getRecentTickImbalance(60);
             marketStatsLabel.setText(String.format("指標: In/Out %d%%/%d%%  Δ %,d  失衡 %.2f  TPS %.2f  VPS %,d", inPct, outPct, delta, imb, tps, Math.round(vps)));
-        } catch (Exception ignore) {}
-        try { refreshNoiseStatsLabel(); } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
+        try { refreshNoiseStatsLabel(); } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // === [NOISE] 統計顯示：A(做多/做空) + B(10根後有效/無效) ===
@@ -5623,7 +5589,7 @@ public class MainView extends JFrame {
             int pLong = 0, pShort = 0;
             for (NoiseEvent e : noisePending) { if (e.side == NoiseSide.LONG) pLong++; else pShort++; }
             noisePanel.showPendingOnly(pLong, pShort);
-            try { if (model != null) model.setNoiseSignalQuality(0.5, 0.5, 0); } catch (Exception ignore) {}
+            try { if (model != null) model.setNoiseSignalQuality(0.5, 0.5, 0); } catch (Exception ignore) { reportUiFailure(ignore); }
             return;
         }
 
@@ -5658,7 +5624,7 @@ public class MainView extends JFrame {
             double shortHit01 = (shortEff + shortNoise) > 0 ? (shortEff * 1.0 / (shortEff + shortNoise)) : 0.5;
             int sampleN = (longEff + longNoise) + (shortEff + shortNoise);
             if (model != null) model.setNoiseSignalQuality(longHit01, shortHit01, sampleN);
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     /**
@@ -5887,7 +5853,7 @@ public class MainView extends JFrame {
         }
             XYLineAndShapeRenderer renderer = (XYLineAndShapeRenderer) plot.getRenderer();
         renderer.setDefaultToolTipGenerator((dataset, series, item) -> {
-            XYDataset xyDataset = (XYDataset) dataset;
+            XYDataset xyDataset = dataset;
             double x = xyDataset.getXValue(series, item);
             double y = xyDataset.getYValue(series, item);
             String seriesName = xyDataset.getSeriesKey(series).toString();
@@ -5902,7 +5868,7 @@ public class MainView extends JFrame {
                 // [UX] 左鍵點擊開/關量尺；右鍵清除
                 if (!(plot instanceof XYPlot)) return;
                 if (SwingUtilities.isLeftMouseButton(event.getTrigger())) {
-                    XYPlot xp = (XYPlot) plot;
+                    XYPlot xp = plot;
                     Point2D p = chartPanel.translateScreenToJava2D(event.getTrigger().getPoint());
                     Rectangle2D area = chartPanel.getScreenDataArea();
                     if (area != null && area.contains(p)) {
@@ -5983,7 +5949,7 @@ public class MainView extends JFrame {
                                         ));
                                     }
                                 }
-                            } catch (Exception ignore) {}
+                            } catch (Exception ignore) { reportUiFailure(ignore); }
                         }
 
                         // 更新狀態欄或信息區域
@@ -6003,18 +5969,18 @@ public class MainView extends JFrame {
 
                         // [UX] 在圖上顯示量尺文字（更明顯）
                         if (plot instanceof XYPlot) {
-                            XYPlot xp = (XYPlot) plot;
+                            XYPlot xp = plot;
                             // 用 plot 的 annotations 管理文字
                             // 清除上一個臨時標註（簡化：保留至多一個）
                             if (!measuring || anchorXMs == null || anchorPrice == null) {
-                                try { xp.clearAnnotations(); } catch (Exception ignore) {}
+                                try { xp.clearAnnotations(); } catch (Exception ignore) { reportUiFailure(ignore); }
                             } else {
                                 String ann = String.format("Δt: %.0fms\nΔ價: %.2f (%.2f%%)", Math.abs(chartX-anchorXMs), (chartY-anchorPrice), anchorPrice!=0?((chartY-anchorPrice)/anchorPrice*100.0):0.0);
                                 org.jfree.chart.annotations.XYTextAnnotation txt = new org.jfree.chart.annotations.XYTextAnnotation(ann, chartX, chartY);
                                 txt.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 11));
                                 txt.setPaint(new Color(33,33,33));
                                 txt.setTextAnchor(org.jfree.chart.ui.TextAnchor.TOP_LEFT);
-                                try { xp.clearAnnotations(); } catch (Exception ignore) {}
+                                try { xp.clearAnnotations(); } catch (Exception ignore) { reportUiFailure(ignore); }
                                 xp.addAnnotation(txt);
                             }
                         }
@@ -6151,7 +6117,7 @@ public class MainView extends JFrame {
                                         ));
                                     }
                                 }
-                            } catch (Exception ignore) {}
+                            } catch (Exception ignore) { reportUiFailure(ignore); }
                         }
                         
                         // 更新狀態欄

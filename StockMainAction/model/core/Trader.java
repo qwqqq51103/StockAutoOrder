@@ -1,6 +1,11 @@
 package StockMainAction.model.core;
 
 import StockMainAction.model.user.UserAccount;
+import StockMainAction.model.strategy.OrderIntent;
+import StockMainAction.model.strategy.SignalAction;
+import StockMainAction.model.strategy.StrategyExecutionResult;
+import StockMainAction.model.strategy.StrategyPipeline;
+import StockMainAction.model.strategy.TradingSignal;
 
 /**
  * Trader 接口，定義所有交易者的共同行為
@@ -33,4 +38,10 @@ public interface Trader {
      * @param transactionPrice 交易價格（每股價格）
      */
     void updateAverageCostPrice(String buy, int transactionVolume, double transactionPrice);
+
+    default StrategyExecutionResult executeIntent(OrderBook orderBook, OrderIntent intent) {
+        SignalAction action = intent.side() == OrderSide.BUY ? SignalAction.BUY : SignalAction.SELL;
+        return StrategyPipeline.standard().execute(
+                new TradingSignal(action, 1.0, intent.reason()), intent, this, orderBook);
+    }
 }

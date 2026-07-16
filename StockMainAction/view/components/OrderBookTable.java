@@ -1,5 +1,6 @@
 package StockMainAction.view.components;
 
+import StockMainAction.util.logging.MarketLogger;
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
@@ -12,6 +13,13 @@ import java.util.List;
  * 訂單簿表格 - AbstractTableModel + RowSorter + 批次新增與上限
  */
 public class OrderBookTable {
+
+    private static final MarketLogger LOGGER = MarketLogger.getInstance();
+
+    private static void reportUiFailure(Throwable failure) {
+        LOGGER.debugThrottled("訂單簿表格選配更新失敗：" + failure.getMessage(),
+                "UI_FALLBACK", "order-book-table", 60_000);
+    }
 
     // [UI] 表格列名
     private static final String[] COLUMNS = {
@@ -100,7 +108,7 @@ public class OrderBookTable {
                 buy += safeInt(model.getValueAt(i, 0));
                 sell += safeInt(model.getValueAt(i, 4));
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ignore) { reportUiFailure(ignore); }
         return new int[]{buy, sell};
     }
 
@@ -220,10 +228,10 @@ public class OrderBookTable {
             for (Object[] r : rows) {
                 try {
                     if (r[0] != null) mb = Math.max(mb, Integer.parseInt(String.valueOf(r[0])));
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
                 try {
                     if (r[4] != null) ms = Math.max(ms, Integer.parseInt(String.valueOf(r[4])));
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
             }
             maxBuyVolume = Math.max(1, mb);
             maxSellVolume = Math.max(1, ms);
@@ -292,7 +300,7 @@ public class OrderBookTable {
                     bar.setOpaque(false);
                     return bar;
                 }
-            } catch (Exception ignore) {}
+            } catch (Exception ignore) { reportUiFailure(ignore); }
 
             // [UI] 基本對齊
             if (column == 0 || column == 1 || column == 3 || column == 4) {

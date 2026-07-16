@@ -3,6 +3,7 @@ package StockMainAction.view;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.controller.listeners.OrderBookListener;
+import StockMainAction.util.logging.MarketLogger;
 import javax.swing.*;
 import javax.swing.border.*;
 import java.awt.*;
@@ -23,6 +24,13 @@ import javax.swing.table.TableCellEditor;
  * 現代化的訂單檢視器視窗
  */
 public class OrderViewer extends JFrame implements OrderBookListener {
+
+    private static final MarketLogger LOGGER = MarketLogger.getInstance();
+
+    private static void reportUiFailure(Throwable failure) {
+        LOGGER.debugThrottled("訂單檢視器選配更新失敗：" + failure.getMessage(),
+                "UI_FALLBACK", "order-viewer", 60_000);
+    }
 
     private JTabbedPane tabbedPane;
     private OrderBook orderBook;
@@ -346,7 +354,7 @@ public class OrderViewer extends JFrame implements OrderBookListener {
                             rowBg = new Color(252, 231, 231); // 純紅系底
                         }
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ignore) { reportUiFailure(ignore); }
 
                 setBackground(rowBg);
                 setForeground(Color.BLACK);

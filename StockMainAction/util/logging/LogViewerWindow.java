@@ -23,6 +23,11 @@ import java.util.regex.Pattern;
  */
 public class LogViewerWindow extends JFrame implements MarketLogger.LogListener {
 
+    private static void reportUiFailure(Exception ex) {
+        MarketLogger.getInstance().debugThrottled("日誌視窗操作失敗：" + ex.getMessage(),
+                "LOG_VIEWER", "ui-operation", 60_000);
+    }
+
     // 單例視窗：避免使用者一直重複開很多個
     private static volatile LogViewerWindow INSTANCE;
 
@@ -38,7 +43,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
                 w.setVisible(true);
                 w.toFront();
                 w.requestFocus();
-            } catch (Exception ignore) {}
+            } catch (Exception ex) { reportUiFailure(ex); }
         });
     }
 
@@ -167,7 +172,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
                     if (INSTANCE == LogViewerWindow.this) {
                         INSTANCE = null;
                     }
-                } catch (Exception ignore) {}
+                } catch (Exception ex) { reportUiFailure(ex); }
             }
         });
 
@@ -246,7 +251,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
             else if (lv == MarketLogger.LEVEL_INFO) outputLevelCombo.setSelectedItem("INFO");
             else if (lv == MarketLogger.LEVEL_WARN) outputLevelCombo.setSelectedItem("WARN");
             else outputLevelCombo.setSelectedItem("ERROR");
-        } catch (Exception ignore) {}
+        } catch (Exception ex) { reportUiFailure(ex); }
         outputLevelCombo.addActionListener(e -> {
             try {
                 String v = (String) outputLevelCombo.getSelectedItem();
@@ -256,7 +261,7 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
                 else if ("WARN".equals(v)) lv = MarketLogger.LEVEL_WARN;
                 else if ("ERROR".equals(v)) lv = MarketLogger.LEVEL_ERROR;
                 MarketLogger.getInstance().setLogLevel(lv);
-            } catch (Exception ignore) {}
+            } catch (Exception ex) { reportUiFailure(ex); }
         });
         panel.add(outputLevelCombo, gbc);
 
@@ -267,9 +272,11 @@ public class LogViewerWindow extends JFrame implements MarketLogger.LogListener 
         gbc.gridx = 3;
         gbc.weightx = 0.3;
         consoleToggle = new JCheckBox("輸出到Console");
-        try { consoleToggle.setSelected(MarketLogger.getInstance().isConsoleEnabled()); } catch (Exception ignore) {}
+        try { consoleToggle.setSelected(MarketLogger.getInstance().isConsoleEnabled()); }
+        catch (Exception ex) { reportUiFailure(ex); }
         consoleToggle.addActionListener(e -> {
-            try { MarketLogger.getInstance().setConsoleEnabled(consoleToggle.isSelected()); } catch (Exception ignore) {}
+            try { MarketLogger.getInstance().setConsoleEnabled(consoleToggle.isSelected()); }
+            catch (Exception ex) { reportUiFailure(ex); }
         });
         panel.add(consoleToggle, gbc);
 

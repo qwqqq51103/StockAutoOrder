@@ -6,6 +6,9 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Stock;
 import StockMainAction.model.core.Transaction;
+import StockMainAction.model.core.ExecutionResult;
+import StockMainAction.model.core.OrderSubmissionResult;
+import StockMainAction.service.PersonalTradeService;
 import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.util.logging.LogicAudit;
 import java.util.AbstractMap.SimpleEntry;
@@ -13,10 +16,12 @@ import java.util.AbstractMap.SimpleEntry;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.time.Clock;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.locks.ReentrantLock;
 import javax.swing.SwingUtilities;
 import StockMainAction.model.user.UserAccount;
@@ -35,6 +40,7 @@ public class StockMarketModel {
     private MainForceStrategyWithOrderBook mainForce;
     private List<RetailInvestorAI> retailInvestors;
     private PersonalAI userInvestor;
+    private PersonalTradeService personalTradeService;
     // 小額噪音交易者（主動吃單/侵略性掛單，增加成交與波動）
     private List<NoiseTraderAI> noiseTraders;
 
@@ -125,8 +131,7 @@ public class StockMarketModel {
 
     private volatile NoiseAdaptiveConfig noiseAdaptiveConfig = NoiseAdaptiveConfig.defaults();
 
-    private volatile NoiseSignalQuality noiseSignalQuality
-            = new NoiseSignalQuality(0.5, 0.5, 0, System.currentTimeMillis(), false);
+    private volatile NoiseSignalQuality noiseSignalQuality;
 
     public void setNoiseAdaptiveConfig(NoiseAdaptiveConfig cfg) {
         if (cfg == null) {
@@ -161,7 +166,7 @@ public class StockMarketModel {
         );
         // 立刻用新 sampleMin 重新計算 enabled（避免 UI 變更後要等下一輪）
         NoiseSignalQuality q = noiseSignalQuality;
-        noiseSignalQuality = new NoiseSignalQuality(q.longHitRate01, q.shortHitRate01, q.sampleN, System.currentTimeMillis(),
+        noiseSignalQuality = new NoiseSignalQuality(q.longHitRate01, q.shortHitRate01, q.sampleN, clock.millis(),
                 cfg.enabled && q.sampleN >= sampleMin);
     }
 
@@ -175,7 +180,7 @@ public class StockMarketModel {
         int n = Math.max(0, sampleN);
         NoiseAdaptiveConfig cfg = noiseAdaptiveConfig;
         boolean en = cfg.enabled && n >= Math.max(0, cfg.sampleMin);
-        noiseSignalQuality = new NoiseSignalQuality(lh, sh, n, System.currentTimeMillis(), en);
+        noiseSignalQuality = new NoiseSignalQuality(lh, sh, n, clock.millis(), en);
     }
 
     public NoiseSignalQuality getNoiseSignalQuality() {
@@ -268,15 +273,19 @@ public class StockMarketModel {
         try {
             logger.info(String.format("更新散戶策略模型：%s, risk=%.2f%%, rand=%.2f%%, spread<=%.2f%%",
                     m, risk * 100.0, rand * 100.0, spr * 100.0), "RETAIL_CONFIG");
-        } catch (Exception ignore) {}
+        } catch (Exception ex) {
+            logger.warn("Retail strategy configuration log failed: " + ex.getMessage(), "RETAIL_CONFIG");
+        }
     }
 
     // 模擬控制
     private int timeStep;
     private ScheduledExecutorService executorService;
     private ScheduledFuture<?> simulationFuture;
-    private boolean isRunning = false;
-    private Random random = new Random();
+    private final Object simulationLifecycleLock = new Object();
+    private volatile boolean isRunning = false;
+    private final Random random;
+    private final Clock clock;
 
     // 配置參數
     private double initialRetailCash = 5000000, initialMainForceCash = 8000000;
@@ -299,6 +308,7 @@ public class StockMarketModel {
 
     // 🆕 成交記錄列表
     private List<Transaction> transactionHistory;
+    private final Object transactionHistoryLock = new Object();
     private static final int MAX_TRANSACTION_HISTORY = 1000; // 最多保留10000筆
 
     // 線程安全鎖
@@ -512,7 +522,7 @@ public class StockMarketModel {
         return out;
     }
 
-    public List<ModelListener> listeners = new ArrayList<>();
+    public List<ModelListener> listeners = new CopyOnWriteArrayList<>();
 
     // 成交紀錄監聽器介面 - 用於通知View更新
     public interface TransactionListener {
@@ -520,12 +530,23 @@ public class StockMarketModel {
         void onTransactionAdded(Transaction transaction);
     }
 
-    private List<TransactionListener> transactionListeners = new ArrayList<>();
+    private List<TransactionListener> transactionListeners = new CopyOnWriteArrayList<>();
 
     /**
      * 構造函數
      */
     public StockMarketModel() {
+        this(new Random(), Clock.systemUTC());
+    }
+
+    public StockMarketModel(long randomSeed, Clock clock) {
+        this(new Random(randomSeed), clock);
+    }
+
+    public StockMarketModel(Random random, Clock clock) {
+        this.random = java.util.Objects.requireNonNull(random, "random");
+        this.clock = java.util.Objects.requireNonNull(clock, "clock");
+        this.noiseSignalQuality = new NoiseSignalQuality(0.5, 0.5, 0, clock.millis(), false);
         initializeSimulation();
         this.technicalCalculator = new TechnicalIndicatorsCalculator();
         this.transactionHistory = new ArrayList<>();
@@ -576,14 +597,18 @@ public class StockMarketModel {
         logger.info("初始化股票市場模型", "MODEL_INIT");
         try {
             // 初始化訂單簿
-            orderBook = new OrderBook(this);
+            orderBook = new OrderBook(this, clock);
             logger.info("OrderBook 初始化完成", "MODEL_INIT");
             // 設置默認撮合模式（台股固定）
             orderBook.setMatchingMode(MatchingMode.TWSE_STRICT);
             logger.info("設置默認撮合模式：" + orderBook.getMatchingMode(), "MODEL_INIT");
 
             stock = new Stock("台積電", 10, 1000);
-            try { initialStockPrice = stock.getPrice(); } catch (Exception ignore) { initialStockPrice = 10.0; }
+            try { initialStockPrice = stock.getPrice(); }
+            catch (Exception ex) {
+                initialStockPrice = 10.0;
+                logger.warn("Initial stock price fallback: " + ex.getMessage(), "MODEL_INIT");
+            }
 
             // 初始化做市商（多個）
             initializeMarketMakers(marketMakerCount);
@@ -592,13 +617,16 @@ public class StockMarketModel {
             marketAnalyzer = new MarketAnalyzer(2); // 設定適當的SMA週期
 
             // 初始化主力
-            mainForce = new MainForceStrategyWithOrderBook(orderBook, stock, this, initialMainForceCash);
+            mainForce = new MainForceStrategyWithOrderBook(
+                    orderBook, stock, this, initialMainForceCash, childRandom());
 
             // 初始化散戶
             initializeRetailInvestors(initialRetails);
 
             // 初始化用戶投資者
-            userInvestor = new PersonalAI(initialPersonalCash, "Personal", this, orderBook, stock);
+            userInvestor = new PersonalAI(
+                    initialPersonalCash, "Personal", this, orderBook, stock, childRandom());
+            personalTradeService = new PersonalTradeService(userInvestor);
 
             // 初始化噪音交易者（多個）
             initializeNoiseTraders(noiseTraderCount);
@@ -619,7 +647,8 @@ public class StockMarketModel {
                     marketMakerInitialCash,
                     marketMakerInitialStocks,
                     this,
-                    orderBook
+                    orderBook,
+                    childRandom()
             );
             marketMakers.add(mm);
         }
@@ -662,7 +691,8 @@ public class StockMarketModel {
                     "NoiseTrader" + (i + 1),
                     this,
                     orderBook,
-                    stock
+                    stock,
+                    childRandom()
             );
             noiseTraders.add(nt);
         }
@@ -674,27 +704,31 @@ public class StockMarketModel {
     private void initializeRetailInvestors(int numberOfInvestors) {
         retailInvestors = new ArrayList<>();
         for (int i = 0; i < numberOfInvestors; i++) {
-            RetailInvestorAI investor = new RetailInvestorAI(initialRetailCash, "RetailInvestor" + (i + 1), this);
+            RetailInvestorAI investor = new RetailInvestorAI(
+                    initialRetailCash, "RetailInvestor" + (i + 1), this, childRandom());
             retailInvestors.add(investor);
         }
+    }
+
+    private Random childRandom() {
+        return new Random(random.nextLong());
     }
 
     /**
      * 啟動自動價格波動
      */
     public void startAutoPriceFluctuation() {
-        if (isRunning) {
-            return;
-        }
+        synchronized (simulationLifecycleLock) {
+            if (isRunning) return;
 
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
         int period = 1000; // 執行間隔（單位：毫秒）
 
-        isRunning = true; // 先標記為 running，避免 stop 與 schedule 之間競態
-        executorService = Executors.newScheduledThreadPool(1);
-        simulationFuture = executorService.scheduleAtFixedRate(() -> {
+            isRunning = true;
+            executorService = Executors.newScheduledThreadPool(1);
+            simulationFuture = executorService.scheduleAtFixedRate(() -> {
             try {
                 if (!isRunning || Thread.currentThread().isInterrupted()) {
                     return;
@@ -711,7 +745,8 @@ public class StockMarketModel {
                         for (MarketBehavior mm : marketMakers) {
                             try {
                                 mm.marketFluctuation(stock, orderBook, vol, recentVol);
-                            } catch (Exception ignore) {
+                            } catch (Exception ex) {
+                                logger.warn("Market maker tick failed: " + ex.getMessage(), "MARKET_BEHAVIOR");
                             }
                         }
                     }
@@ -725,7 +760,8 @@ public class StockMarketModel {
                                 nt.setNoiseSignalQuality(q);
                                 nt.setNoiseAdaptiveConfig(cfg);
                                 nt.makeDecision();
-                            } catch (Exception ignore) {
+                            } catch (Exception ex) {
+                                logger.warn("Noise trader tick failed: " + ex.getMessage(), "MARKET_BEHAVIOR");
                             }
                         }
                     }
@@ -773,7 +809,8 @@ public class StockMarketModel {
             } catch (Exception e) {
                 logger.error("主模擬流程發生未處理的錯誤：" + e.getMessage(), "MARKET_SIMULATION");
             }
-        }, initialDelay, period, TimeUnit.MILLISECONDS);
+            }, initialDelay, period, TimeUnit.MILLISECONDS);
+        }
     }
 
     /**
@@ -799,11 +836,16 @@ public class StockMarketModel {
                 if (Double.isNaN(low)) low = price;
                 technicalCalculator.updatePriceData(price, high, low);
 
-                try { macdResult = technicalCalculator.calculateMACD(); } catch (Exception ignore) {}
-                try { bollingerResult = technicalCalculator.calculateBollingerBands(); } catch (Exception ignore) {}
-                try { kdjResult = technicalCalculator.calculateKDJ(); } catch (Exception ignore) {}
+                try { macdResult = technicalCalculator.calculateMACD(); }
+                catch (Exception ex) { logger.warn("MACD calculation failed: " + ex.getMessage(), "MARKET_ANALYSIS"); }
+                try { bollingerResult = technicalCalculator.calculateBollingerBands(); }
+                catch (Exception ex) { logger.warn("Bollinger calculation failed: " + ex.getMessage(), "MARKET_ANALYSIS"); }
+                try { kdjResult = technicalCalculator.calculateKDJ(); }
+                catch (Exception ex) { logger.warn("KDJ calculation failed: " + ex.getMessage(), "MARKET_ANALYSIS"); }
             }
-        } catch (Exception ignore) {}
+        } catch (Exception ex) {
+            logger.warn("Technical indicator update failed: " + ex.getMessage(), "MARKET_ANALYSIS");
+        }
 
         // 保存最近一次指標值
         if (macdResult != null) {
@@ -822,23 +864,25 @@ public class StockMarketModel {
             lastJ = kdjResult[2];
         }
 
-        // 通知所有監聽器
-        for (ModelListener listener : listeners) {
+        final double[] macd = macdResult;
+        final double[] bollinger = bollingerResult;
+        final double[] kdj = kdjResult;
+        runOnEdt(() -> listeners.forEach(listener -> {
             // 原有的通知
             listener.onPriceChanged(price, sma);
             listener.onTechnicalIndicatorsUpdated(volatility, rsi, wap);
 
             // 新增的技術指標通知
-            if (macdResult != null) {
-                listener.onMACDUpdated(macdResult[0], macdResult[1], macdResult[2]);
+            if (macd != null) {
+                listener.onMACDUpdated(macd[0], macd[1], macd[2]);
             }
 
-            if (bollingerResult != null) {
-                listener.onBollingerBandsUpdated(bollingerResult[0], bollingerResult[1], bollingerResult[2]);
+            if (bollinger != null) {
+                listener.onBollingerBandsUpdated(bollinger[0], bollinger[1], bollinger[2]);
             }
 
-            if (kdjResult != null) {
-                listener.onKDJUpdated(kdjResult[0], kdjResult[1], kdjResult[2]);
+            if (kdj != null) {
+                listener.onKDJUpdated(kdj[0], kdj[1], kdj[2]);
             }
 
             // 原有的其他通知
@@ -859,7 +903,7 @@ public class StockMarketModel {
                     userInvestor.getTakeProfitPrice()
             );
             listener.onOrderBookChanged();
-        }
+        }));
     }
 
     // 可選：提供獲取技術指標計算器的方法（用於調試或配置）
@@ -911,7 +955,7 @@ public class StockMarketModel {
             if (recent.isEmpty()) {
                 return 0.0;
             }
-            long now = System.currentTimeMillis();
+            long now = clock.millis();
             long earliest = recent.get(0).getTimestamp();
             double secs = Math.max(1.0, (now - earliest) / 1000.0);
             return recent.size() / secs;
@@ -926,7 +970,7 @@ public class StockMarketModel {
             if (recent.isEmpty()) {
                 return 0.0;
             }
-            long now = System.currentTimeMillis();
+            long now = clock.millis();
             long earliest = recent.get(0).getTimestamp();
             double secs = Math.max(1.0, (now - earliest) / 1000.0);
             long vol = 0;
@@ -964,31 +1008,37 @@ public class StockMarketModel {
      * 停止自動價格波動
      */
     public void stopAutoPriceFluctuation() {
-        logger.info("停止市場價格波動模擬", "MARKET_SIMULATION");
-        isRunning = false;
+        ScheduledExecutorService executorToStop;
+        ScheduledFuture<?> futureToCancel;
+        synchronized (simulationLifecycleLock) {
+            if (!isRunning && executorService == null) return;
+            logger.info("停止市場價格波動模擬", "MARKET_SIMULATION");
+            isRunning = false;
+            futureToCancel = simulationFuture;
+            executorToStop = executorService;
+            simulationFuture = null;
+            executorService = null;
+        }
 
         // 先取消週期任務（shutdown 並不一定會停止已提交的 scheduleAtFixedRate 任務）
         try {
-            if (simulationFuture != null) {
-                simulationFuture.cancel(true);
-            }
-        } catch (Exception ignore) {}
-        simulationFuture = null;
-
-        if (executorService != null && !executorService.isShutdown()) {
-            executorService.shutdownNow();
+            if (futureToCancel != null) futureToCancel.cancel(true);
+        } catch (Exception ex) {
+            logger.warn("Simulation task cancellation failed: " + ex.getMessage(), "MARKET_SIMULATION");
+        }
+        if (executorToStop != null && !executorToStop.isShutdown()) {
+            executorToStop.shutdownNow();
             try {
-                if (!executorService.awaitTermination(800, TimeUnit.MILLISECONDS)) {
-                    executorService.shutdownNow();
+                if (!executorToStop.awaitTermination(800, TimeUnit.MILLISECONDS)) {
+                    executorToStop.shutdownNow();
                     logger.warn("強制關閉模擬執行緒池", "MARKET_SIMULATION");
                 }
             } catch (InterruptedException e) {
-                executorService.shutdownNow();
+                executorToStop.shutdownNow();
                 logger.error(e, "MARKET_SIMULATION");
                 Thread.currentThread().interrupt();
             }
         }
-        executorService = null;
     }
 
     /**
@@ -1133,28 +1183,44 @@ public class StockMarketModel {
      * 市價買入操作
      */
     public boolean executeMarketBuy(int quantity) {
-        return userInvestor.市價買入操作(quantity) > 0;
+        return executeMarketBuyResult(quantity).filledVolume() > 0;
+    }
+
+    public ExecutionResult executeMarketBuyResult(int quantity) {
+        return personalTradeService.marketBuy(quantity);
     }
 
     /**
      * 市價賣出操作
      */
     public boolean executeMarketSell(int quantity) {
-        return userInvestor.市價賣出操作(quantity) > 0;
+        return executeMarketSellResult(quantity).filledVolume() > 0;
+    }
+
+    public ExecutionResult executeMarketSellResult(int quantity) {
+        return personalTradeService.marketSell(quantity);
     }
 
     /**
      * 限價買入操作
      */
     public boolean executeLimitBuy(int quantity, double price) {
-        return userInvestor.限價買入操作(quantity, price) > 0;
+        return executeLimitBuyResult(quantity, price).accepted();
+    }
+
+    public OrderSubmissionResult executeLimitBuyResult(int quantity, double price) {
+        return personalTradeService.limitBuy(quantity, price);
     }
 
     /**
      * 限價賣出操作
      */
     public boolean executeLimitSell(int quantity, double price) {
-        return userInvestor.限價賣出操作(quantity, price) > 0;
+        return executeLimitSellResult(quantity, price).accepted();
+    }
+
+    public OrderSubmissionResult executeLimitSellResult(int quantity, double price) {
+        return personalTradeService.limitSell(quantity, price);
     }
 
     /**
@@ -1181,9 +1247,7 @@ public class StockMarketModel {
      * @param message 要發送的訊息
      */
     public void sendInfoMessage(String message) {
-        for (ModelListener listener : listeners) {
-            listener.onInfoMessage(message);
-        }
+        runOnEdt(() -> listeners.forEach(listener -> listener.onInfoMessage(message)));
     }
 
     /**
@@ -1216,20 +1280,14 @@ public class StockMarketModel {
      * @param txVolume 交易量
      */
     public void updateVolumeChart(int txVolume) {
-        // 通知監聽器更新交易量圖表
-        for (ModelListener listener : listeners) {
-            listener.onVolumeUpdated(txVolume);
-        }
+        runOnEdt(() -> listeners.forEach(listener -> listener.onVolumeUpdated(txVolume)));
     }
 
     /**
      * 更新訂單簿顯示
      */
     public void updateOrderBookDisplay() {
-        // 通知監聽器訂單簿已變更
-        for (ModelListener listener : listeners) {
-            listener.onOrderBookChanged();
-        }
+        runOnEdt(() -> listeners.forEach(ModelListener::onOrderBookChanged));
     }
 
     /**
@@ -1258,10 +1316,6 @@ public class StockMarketModel {
                 orderBook.cancelOrder(order.getId());
             }
 
-            // 通知訂單簿已更新
-            for (ModelListener listener : listeners) {
-                listener.onOrderBookChanged();
-            }
         } finally {
             orderBookLock.unlock();
         }
@@ -1269,30 +1323,23 @@ public class StockMarketModel {
 
     // 添加成交記錄的方法
     public void addTransaction(Transaction transaction) {
-        transactionHistory.add(transaction);
-
-        // 限制記錄數量，避免記憶體溢出
-        if (transactionHistory.size() > MAX_TRANSACTION_HISTORY) {
-            transactionHistory.remove(0); // 移除最舊的記錄
+        synchronized (transactionHistoryLock) {
+            transactionHistory.add(transaction);
+            if (transactionHistory.size() > MAX_TRANSACTION_HISTORY) {
+                transactionHistory.remove(0);
+            }
         }
-
-        // 通知監聽器（如果需要即時更新視窗）
         notifyTransactionAdded(transaction);
     }
 
     private void notifyTransactionAdded(Transaction transaction) {
-        // 通知所有成交監聽器
-        for (TransactionListener listener : transactionListeners) {
-            listener.onTransactionAdded(transaction);
-        }
-
-        // 原有的通知
-        for (ModelListener listener : listeners) {
-            listener.onInfoMessage(String.format("新成交：%s %d股 @ %.2f",
+        runOnEdt(() -> {
+            transactionListeners.forEach(listener -> listener.onTransactionAdded(transaction));
+            listeners.forEach(listener -> listener.onInfoMessage(String.format(
+                    "新成交：%s %d股 @ %.2f",
                     transaction.isBuyerInitiated() ? "買入" : "賣出",
-                    transaction.getVolume(),
-                    transaction.getPrice()));
-        }
+                    transaction.getVolume(), transaction.getPrice())));
+        });
     }
 
     public void addTransactionListener(TransactionListener listener) {
@@ -1307,16 +1354,25 @@ public class StockMarketModel {
 
     // 獲取成交記錄
     public List<Transaction> getTransactionHistory() {
-        return new ArrayList<>(transactionHistory); // 返回副本
+        synchronized (transactionHistoryLock) {
+            return new ArrayList<>(transactionHistory);
+        }
     }
 
     // 獲取最近N筆成交記錄
     public List<Transaction> getRecentTransactions(int n) {
-        int size = transactionHistory.size();
-        if (size <= n) {
-            return new ArrayList<>(transactionHistory);
+        synchronized (transactionHistoryLock) {
+            int size = transactionHistory.size();
+            if (size <= n) {
+                return new ArrayList<>(transactionHistory);
+            }
+            return new ArrayList<>(transactionHistory.subList(size - n, size));
         }
-        return new ArrayList<>(transactionHistory.subList(size - n, size));
+    }
+
+    private static void runOnEdt(Runnable action) {
+        if (SwingUtilities.isEventDispatchThread()) action.run();
+        else SwingUtilities.invokeLater(action);
     }
 
     // ======== Getter 方法 ========
