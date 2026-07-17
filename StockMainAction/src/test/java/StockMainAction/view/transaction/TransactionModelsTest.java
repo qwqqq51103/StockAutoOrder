@@ -2,6 +2,7 @@ package StockMainAction.view.transaction;
 
 import StockMainAction.model.core.Transaction;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import javax.swing.event.TableModelEvent;
 import org.junit.Test;
@@ -53,6 +54,18 @@ public class TransactionModelsTest {
         assertEquals("two", chart.snapshot().get(0).getId());
         assertFalse(statistics.addTransaction(first));
         assertFalse(chart.addTransaction(first));
+    }
+
+    @Test
+    public void tableExposesSortableTimestampAndReadableActiveSide() {
+        TransactionTableModel model = new TransactionTableModel(2);
+        Transaction transaction = transaction("sell", 10.0, 1);
+        model.addTransaction(transaction);
+
+        assertEquals(Date.class, model.getColumnClass(0));
+        assertEquals(new Date(transaction.getTimestamp()), model.getValueAt(0, 0));
+        assertEquals("賣方主動", model.getValueAt(0, 2));
+        assertEquals("未知（主動）", model.getValueAt(0, 8));
     }
 
     static Transaction transaction(String id, double price, int volume) {

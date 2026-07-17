@@ -4,8 +4,10 @@ import StockMainAction.model.core.Order;
 import StockMainAction.model.core.Trader;
 import StockMainAction.model.core.Transaction;
 import StockMainAction.model.user.UserAccount;
+import java.awt.Component;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.JTable;
 import javax.swing.SwingUtilities;
 import org.junit.Test;
 
@@ -81,6 +83,28 @@ public class TransactionHistoryPanelTest {
             }
             assertFalse(panel.addTransaction(first));
             assertEquals(3, panel.getTransactions().size());
+            panel.dispose();
+        });
+    }
+
+    @Test
+    public void newestTradeStaysOnTopAndBuySellColorsAreUnambiguous() throws Exception {
+        onEdt(() -> {
+            TransactionHistoryPanel panel = new TransactionHistoryPanel(10, 10);
+            panel.addTransaction(new Transaction(
+                    "older-sell", null, null, 99.0, 1, 1L));
+            panel.addTransaction(marketBuy("newer-buy", 100.0));
+
+            JTable table = panel.getTable(TransactionHistoryPanel.View.ALL);
+            assertEquals("newer-buy", table.getValueAt(0, 1));
+            assertEquals("買方主動", table.getValueAt(0, 2));
+
+            Component direction = table.prepareRenderer(table.getCellRenderer(0, 2), 0, 2);
+            assertEquals(TransactionCellRenderer.BUY_COLOR, direction.getBackground());
+            Component buyer = table.prepareRenderer(table.getCellRenderer(0, 7), 0, 7);
+            assertEquals(TransactionCellRenderer.BUY_COLOR, buyer.getForeground());
+            Component seller = table.prepareRenderer(table.getCellRenderer(0, 8), 0, 8);
+            assertEquals(TransactionCellRenderer.SELL_COLOR, seller.getForeground());
             panel.dispose();
         });
     }

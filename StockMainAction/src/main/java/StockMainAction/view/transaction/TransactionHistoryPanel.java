@@ -30,9 +30,12 @@ import javax.swing.JScrollPane;
 import javax.swing.JSplitPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTable;
+import javax.swing.RowSorter;
+import javax.swing.SortOrder;
 import javax.swing.SwingConstants;
 import javax.swing.Timer;
-import javax.swing.table.DefaultTableCellRenderer;
+import javax.swing.table.JTableHeader;
+import javax.swing.table.TableRowSorter;
 
 /** Complete transaction history surface backed by bounded incremental models. */
 public final class TransactionHistoryPanel extends JPanel {
@@ -46,6 +49,7 @@ public final class TransactionHistoryPanel extends JPanel {
 
     private final int maxTransactions;
     private final Map<View, TransactionTableModel> tableModels = new EnumMap<>(View.class);
+    private final Map<View, JTable> tables = new EnumMap<>(View.class);
     private final TransactionStatisticsModel statisticsModel;
     private final TransactionChartModel chartModel;
     private final Deque<Transaction> transactions = new ArrayDeque<>();
@@ -58,6 +62,7 @@ public final class TransactionHistoryPanel extends JPanel {
     private final JLabel amountLabel = new JLabel();
     private final JLabel averagePriceLabel = new JLabel();
     private final JLabel orderTypeLabel = new JLabel();
+    private final JLabel activeSideLabel = new JLabel();
     private final JLabel lastUpdateLabel = new JLabel();
     private final DecimalFormat integerFormat = new DecimalFormat("#,##0");
     private final DecimalFormat priceFormat = new DecimalFormat("#,##0.00");
@@ -183,11 +188,11 @@ public final class TransactionHistoryPanel extends JPanel {
     }
 
     private JPanel createSummaryPanel() {
-        JPanel panel = new JPanel(new GridLayout(1, 6, 8, 0));
+        JPanel panel = new JPanel(new GridLayout(1, 7, 8, 0));
         panel.setBackground(new Color(48, 63, 159));
         panel.setBorder(BorderFactory.createEmptyBorder(12, 12, 12, 12));
         for (JLabel label : List.of(countLabel, volumeLabel, amountLabel, averagePriceLabel,
-                orderTypeLabel, lastUpdateLabel)) {
+                orderTypeLabel, activeSideLabel, lastUpdateLabel)) {
             label.setForeground(Color.WHITE);
             label.setFont(new Font("Microsoft JhengHei", Font.BOLD, 13));
             label.setHorizontalAlignment(SwingConstants.CENTER);
@@ -204,19 +209,36 @@ public final class TransactionHistoryPanel extends JPanel {
         addTableTab(tabs, "我的成交", View.PERSONAL);
         addTableTab(tabs, "市價單", View.MARKET);
         addTableTab(tabs, "限價單", View.LIMIT);
+        tabs.setForegroundAt(1, TransactionCellRenderer.BUY_COLOR);
+        tabs.setForegroundAt(2, TransactionCellRenderer.SELL_COLOR);
         return tabs;
     }
 
     private void addTableTab(JTabbedPane tabs, String title, View view) {
         JTable table = new JTable(tableModels.get(view));
-        table.setAutoCreateRowSorter(true);
+        tables.put(view, table);
+        TableRowSorter<TransactionTableModel> sorter =
+                new TableRowSorter<>(tableModels.get(view));
+        sorter.setSortsOnUpdates(true);
+        sorter.setSortKeys(List.of(new RowSorter.SortKey(0, SortOrder.DESCENDING)));
+        table.setRowSorter(sorter);
         table.setFillsViewportHeight(true);
-        table.setRowHeight(25);
+        table.setRowHeight(28);
+        table.setIntercellSpacing(new Dimension(0, 1));
+        table.setSelectionBackground(new Color(63, 81, 181));
+        table.setSelectionForeground(Color.WHITE);
         table.setShowVerticalLines(false);
-        DefaultTableCellRenderer numberRenderer = new DefaultTableCellRenderer();
-        numberRenderer.setHorizontalAlignment(SwingConstants.RIGHT);
-        table.setDefaultRenderer(Double.class, numberRenderer);
-        table.setDefaultRenderer(Integer.class, numberRenderer);
+        TransactionCellRenderer renderer = new TransactionCellRenderer();
+        table.setDefaultRenderer(Object.class, renderer);
+        table.setDefaultRenderer(String.class, renderer);
+        table.setDefaultRenderer(Date.class, renderer);
+        table.setDefaultRenderer(Double.class, renderer);
+        table.setDefaultRenderer(Integer.class, renderer);
+        JTableHeader header = table.getTableHeader();
+        header.setFont(header.getFont().deriveFont(Font.BOLD));
+        header.setBackground(new Color(55, 71, 79));
+        header.setForeground(Color.WHITE);
+        header.setReorderingAllowed(false);
         tabs.addTab(title, new JScrollPane(table));
     }
 
@@ -231,9 +253,20 @@ public final class TransactionHistoryPanel extends JPanel {
         averagePriceLabel.setText("均價  " + priceFormat.format(statistics.averagePrice()));
         orderTypeLabel.setText("市價 / 限價  " + statistics.marketOrderCount()
                 + " / " + statistics.limitOrderCount());
-        lastUpdateLabel.setText("更新  " + timeFormat.format(new Date()));
+        activeSideLabel.setText("<html><span style='color:#9BE7A1'>主動買 "
+                + statistics.buyerInitiatedCount()
+                + "</span> / <span style='color:#FFB3B3'>主動賣 "
+                + statistics.sellerInitiatedCount() + "</span></html>");
+        Transaction latest = transactions.peekLast();
+        lastUpdateLabel.setText(latest == null
+                ? "自動更新  --:--:--"
+                : "自動更新  ● " + timeFormat.format(new Date(latest.getTimestamp())));
         chartPanel.repaint();
         derivedViewsDirty = false;
+    }
+
+    JTable getTable(View view) {
+        return tables.get(view);
     }
 
     private static boolean isValid(Transaction transaction) {

@@ -1,7 +1,6 @@
 package StockMainAction.view.transaction;
 
 import StockMainAction.model.core.Transaction;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -17,8 +16,6 @@ public final class TransactionTableModel extends AbstractTableModel {
     private final int maxRows;
     private final List<Transaction> rows = new ArrayList<>();
     private final BoundedTransactionIds seenTransactionIds;
-    private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss.SSS");
-
     public TransactionTableModel(int maxRows) {
         if (maxRows <= 0) {
             throw new IllegalArgumentException("maxRows must be positive");
@@ -80,6 +77,7 @@ public final class TransactionTableModel extends AbstractTableModel {
     @Override
     public Class<?> getColumnClass(int column) {
         return switch (column) {
+            case 0 -> Date.class;
             case 4, 6, 9, 10 -> Double.class;
             case 5 -> Integer.class;
             default -> String.class;
@@ -95,15 +93,17 @@ public final class TransactionTableModel extends AbstractTableModel {
     public Object getValueAt(int rowIndex, int columnIndex) {
         Transaction transaction = rows.get(rowIndex);
         return switch (columnIndex) {
-            case 0 -> timeFormat.format(new Date(transaction.getTimestamp()));
+            case 0 -> new Date(transaction.getTimestamp());
             case 1 -> transaction.getId();
             case 2 -> isBuyerInitiated(transaction) ? "買方主動" : "賣方主動";
             case 3 -> transaction.getTransactionType().getDisplayName();
             case 4 -> transaction.getPrice();
             case 5 -> transaction.getVolume();
             case 6 -> transaction.getTotalValue();
-            case 7 -> traderType(transaction.getBuyer());
-            case 8 -> traderType(transaction.getSeller());
+            case 7 -> traderType(transaction.getBuyer())
+                    + (isBuyerInitiated(transaction) ? "（主動）" : "");
+            case 8 -> traderType(transaction.getSeller())
+                    + (isBuyerInitiated(transaction) ? "" : "（主動）");
             case 9 -> transaction.getFillRate();
             case 10 -> transaction.getSlippagePercentage();
             default -> throw new IndexOutOfBoundsException("columnIndex=" + columnIndex);
@@ -111,7 +111,16 @@ public final class TransactionTableModel extends AbstractTableModel {
     }
 
     private static String traderType(StockMainAction.model.core.Trader trader) {
-        return trader == null ? "未知" : trader.getTraderType();
+        if (trader == null) {
+            return "未知";
+        }
+        return switch (trader.getTraderType()) {
+            case "PERSONAL" -> "用戶";
+            case "MAIN_FORCE" -> "主力";
+            case "RETAIL_INVESTOR" -> "散戶";
+            case "MarketBehavior", "MARKET_BEHAVIOR" -> "市場";
+            default -> trader.getTraderType();
+        };
     }
 
     private static boolean isBuyerInitiated(Transaction transaction) {
