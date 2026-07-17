@@ -29,10 +29,10 @@ final class TransactionCellRenderer extends DefaultTableCellRenderer {
         boolean buyerInitiated = "買方主動".equals(directionValue);
 
         Object displayValue = value;
-        if (modelColumn == 0 && value instanceof Date date) {
-            displayValue = timeFormat.format(date);
-        } else if (value instanceof Number number) {
-            displayValue = numberFormat.format(number);
+        if (modelColumn == 0 && value instanceof Date) {
+            displayValue = timeFormat.format((Date) value);
+        } else if (value instanceof Number) {
+            displayValue = numberFormat.format((Number) value);
         }
 
         super.getTableCellRendererComponent(
