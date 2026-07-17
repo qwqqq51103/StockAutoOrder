@@ -1,0 +1,4 @@
+interface:
+  display_name: "Stock Main Action"
+  short_description: "Use StockMainAction Swing trading and matching context"
+  default_prompt: "Use $stock-main-action-domain to analyze StockMainAction changes with trading, accounting, strategy, Swing UI, chart, logging, and Maven validation context."

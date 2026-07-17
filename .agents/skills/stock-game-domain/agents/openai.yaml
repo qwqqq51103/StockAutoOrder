@@ -1,4 +1,0 @@
-interface:
-  display_name: "Stock Game Domain"
-  short_description: "Use project-specific stock game architecture and trading invariants"
-  default_prompt: "Use $stock-game-domain to analyze StockGameServer, frontend, and StockMainAction changes with trading, account, WebSocket, chart, and validation context."
