@@ -36,7 +36,21 @@ public class TechnicalIndicatorsCalculator {
     /**
      * 更新價格數據
      */
-    public void updatePriceData(double price, double high, double low) {
+    public synchronized void updatePriceData(double price, double high, double low) {
+        if (!Double.isFinite(price) || price <= 0) {
+            return;
+        }
+        if (!Double.isFinite(high) || high <= 0) {
+            high = price;
+        }
+        if (!Double.isFinite(low) || low <= 0) {
+            low = price;
+        }
+        if (high < low) {
+            double tmp = high;
+            high = low;
+            low = tmp;
+        }
         priceHistory.add(price);
         highHistory.add(high);
         lowHistory.add(low);
@@ -55,25 +69,29 @@ public class TechnicalIndicatorsCalculator {
      *
      * @return [macdLine, signalLine, histogram] 或 null 如果數據不足
      */
-    public double[] calculateMACD() {
-        if (priceHistory.size() < macdLongPeriod + macdSignalPeriod) {
+    public synchronized double[] calculateMACD() {
+        List<Double> prices = List.copyOf(priceHistory);
+        if (prices.size() < macdLongPeriod + macdSignalPeriod) {
             return null; // 數據不足
         }
 
         // 計算短期和長期EMA
-        double shortEMA = calculateEMA(priceHistory, macdShortPeriod);
-        double longEMA = calculateEMA(priceHistory, macdLongPeriod);
+        double shortEMA = calculateEMA(prices, macdShortPeriod);
+        double longEMA = calculateEMA(prices, macdLongPeriod);
 
         // MACD線 = 短期EMA - 長期EMA
         double macdLine = shortEMA - longEMA;
 
         // 計算信號線（MACD線的EMA）
-        List<Double> macdHistory = calculateMACDHistory();
+        List<Double> macdHistory = calculateMACDHistory(prices);
         double signalLine = calculateEMA(macdHistory, macdSignalPeriod);
 
         // 柱狀圖 = MACD線 - 信號線
         double histogram = macdLine - signalLine;
 
+        if (!Double.isFinite(macdLine) || !Double.isFinite(signalLine) || !Double.isFinite(histogram)) {
+            return null;
+        }
         return new double[]{macdLine, signalLine, histogram};
     }
 
@@ -82,7 +100,7 @@ public class TechnicalIndicatorsCalculator {
      *
      * @return [upperBand, middleBand, lowerBand] 或 null 如果數據不足
      */
-    public double[] calculateBollingerBands() {
+    public synchronized double[] calculateBollingerBands() {
         if (priceHistory.size() < bollingerPeriod) {
             return null; // 數據不足
         }
@@ -105,7 +123,7 @@ public class TechnicalIndicatorsCalculator {
      *
      * @return [kValue, dValue, jValue] 或 null 如果數據不足
      */
-    public double[] calculateKDJ() {
+    public synchronized double[] calculateKDJ() {
         int n = Math.min(priceHistory.size(), Math.min(highHistory.size(), lowHistory.size()));
         if (n < kdjPeriod) {
             return null; // 數據不足
@@ -220,11 +238,11 @@ public class TechnicalIndicatorsCalculator {
     /**
      * 計算MACD歷史數據（用於信號線計算）
      */
-    private List<Double> calculateMACDHistory() {
+    private List<Double> calculateMACDHistory(List<Double> prices) {
         List<Double> macdHistory = new ArrayList<>();
 
-        for (int i = macdLongPeriod; i <= priceHistory.size(); i++) {
-            List<Double> subPrices = priceHistory.subList(0, i);
+        for (int i = macdLongPeriod; i <= prices.size(); i++) {
+            List<Double> subPrices = prices.subList(0, i);
             double shortEMA = calculateEMA(subPrices, macdShortPeriod);
             double longEMA = calculateEMA(subPrices, macdLongPeriod);
             macdHistory.add(shortEMA - longEMA);

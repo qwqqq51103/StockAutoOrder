@@ -235,7 +235,7 @@ public class OrderBook implements AutoCloseable {
                         for (PlannedCommit commit : commits) {
                             trades.add(applyBookFillLocked(commit.buy(), commit.sell(),
                                     commit.price(), commit.volume(), commit.buyerInitiated(),
-                                    commit.type(), null));
+                                    commit.type(), commit.price(), null));
                         }
                         publication = enqueueCommittedTradesLocked(trades);
                     }
@@ -275,7 +275,7 @@ public class OrderBook implements AutoCloseable {
 
                 trades.add(commitFillLocked(buy, sell, price, quantity,
                         true, true, buy.getSequence() > sell.getSequence(),
-                        OrderType.LIMIT, stock));
+                        OrderType.LIMIT, price, stock));
             }
             publication = enqueueCommittedTradesLocked(trades);
         } finally {
@@ -321,7 +321,7 @@ public class OrderBook implements AutoCloseable {
                 }
                 Order marketBuy = Order.createMarketBuyOrder(fill, trader);
                 trades.add(commitFillLocked(marketBuy, sell, sell.getPrice(), fill,
-                        false, true, true, OrderType.MARKET, null));
+                        false, true, true, OrderType.MARKET, reference, null));
                 filled += fill;
                 totalCents = Math.addExact(totalCents, Math.multiplyExact(priceCents, fill));
             }
@@ -369,7 +369,7 @@ public class OrderBook implements AutoCloseable {
                 }
                 Order marketSell = Order.createMarketSellOrder(fill, trader);
                 trades.add(commitFillLocked(buy, marketSell, buy.getPrice(), fill,
-                        true, false, false, OrderType.MARKET, null));
+                        true, false, false, OrderType.MARKET, reference, null));
                 filled += fill;
                 totalCents = Math.addExact(totalCents,
                         Math.multiplyExact(toCents(buy.getPrice()), fill));
@@ -585,23 +585,23 @@ public class OrderBook implements AutoCloseable {
 
     private CommittedTrade commitFillLocked(Order buy, Order sell, double executionPrice,
             int quantity, boolean buyerUsesReservation, boolean sellerUsesReservation,
-            boolean buyerInitiated, OrderType type, Stock stock) {
+            boolean buyerInitiated, OrderType type, double referencePrice, Stock stock) {
         double value = executionPrice * quantity;
         UserAccount.settleTrade(buy.getTraderAccount(), sell.getTraderAccount(),
                 buyerUsesReservation ? buy.getPrice() * quantity : 0,
                 value, quantity, buyerUsesReservation, sellerUsesReservation);
 
         return applyBookFillLocked(buy, sell, executionPrice, quantity,
-                buyerInitiated, type, stock);
+                buyerInitiated, type, referencePrice, stock);
     }
 
     private CommittedTrade applyBookFillLocked(Order buy, Order sell, double executionPrice,
-            int quantity, boolean buyerInitiated, OrderType type, Stock stock) {
+            int quantity, boolean buyerInitiated, OrderType type, double referencePrice, Stock stock) {
         if (ordersById.containsKey(buy.getId())) reduceOrderLocked(buy, quantity);
         if (ordersById.containsKey(sell.getId())) reduceOrderLocked(sell, quantity);
         if (stock == null) updateStockPriceLocked(executionPrice);
         else stock.setPrice(executionPrice);
-        return new CommittedTrade(buy, sell, executionPrice, quantity, buyerInitiated, type);
+        return new CommittedTrade(buy, sell, executionPrice, quantity, buyerInitiated, type, referencePrice);
     }
 
     private static void releaseImmediateReservation(UserAccount account, OrderSide side,
@@ -766,8 +766,26 @@ public class OrderBook implements AutoCloseable {
     private void recordTransaction(CommittedTrade trade, String id) {
         if (model == null) return;
         try {
-            Transaction transaction = new Transaction(id, trade.buy(), trade.sell(),
-                    trade.price(), trade.volume(), clock.millis(), clock);
+            Transaction transaction;
+            if (trade.type() == OrderType.MARKET) {
+                String orderType = trade.buyerInitiated() ? "MARKET_BUY" : "MARKET_SELL";
+                String initiator = trade.buyerInitiated()
+                        ? trade.buy().getTrader().getTraderType()
+                        : trade.sell().getTrader().getTraderType();
+                String counterparty = trade.buyerInitiated()
+                        ? trade.sell().getTrader().getTraderType()
+                        : trade.buy().getTrader().getTraderType();
+                double estimatedPrice = Double.isFinite(trade.referencePrice()) && trade.referencePrice() > 0
+                        ? trade.referencePrice()
+                        : trade.price();
+                transaction = new Transaction(id, initiator, orderType,
+                        trade.volume(), estimatedPrice, estimatedPrice, clock);
+                transaction.addFillRecord(trade.price(), trade.volume(), counterparty, 1);
+                transaction.completeMarketOrderTransaction(trade.price(), 1, null);
+            } else {
+                transaction = new Transaction(id, trade.buy(), trade.sell(),
+                        trade.price(), trade.volume(), clock.millis(), clock);
+            }
             transaction.setMatchingMode(matchingMode.toString());
             transaction.setBuyerInitiated(trade.buyerInitiated());
             model.addTransaction(transaction);
@@ -888,7 +906,7 @@ public class OrderBook implements AutoCloseable {
     }
 
     private record CommittedTrade(Order buy, Order sell, double price, int volume,
-            boolean buyerInitiated, OrderType type) { }
+            boolean buyerInitiated, OrderType type, double referencePrice) { }
     private record PlannedCommit(Order buy, Order sell, double price, int volume,
             boolean buyerInitiated, OrderType type) { }
 }

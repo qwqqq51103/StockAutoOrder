@@ -842,7 +842,7 @@ public class StockMarketModel implements AutoCloseable {
                 technicalCalculator.updatePriceData(price, high, low);
 
                 try { macdResult = technicalCalculator.calculateMACD(); }
-                catch (Exception ex) { logger.warn("MACD calculation failed: " + ex.getMessage(), "MARKET_ANALYSIS"); }
+                catch (RuntimeException ex) { logger.warn("MACD calculation failed: " + ex.getClass().getSimpleName() + ": " + ex.getMessage(), "MARKET_ANALYSIS"); }
                 try { bollingerResult = technicalCalculator.calculateBollingerBands(); }
                 catch (Exception ex) { logger.warn("Bollinger calculation failed: " + ex.getMessage(), "MARKET_ANALYSIS"); }
                 try { kdjResult = technicalCalculator.calculateKDJ(); }
@@ -1115,9 +1115,9 @@ public class StockMarketModel implements AutoCloseable {
      */
     public void validateMarketInventory() {
         int calculatedInventory = calculateMarketInventory();
-        int initialInventory = Math.max(0, marketMakerCount) * Math.max(0, marketMakerInitialStocks);
+        int initialInventory = calculateExpectedInitialInventory();
         if (calculatedInventory != initialInventory) {
-            String msg = "初始化市場庫存檢查: 設定值(做市商合計)=" + initialInventory
+            String msg = "市場庫存檢查: 設定值(全市場初始總股數)=" + initialInventory
                     + "，做市商合計持股=" + getMarketMakersTotalStocks()
                     + "，總計算庫存=" + calculatedInventory;
             logger.error(msg, "MODEL_INIT");
@@ -1125,6 +1125,14 @@ public class StockMarketModel implements AutoCloseable {
         } else {
             LogicAudit.info("INVENTORY_CHECK", "ok total=" + calculatedInventory);
         }
+    }
+
+    private int calculateExpectedInitialInventory() {
+        int marketMakerStocks = Math.multiplyExact(
+                Math.max(0, marketMakerCount), Math.max(0, marketMakerInitialStocks));
+        int noiseStocks = Math.multiplyExact(
+                Math.max(0, noiseTraderCount), Math.max(0, noiseTraderInitialStocks));
+        return Math.addExact(marketMakerStocks, noiseStocks);
     }
 
     /**

@@ -920,18 +920,23 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
     @Override
     public void onMACDUpdated(double macdLine, double signalLine, double histogram) {
-        // ModelListener 介面要求實作，但指標分頁已從視圖移除，此處無需更新 UI。
-        // 如需重新加入指標視圖，在此呼叫對應的 mainView.updateMACDChart(...)。
+        if (mainView != null) {
+            mainView.updateMACDIndicator(model.getTimeStep(), macdLine, signalLine, histogram);
+        }
     }
 
     @Override
     public void onBollingerBandsUpdated(double upperBand, double middleBand, double lowerBand) {
-        // 同上：保留空實作以滿足介面要求。
+        if (mainView != null) {
+            mainView.updateBollingerBandsIndicator(model.getTimeStep(), upperBand, middleBand, lowerBand);
+        }
     }
 
     @Override
     public void onKDJUpdated(double kValue, double dValue, double jValue) {
-        // 同上：保留空實作以滿足介面要求。
+        if (mainView != null) {
+            mainView.updateKDJIndicator(model.getTimeStep(), kValue, dValue, jValue);
+        }
     }
 
     @Override

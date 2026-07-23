@@ -1049,13 +1049,15 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
             // 市價單門檻化：僅在強流時放行，否則改用限價靠檔
             boolean usedMarket = false;
+            int executedVolume = volume;
             try {
                 double tps = model != null ? model.getRecentTPS(40) : 0.0;
                 double imb = model != null ? model.getRecentTickImbalance(40) : 0.0;
                 boolean strongFlow = (tps >= 2.5) && (imb > 0.20);
                 if (strongFlow) {
-                    executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+                    var result = executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
                             volume, "main force market buy"));
+                    executedVolume = result.execution() != null ? result.execution().filledVolume() : 0;
                     usedMarket = true;
                 } else {
                     double px = stock.getPrice() * 1.001; // 小幅抬價
@@ -1066,15 +1068,23 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             volume, px, "main force limit buy"));
                 }
             } catch (Exception ex) {
-                executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+                var result = executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
                         volume, "main force market buy"));
+                executedVolume = result.execution() != null ? result.execution().filledVolume() : 0;
                 usedMarket = true;
             }
 
-            logger.info(String.format(
-                    usedMarket ? "拉抬操作成功：市價買入 %d 股，預計成本上限 %.2f" : "拉抬操作成功：限價靠檔買入 %d 股，掛價參考 %.2f",
-                    volume, price * volume
-            ), "MAIN_FORCE_LIFT");
+            if (usedMarket) {
+                logger.info(String.format(
+                        "拉抬操作完成：市價買入 %d/%d 股，預計成本上限 %.2f",
+                        executedVolume, volume, price * volume
+                ), "MAIN_FORCE_LIFT");
+            } else {
+                logger.info(String.format(
+                        "拉抬操作成功：限價靠檔買入 %d 股，掛價參考 %.2f",
+                        volume, price
+                ), "MAIN_FORCE_LIFT");
+            }
 
             // 因子日誌（主力）
             try {
@@ -1091,7 +1101,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                         effTh, posScale, macdHist, kVal, wall.buyWall, wall.sellWall);
         } catch (Exception ignore) { logOptionalFailure(ignore); }
 
-            return volume;
+            return usedMarket ? executedVolume : volume;
         } catch (Exception e) {
             logger.error(String.format(
                     "拉抬操作異常：拉抬量=%d, 錯誤=%s",
@@ -1122,13 +1132,15 @@ public class MainForceStrategyWithOrderBook implements Trader {
 
             // 市價單門檻化：僅在強流時放行，否則改用限價靠檔
             boolean usedMarket = false;
+            int executedVolume = volume;
             try {
                 double tps = model != null ? model.getRecentTPS(40) : 0.0;
                 double imb = model != null ? model.getRecentTickImbalance(40) : 0.0;
                 boolean strongFlow = (tps >= 2.5) && (imb < -0.20);
                 if (strongFlow) {
-                    executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+                    var result = executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
                             volume, "main force market sell"));
+                    executedVolume = result.execution() != null ? result.execution().filledVolume() : 0;
                     usedMarket = true;
                 } else {
                     double px = stock.getPrice() * 0.999; // 小幅讓價
@@ -1139,15 +1151,23 @@ public class MainForceStrategyWithOrderBook implements Trader {
                             volume, px, "main force limit sell"));
                 }
             } catch (Exception ex) {
-                executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+                var result = executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
                         volume, "main force market sell"));
+                executedVolume = result.execution() != null ? result.execution().filledVolume() : 0;
                 usedMarket = true;
             }
 
-            logger.info(String.format(
-                    usedMarket ? "市價賣出成功：預計賣出 %d 股" : "限價靠檔賣出成功：預計賣出 %d 股",
-                    volume
-            ), "MAIN_FORCE_MARKET_SELL");
+            if (usedMarket) {
+                logger.info(String.format(
+                        "市價賣出完成：實際賣出 %d/%d 股",
+                        executedVolume, volume
+                ), "MAIN_FORCE_MARKET_SELL");
+            } else {
+                logger.info(String.format(
+                        "限價靠檔賣出成功：預計賣出 %d 股",
+                        volume
+                ), "MAIN_FORCE_MARKET_SELL");
+            }
 
             // 因子日誌（主力）
             try {
@@ -1164,7 +1184,7 @@ public class MainForceStrategyWithOrderBook implements Trader {
                         effTh, posScale, macdHist, kVal, wall.buyWall, wall.sellWall);
         } catch (Exception ignore) { logOptionalFailure(ignore); }
 
-            return volume;
+            return usedMarket ? executedVolume : volume;
         } catch (Exception e) {
             logger.error(String.format(
                     "市價賣出異常：賣出量=%d, 錯誤=%s",

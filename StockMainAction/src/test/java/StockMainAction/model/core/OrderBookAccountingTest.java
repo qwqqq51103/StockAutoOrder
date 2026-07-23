@@ -100,6 +100,52 @@ public class OrderBookAccountingTest {
     }
 
     @Test
+    public void marketBuyStopsAtSlippageLimitAndReturnsActualFill() {
+        OrderBook book = new OrderBook(null);
+        book.setMaxMarketSlippageRatio(0.05);
+        TestTrader buyer = new TestTrader("buyer", 1_000, 0);
+        TestTrader nearSeller = new TestTrader("near-seller", 0, 1);
+        TestTrader farSeller = new TestTrader("far-seller", 0, 2);
+        Totals before = totals(buyer, nearSeller, farSeller);
+
+        book.submitSellOrder(Order.createLimitSellOrder(100, 1, nearSeller), 100);
+        book.submitSellOrder(Order.createLimitSellOrder(120, 2, farSeller), 100);
+
+        ExecutionResult result = book.marketBuy(buyer, 3);
+
+        assertTrue(result.isPartiallyFilled());
+        assertEquals(1, result.filledVolume());
+        assertEquals("slippage limit reached", result.failureReason());
+        assertEquals(1, buyer.getAccount().getStockInventory());
+        assertEquals(2, book.getSellOrders().get(0).getVolume());
+        assertEquals(120.0, book.getSellOrders().get(0).getPrice(), 0.001);
+        assertEquals(before, totals(buyer, nearSeller, farSeller));
+    }
+
+    @Test
+    public void marketSellStopsAtSlippageLimitAndReturnsActualFill() {
+        OrderBook book = new OrderBook(null);
+        book.setMaxMarketSlippageRatio(0.05);
+        TestTrader seller = new TestTrader("seller", 0, 3);
+        TestTrader nearBuyer = new TestTrader("near-buyer", 500, 0);
+        TestTrader farBuyer = new TestTrader("far-buyer", 500, 0);
+        Totals before = totals(seller, nearBuyer, farBuyer);
+
+        book.submitBuyOrder(Order.createLimitBuyOrder(100, 1, nearBuyer), 100);
+        book.submitBuyOrder(Order.createLimitBuyOrder(80, 2, farBuyer), 100);
+
+        ExecutionResult result = book.marketSell(seller, 3);
+
+        assertTrue(result.isPartiallyFilled());
+        assertEquals(1, result.filledVolume());
+        assertEquals("slippage limit reached", result.failureReason());
+        assertEquals(2, seller.getAccount().getStockInventory());
+        assertEquals(2, book.getBuyOrders().get(0).getVolume());
+        assertEquals(80.0, book.getBuyOrders().get(0).getPrice(), 0.001);
+        assertEquals(before, totals(seller, nearBuyer, farBuyer));
+    }
+
+    @Test
     public void insufficientFokChangesNothing() {
         OrderBook book = new OrderBook(null);
         TestTrader buyer = new TestTrader("buyer", 2_000, 0);

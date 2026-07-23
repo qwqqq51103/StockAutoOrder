@@ -1183,9 +1183,9 @@ public class RetailInvestorAI implements Trader {
         } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         // 使用新的市價買單API
-        executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
+        var result = executeIntent(orderBook, OrderIntent.market(OrderSide.BUY,
                 buyAmount, "retail market buy"));
-        return buyAmount;
+        return result.execution() != null ? result.execution().filledVolume() : 0;
     }
 
     /**
@@ -1227,9 +1227,9 @@ public class RetailInvestorAI implements Trader {
         } catch (Exception ignore) { logOptionalFailure(ignore); }
 
         // 使用新的市價賣單API
-        executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
+        var result = executeIntent(orderBook, OrderIntent.market(OrderSide.SELL,
                 sellAmount, "retail market sell"));
-        return sellAmount;
+        return result.execution() != null ? result.execution().filledVolume() : 0;
     }
 
     /**
