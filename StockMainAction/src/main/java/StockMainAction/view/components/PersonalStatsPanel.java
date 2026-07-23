@@ -350,8 +350,11 @@ public class PersonalStatsPanel extends JPanel implements AutoCloseable {
         details.append(String.format("平均成本價: %.2f\n", stats.getAvgCostPrice()));
         details.append(String.format("獲利交易: %d筆\n", stats.getWinningTrades()));
         details.append(String.format("虧損交易: %d筆\n", stats.getLosingTrades()));
+        details.append(String.format("盈虧比: %.2f\n", stats.getPayoffRatio()));
+        details.append(String.format("平均持倉: %.1f 分鐘\n", stats.getAverageHoldingMinutes()));
         details.append(String.format("單筆最大獲利: %.2f\n", stats.getMaxSingleProfit()));
         details.append(String.format("單筆最大虧損: %.2f\n", stats.getMaxSingleLoss()));
+        details.append("風險提示: ").append(stats.getTradeIntensityWarning()).append("\n");
 
         detailsArea.setText(details.toString());
     }

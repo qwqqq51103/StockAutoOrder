@@ -10,4 +10,11 @@ public final class MainWindowShell extends JPanel {
         super(new BorderLayout());
         add(content, BorderLayout.CENTER);
     }
+
+    public void setContent(JComponent content) {
+        removeAll();
+        add(content, BorderLayout.CENTER);
+        revalidate();
+        repaint();
+    }
 }

@@ -2,10 +2,12 @@ package StockMainAction;
 
 import StockMainAction.controller.StockMarketController;
 import StockMainAction.model.StockMarketModel;
+import StockMainAction.model.game.GameSettings;
 import StockMainAction.util.logging.LogViewerWindow;
 import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.view.ControlView;
 import StockMainAction.view.MainView;
+import java.time.Clock;
 import javax.swing.*;
 
 /**
@@ -37,8 +39,9 @@ public class StockMarketSimulation {
         // 使用Swing的事件分派線程初始化UI
         SwingUtilities.invokeLater(() -> {
             try {
+                GameSettings settings = GameSettings.load(args);
                 // 1. 建立模型 (Model) - 包含所有業務邏輯和數據
-                StockMarketModel model = new StockMarketModel();
+                StockMarketModel model = new StockMarketModel(settings.getSeed(), Clock.systemUTC());
                 logger.info("市場模型初始化完成", "APPLICATION_START");
 
                 // 2. 建立視圖 (View) - 用戶界面組件
@@ -47,12 +50,12 @@ public class StockMarketSimulation {
                 logger.info("界面視圖初始化完成", "APPLICATION_START");
 
                 // 3. 建立控制器 (Controller) - 連接模型和視圖
-                StockMarketController controller = new StockMarketController(model, mainView, controlView);
+                StockMarketController controller = new StockMarketController(model, mainView, controlView, settings);
                 logger.info("控制器初始化完成", "APPLICATION_START");
 
                 // 4. 顯示視圖
+                mainView.dockControlView(controlView);
                 mainView.setVisible(true);
-                controlView.setVisible(true);
 
                 // 5. 開啟日誌查看器
                 //關閉原因 已在StockMarketController構造函數啟用

@@ -8,8 +8,10 @@ import StockMainAction.util.logging.MarketLogger;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.Clock;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Queue;
 
 /**
  * 個人交易統計數據模型
@@ -217,7 +219,7 @@ public class PersonalStatistics {
     /**
      * 添加交易記錄（修正版）
      */
-    public void addTradeRecord(String type, int quantity, double price) {
+    public synchronized void addTradeRecord(String type, int quantity, double price) {
         double totalAmount = quantity * price;
         double profitLoss = 0.0;
 
@@ -273,7 +275,7 @@ public class PersonalStatistics {
     /**
      * 更新當前股價並重新計算投資組合價值
      */
-    public void updateCurrentPrice(double currentPrice) {
+    public synchronized void updateCurrentPrice(double currentPrice) {
         this.currentStockPrice = currentPrice;
         updatePortfolioValue();
     }
@@ -322,7 +324,7 @@ public class PersonalStatistics {
     /**
      * 獲取指定時間段的交易記錄
      */
-    public List<TradeRecord> getTradesByPeriod(StatsPeriod period) {
+    public synchronized List<TradeRecord> getTradesByPeriod(StatsPeriod period) {
         LocalDateTime cutoff = LocalDateTime.now(clock);
 
         switch (period) {
@@ -348,7 +350,7 @@ public class PersonalStatistics {
     /**
      * 重新計算今日損益（依各記錄的實際時間戳過濾，可在跨日後呼叫）
      */
-    public void recalculateTodayProfitLoss() {
+    public synchronized void recalculateTodayProfitLoss() {
         LocalDate today = LocalDate.now(clock);
         todayProfitLoss = tradeHistory.stream()
                 .filter(r -> "賣出".equals(r.getType()) && r.getTimestamp().toLocalDate().equals(today))
@@ -359,7 +361,7 @@ public class PersonalStatistics {
     /**
      * 重置統計數據
      */
-    public void reset() {
+    public synchronized void reset() {
         totalRealizedProfitLoss = 0.0;
         todayProfitLoss = 0.0;
         maxDrawdown = 0.0;
@@ -384,7 +386,7 @@ public class PersonalStatistics {
     /**
      * 獲取未實現損益（修正版）
      */
-    public double getUnrealizedProfitLoss() {
+    public synchronized double getUnrealizedProfitLoss() {
         try {
             if (currentStockPrice > 0) {
                 int currentHoldings = getCurrentHoldingsSafely();
@@ -406,7 +408,7 @@ public class PersonalStatistics {
     /**
      * 獲取總損益（已實現 + 未實現）（修正版）
      */
-    public double getTotalProfitLoss() {
+    public synchronized double getTotalProfitLoss() {
         try {
             double unrealizedProfitLoss = getUnrealizedProfitLoss();
             return totalRealizedProfitLoss + unrealizedProfitLoss;
@@ -419,7 +421,7 @@ public class PersonalStatistics {
     /**
      * 獲取當前投資組合價值（修正版）
      */
-    public double getCurrentPortfolioValue() {
+    public synchronized double getCurrentPortfolioValue() {
         try {
             double currentCash = getCurrentCashSafely();
             int currentHoldings = getCurrentHoldingsSafely();
@@ -433,7 +435,7 @@ public class PersonalStatistics {
     /**
      * 獲取總回報率（修正版）
      */
-    public double getReturnRate() {
+    public synchronized double getReturnRate() {
         try {
             if (initialCash > 0) {
                 double currentValue = getCurrentPortfolioValue();
@@ -448,74 +450,145 @@ public class PersonalStatistics {
     /**
      * 獲取當前現金（修正版）
      */
-    public double getCurrentCash() {
+    public synchronized double getCurrentCash() {
         return getCurrentCashSafely();
     }
 
     /**
      * 獲取當前持股（修正版）
      */
-    public int getCurrentHoldings() {
+    public synchronized int getCurrentHoldings() {
         return getCurrentHoldingsSafely();
     }
 
     /**
      * 獲取平均成本價（修正版）
      */
-    public double getAvgCostPrice() {
+    public synchronized double getAvgCostPrice() {
         return getAverageCostPriceSafely();
     }
 
     // === 其他Getter方法保持不變 ===
-    public double getTodayProfitLoss() {
+    public synchronized double getTodayProfitLoss() {
         return todayProfitLoss;
     }
 
-    public double getTotalInvested() {
+    public synchronized double getTotalInvested() {
         return initialCash;
     }
 
-    public double getMaxDrawdown() {
+    public synchronized double getMaxDrawdown() {
         return maxDrawdown * 100;
     } // 轉換為百分比
 
-    public double getWinRate() {
+    public synchronized double getWinRate() {
         return winRate;
     }
 
-    public int getTotalTrades() {
+    public synchronized int getTotalTrades() {
         return totalTrades;
     }
 
-    public int getWinningTrades() {
+    public synchronized int getWinningTrades() {
         return winningTrades;
     }
 
-    public int getLosingTrades() {
+    public synchronized int getLosingTrades() {
         return losingTrades;
     }
 
-    public double getAvgProfitPerTrade() {
+    public synchronized double getAvgProfitPerTrade() {
         return avgProfitPerTrade;
     }
 
-    public double getMaxSingleProfit() {
+    public synchronized double getMaxSingleProfit() {
         return maxSingleProfit;
     }
 
-    public double getMaxSingleLoss() {
+    public synchronized double getMaxSingleLoss() {
         return maxSingleLoss;
     }
 
-    public double getInitialCash() {
+    public synchronized double getPayoffRatio() {
+        double winSum = 0.0;
+        double lossSum = 0.0;
+        int wins = 0;
+        int losses = 0;
+        for (TradeRecord record : tradeHistory) {
+            if (record.getProfitLoss() > 0) {
+                winSum += record.getProfitLoss();
+                wins++;
+            } else if (record.getProfitLoss() < 0) {
+                lossSum += Math.abs(record.getProfitLoss());
+                losses++;
+            }
+        }
+        double avgWin = wins > 0 ? winSum / wins : 0.0;
+        double avgLoss = losses > 0 ? lossSum / losses : 0.0;
+        if (avgLoss <= 0.0) {
+            return avgWin > 0.0 ? 999.0 : 0.0;
+        }
+        return avgWin / avgLoss;
+    }
+
+    public synchronized double getAverageHoldingMinutes() {
+        Queue<OpenLot> openLots = new ArrayDeque<>();
+        long matchedMinutes = 0;
+        int matchedLots = 0;
+        for (TradeRecord record : tradeHistory) {
+            if ("買入".equals(record.getType())) {
+                openLots.add(new OpenLot(record.getQuantity(), record.getTimestamp()));
+            } else if ("賣出".equals(record.getType())) {
+                int remaining = record.getQuantity();
+                while (remaining > 0 && !openLots.isEmpty()) {
+                    OpenLot lot = openLots.peek();
+                    int matched = Math.min(remaining, lot.quantity);
+                    long minutes = java.time.Duration.between(lot.timestamp, record.getTimestamp()).toMinutes();
+                    matchedMinutes += Math.max(0, minutes) * matched;
+                    matchedLots += matched;
+                    lot.quantity -= matched;
+                    remaining -= matched;
+                    if (lot.quantity <= 0) {
+                        openLots.poll();
+                    }
+                }
+            }
+        }
+        return matchedLots == 0 ? 0.0 : matchedMinutes / (double) matchedLots;
+    }
+
+    public synchronized String getTradeIntensityWarning() {
+        if (totalTrades >= 30 && getReturnRate() <= 0.0) {
+            return "交易頻率偏高且報酬未轉正，建議降低追價次數。";
+        }
+        if (maxDrawdown >= 0.10) {
+            return "最大回撤已超過 10%，建議縮小單筆部位。";
+        }
+        if (getCurrentCashSafely() < getCurrentPortfolioValue() * 0.10) {
+            return "現金緩衝偏低，遇到跳空時調整空間有限。";
+        }
+        return "目前風險狀態正常。";
+    }
+
+    private static final class OpenLot {
+        private int quantity;
+        private final LocalDateTime timestamp;
+
+        private OpenLot(int quantity, LocalDateTime timestamp) {
+            this.quantity = quantity;
+            this.timestamp = timestamp;
+        }
+    }
+
+    public synchronized double getInitialCash() {
         return initialCash;
     }
 
-    public List<TradeRecord> getTradeHistory() {
+    public synchronized List<TradeRecord> getTradeHistory() {
         return new ArrayList<>(tradeHistory);
     }
 
-    public List<Double> getDailyPortfolioValues() {
+    public synchronized List<Double> getDailyPortfolioValues() {
         return new ArrayList<>(dailyPortfolioValues);
     }
 }

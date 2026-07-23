@@ -285,6 +285,7 @@ public class StockMarketModel implements AutoCloseable {
     private ScheduledFuture<?> simulationFuture;
     private final Object simulationLifecycleLock = new Object();
     private volatile boolean isRunning = false;
+    private volatile int simulationPeriodMillis = 1000;
     private final Random random;
     private final Clock clock;
     private volatile boolean closed;
@@ -298,8 +299,8 @@ public class StockMarketModel implements AutoCloseable {
     private double marketBehaviorGash = -9999999.0;
 
     // === 玩法參數（可自行調整）===
-    private int marketMakerCount = 10;     // 建議 2~5
-    private int noiseTraderCount = 10;     // 建議 3~10
+    private int marketMakerCount = 5;      // 建議 2~5
+    private int noiseTraderCount = 8;      // 建議 3~10
     private double marketMakerInitialCash = 6500000; // 每個做市商初始現金
     private int marketMakerInitialStocks = 50000;     // 每個做市商初始持股
     private double noiseTraderInitialCash = 3000000;   // 每個噪音交易者初始現金
@@ -728,7 +729,7 @@ public class StockMarketModel implements AutoCloseable {
         logger.info("啟動市場價格波動模擬", "MARKET_SIMULATION");
 
         int initialDelay = 0;
-        int period = 1000; // 執行間隔（單位：毫秒）
+        int period = simulationPeriodMillis; // 執行間隔（單位：毫秒）
 
             isRunning = true;
             executorService = Executors.newScheduledThreadPool(1);
@@ -1006,6 +1007,26 @@ public class StockMarketModel implements AutoCloseable {
         } catch (Exception e) {
             return 0.0;
         }
+    }
+
+    public void setSimulationPeriodMillis(int periodMillis) {
+        int bounded = Math.max(50, Math.min(10_000, periodMillis));
+        boolean restart;
+        synchronized (simulationLifecycleLock) {
+            if (simulationPeriodMillis == bounded) {
+                return;
+            }
+            simulationPeriodMillis = bounded;
+            restart = isRunning;
+        }
+        if (restart) {
+            stopAutoPriceFluctuation();
+            startAutoPriceFluctuation();
+        }
+    }
+
+    public int getSimulationPeriodMillis() {
+        return simulationPeriodMillis;
     }
 
     /**

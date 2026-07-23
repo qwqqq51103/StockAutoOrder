@@ -41,6 +41,8 @@ public class MatchingEnginePanel extends JPanel {
         modePanel.add(new JLabel("撮合模式:"));
         matchingModeComboBox = new JComboBox<>(MatchingMode.values());
         applyButton = new JButton("應用");
+        matchingModeComboBox.setEnabled(false);
+        applyButton.setVisible(false);
         modePanel.add(matchingModeComboBox);
         modePanel.add(applyButton);
 

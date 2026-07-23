@@ -6,6 +6,15 @@ import StockMainAction.model.core.MatchingMode;
 import StockMainAction.model.core.OrderBook;
 import StockMainAction.model.core.Order;
 import StockMainAction.model.core.PriceAlert;
+import StockMainAction.model.game.AchievementTracker;
+import StockMainAction.model.game.GameMode;
+import StockMainAction.model.game.GameSettings;
+import StockMainAction.model.game.MarketWatchlist;
+import StockMainAction.model.game.MissionTracker;
+import StockMainAction.model.game.RiskOrder;
+import StockMainAction.model.game.RiskOrderManager;
+import StockMainAction.model.game.ScenarioEventEngine;
+import StockMainAction.model.game.SimulationSpeed;
 import StockMainAction.view.ControlView;
 import StockMainAction.view.components.PriceAlertPanel;
 import StockMainAction.view.components.QuickTradePanel;
@@ -14,6 +23,7 @@ import StockMainAction.view.OrderViewer;
 import java.util.AbstractMap.SimpleEntry;
 import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.view.components.PersonalStatsPanel;
+import StockMainAction.view.components.GameDashboardPanel;
 import StockMainAction.model.core.PersonalStatistics;
 import StockMainAction.model.core.QuickTradeConfig;
 import StockMainAction.model.core.Transaction;
@@ -26,6 +36,7 @@ import StockMainAction.controller.trading.TradeOutcomeStatus;
 import StockMainAction.service.MarketInterventionService;
 import StockMainAction.model.user.UserAccount;
 import StockMainAction.view.TransactionHistoryViewer;
+import StockMainAction.view.components.RiskControlPanel;
 import java.awt.Dimension;
 import java.awt.Font;
 
@@ -56,6 +67,16 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
     private QuickTradeManager quickTradeManager;
     private final PersonalTradeCoordinator tradeCoordinator;
     private final MarketInterventionService interventionService;
+    private final MissionTracker missionTracker;
+    private final AchievementTracker achievementTracker;
+    private final ScenarioEventEngine scenarioEventEngine;
+    private final RiskOrderManager riskOrderManager;
+    private final MarketWatchlist marketWatchlist;
+    private ScenarioEventEngine.Bias currentEventBias = ScenarioEventEngine.Bias.NEUTRAL;
+    private GameSettings gameSettings;
+    private int latestGameScore;
+    private String latestGameRank = "-";
+    private String latestScenarioEventText = "尚無事件";
     private final TradeExecutedListener personalTradeListener = this::recordPersonalTrade;
     private final StockMarketModel.TransactionListener tapeTransactionListener = this::forwardTransactionToTape;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -69,11 +90,26 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
      * 構造函數（修正版）
      */
     public StockMarketController(StockMarketModel model, MainView mainView, ControlView controlView) {
+        this(model, mainView, controlView,
+                new GameSettings(0L, GameMode.BEGINNER, SimulationSpeed.NORMAL));
+    }
+
+    public StockMarketController(StockMarketModel model, MainView mainView, ControlView controlView,
+            GameSettings gameSettings) {
         this.model = model;
         this.mainView = mainView;
         this.controlView = controlView;
+        this.gameSettings = gameSettings == null
+                ? new GameSettings(0L, GameMode.BEGINNER, SimulationSpeed.NORMAL)
+                : gameSettings;
         this.tradeCoordinator = new PersonalTradeCoordinator(model);
         this.interventionService = new MarketInterventionService(model);
+        this.missionTracker = new MissionTracker();
+        this.achievementTracker = new AchievementTracker();
+        this.scenarioEventEngine = new ScenarioEventEngine(this.gameSettings.getSeed());
+        this.riskOrderManager = new RiskOrderManager();
+        this.marketWatchlist = new MarketWatchlist(this.gameSettings.getSeed(),
+                model.getStock() == null ? 10.0 : model.getStock().getPrice());
         this.controlView.setPerformanceModeListener(this.mainView::applyPerfMode);
 
         // 將模型注入主視圖，供工具列事件直接呼叫模型參數
@@ -144,6 +180,8 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
         // 設置價格提醒面板的監聽器
         controlView.getPriceAlertPanel().setListener(this);
+        initializeGameDashboard();
+        initializeRiskControl();
 
         // 主力狀態：套用按鈕監聽器
         if (controlView.getMainForceApplyButton() != null) {
@@ -182,6 +220,264 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         logger.info("控制器初始化完成，包括撮合引擎控制、價格提醒功能和個人統計功能", "CONTROLLER_INIT");
     }
 
+    private void initializeGameDashboard() {
+        GameDashboardPanel panel = controlView.getGameDashboardPanel();
+        if (panel == null) {
+            return;
+        }
+        panel.applySettings(gameSettings);
+        panel.setListener(new GameDashboardPanel.Listener() {
+            @Override
+            public void onModeChanged(GameMode mode) {
+                applyGameMode(mode);
+            }
+
+            @Override
+            public void onSpeedChanged(SimulationSpeed speed) {
+                applySimulationSpeed(speed);
+            }
+
+            @Override
+            public void onSaveSettings() {
+                saveGameSettings();
+            }
+        });
+        applyGameMode(gameSettings.getMode());
+        applySimulationSpeed(gameSettings.getSpeed());
+        updateGameProgress();
+    }
+
+    private void initializeRiskControl() {
+        RiskControlPanel panel = controlView.getRiskControlPanel();
+        if (panel == null) {
+            return;
+        }
+        panel.setListener(new RiskControlPanel.Listener() {
+            @Override
+            public void onAddRiskOrder(int quantity, double stopLossPct, double takeProfitPct,
+                    double trailingPct, boolean oco) {
+                addRiskOrder(quantity, stopLossPct, takeProfitPct, trailingPct, oco);
+            }
+
+            @Override
+            public void onCancelRiskOrders() {
+                riskOrderManager.cancelAll();
+                updateRiskPanel();
+                mainView.appendToInfoArea("已取消全部風控條件單。");
+            }
+        });
+        updateRiskPanel();
+    }
+
+    private void addRiskOrder(int quantity, double stopLossPct, double takeProfitPct,
+            double trailingPct, boolean oco) {
+        try {
+            double price = model.getStock().getPrice();
+            int holdings = model.getUserInvestor().getAccount().getStockInventory();
+            RiskOrder order = riskOrderManager.addBracketOrder(price, holdings, quantity,
+                    stopLossPct, takeProfitPct, trailingPct, oco);
+            updateRiskPanel();
+            mainView.appendToInfoArea("新增風控條件單：" + order.displayText());
+        } catch (Exception ex) {
+            mainView.showErrorMessage("新增風控條件單失敗：" + ex.getMessage(), "錯誤");
+        }
+    }
+
+    private void evaluateRiskOrders(double price) {
+        if (model.getUserInvestor() == null || model.getUserInvestor().getAccount() == null) {
+            return;
+        }
+        int holdings = model.getUserInvestor().getAccount().getStockInventory();
+        List<RiskOrder.Trigger> triggers = riskOrderManager.evaluate(price, holdings);
+        for (RiskOrder.Trigger trigger : triggers) {
+            TradeOutcome result = tradeCoordinator.marketSell(trigger.quantity());
+            if (result.successful()) {
+                mainView.appendToInfoArea(String.format(
+                        "風控觸發：%s %s，市價賣出 %d 股，均價 %.2f。",
+                        trigger.id(), trigger.reason(), result.filledQuantity(), result.averagePrice()));
+            } else {
+                mainView.appendToInfoArea("風控觸發但賣出失敗：" + result.reason());
+            }
+        }
+        if (!triggers.isEmpty()) {
+            updateGameProgress();
+        }
+        updateRiskPanel();
+    }
+
+    private void updateRiskPanel() {
+        RiskControlPanel panel = controlView.getRiskControlPanel();
+        if (panel == null || model.getStock() == null || model.getUserInvestor() == null) {
+            return;
+        }
+        int holdings = model.getUserInvestor().getAccount().getStockInventory();
+        panel.updateMarketState(model.getStock().getPrice(), holdings);
+        panel.updateOrders(riskOrderManager.snapshot());
+    }
+
+    private void applyGameMode(GameMode mode) {
+        if (mode == null) {
+            mode = GameMode.BEGINNER;
+        }
+        gameSettings = gameSettings.withMode(mode);
+        controlView.setSandboxToolsVisible(mode.isSandboxToolsEnabled());
+        mainView.applyPlayerUiMode(mode.getDisplayName(),
+                mode == GameMode.SANDBOX, mode == GameMode.PRO || mode == GameMode.SANDBOX);
+        configureAiDifficulty(mode);
+        syncMainGameHeader();
+        if (controlView.getGameDashboardPanel() != null) {
+            controlView.getGameDashboardPanel().appendEvent("模式切換：" + mode.getDisplayName());
+        }
+    }
+
+    private void syncMainGameHeader() {
+        mainView.updateGameHeader(gameSettings.getMode().getDisplayName(),
+                gameSettings.getSpeed().getDisplayName(),
+                gameSettings.getSeed(),
+                latestGameScore,
+                latestGameRank,
+                latestScenarioEventText);
+    }
+
+    private void configureAiDifficulty(GameMode mode) {
+        switch (mode) {
+            case BEGINNER -> {
+                model.setEventParams(80, 4, 70, "一般");
+                model.setRetailStrategyConfig(new StockMarketModel.RetailStrategyConfig(
+                        StockMarketModel.RetailLogicModel.CONSERVATIVE,
+                        0.02, 0.003, 0.006, 28.0, 72.0, 0.24, 0.025, 5, 15));
+            }
+            case PRO -> {
+                model.setEventParams(55, 3, 62, "新聞");
+                model.setRetailStrategyConfig(new StockMarketModel.RetailStrategyConfig(
+                        StockMarketModel.RetailLogicModel.MIXED,
+                        0.04, 0.008, 0.010, 30.0, 70.0, 0.18, 0.02, 2, 8));
+            }
+            case SANDBOX -> {
+                model.setEventParams(60, 3, 65, "一般");
+                model.setRetailStrategyConfig(StockMarketModel.RetailStrategyConfig.defaults());
+            }
+        }
+    }
+
+    private void applySimulationSpeed(SimulationSpeed speed) {
+        if (speed == null) {
+            speed = SimulationSpeed.NORMAL;
+        }
+        boolean wasRunning = model.isRunning();
+        gameSettings = gameSettings.withSpeed(speed);
+        syncMainGameHeader();
+        if (speed.isPaused()) {
+            model.stopAutoPriceFluctuation();
+            controlView.getStopButton().setText("繼續");
+        } else {
+            model.setSimulationPeriodMillis(speed.getPeriodMillis());
+            if (wasRunning) {
+                model.startAutoPriceFluctuation();
+            }
+            controlView.getStopButton().setText("停止");
+        }
+        if (controlView.getGameDashboardPanel() != null) {
+            controlView.getGameDashboardPanel().appendEvent("速度切換：" + speed.getDisplayName());
+        }
+    }
+
+    private void saveGameSettings() {
+        try {
+            gameSettings.save();
+            mainView.appendToInfoArea("遊戲設定已保存：" + GameSettings.settingsFile());
+        } catch (Exception ex) {
+            mainView.showErrorMessage("保存遊戲設定失敗：" + ex.getMessage(), "錯誤");
+        }
+    }
+
+    private void updateGameProgress() {
+        GameDashboardPanel panel = controlView.getGameDashboardPanel();
+        if (panel == null) {
+            return;
+        }
+        PersonalStatistics stats = personalStatsMgr.map(PersonalStatisticsManager::getStatistics).orElse(null);
+        List<MissionTracker.MissionSnapshot> missions = missionTracker.evaluate(model, stats);
+        List<String> achievements = achievementTracker.evaluate(model, stats);
+        int score = calculateGameScore(stats, missions, achievements);
+        latestGameScore = score;
+        latestGameRank = calculateRank(score);
+        panel.updateProgress(missions, achievements, score, latestGameRank);
+        panel.updateWatchlist(marketWatchlist.snapshot(model.getTimeStep()));
+        syncMainGameHeader();
+    }
+
+    private void maybeTriggerScenarioEvent() {
+        GameDashboardPanel panel = controlView.getGameDashboardPanel();
+        if (panel == null || gameSettings.getMode() == GameMode.SANDBOX) {
+            return;
+        }
+        ScenarioEventEngine.ScenarioEvent event = scenarioEventEngine.nextEvent(model.getTimeStep());
+        if (event != null) {
+            currentEventBias = event.bias();
+            applyScenarioEvent(event);
+            controlView.getGameDashboardPanel().updateWatchlist(
+                    marketWatchlist.update(model.getTimeStep(), currentEventBias));
+            String text = "事件：" + event.displayText();
+            latestScenarioEventText = event.displayText();
+            panel.appendEvent(text);
+            mainView.appendToInfoArea(text);
+            syncMainGameHeader();
+        }
+    }
+
+    private void applyScenarioEvent(ScenarioEventEngine.ScenarioEvent event) {
+        switch (event.bias()) {
+            case BULLISH -> {
+                model.setEventParams(60, 3, 60, "新聞");
+                model.setRetailStrategyConfig(new StockMarketModel.RetailStrategyConfig(
+                        StockMarketModel.RetailLogicModel.TREND_FOLLOW,
+                        0.04, 0.006, 0.008, 32.0, 72.0, 0.18, 0.02, 2, 8));
+            }
+            case BEARISH -> {
+                model.setEventParams(60, 3, 70, "財報");
+                model.setRetailStrategyConfig(new StockMarketModel.RetailStrategyConfig(
+                        StockMarketModel.RetailLogicModel.CONSERVATIVE,
+                        0.02, 0.003, 0.006, 28.0, 68.0, 0.24, 0.025, 5, 15));
+            }
+            case VOLATILE -> {
+                model.setEventParams(45, 2, 68, "新聞");
+                model.setRetailStrategyConfig(new StockMarketModel.RetailStrategyConfig(
+                        StockMarketModel.RetailLogicModel.MIXED,
+                        0.025, 0.009, 0.010, 30.0, 70.0, 0.20, 0.02, 3, 12));
+            }
+            case NEUTRAL -> {
+                model.setEventParams(80, 4, 65, "一般");
+                model.setRetailStrategyConfig(StockMarketModel.RetailStrategyConfig.defaults());
+            }
+        }
+    }
+
+    private int calculateGameScore(PersonalStatistics stats,
+            List<MissionTracker.MissionSnapshot> missions, List<String> achievements) {
+        if (gameSettings.getMode() == GameMode.SANDBOX || stats == null) {
+            return 0;
+        }
+        long completedMissions = missions.stream().filter(MissionTracker.MissionSnapshot::completed).count();
+        double raw = stats.getReturnRate() * 100.0
+                - stats.getMaxDrawdown() * 8.0
+                + completedMissions * 250.0
+                + achievements.size() * 100.0
+                + Math.min(300.0, stats.getTotalTrades() * 12.0);
+        return Math.max(0, (int) Math.round(raw * gameSettings.getMode().getScoreMultiplier()));
+    }
+
+    private String calculateRank(int score) {
+        if (gameSettings.getMode() == GameMode.SANDBOX) {
+            return "沙盒";
+        }
+        if (score >= 1500) return "S";
+        if (score >= 1000) return "A";
+        if (score >= 650) return "B";
+        if (score >= 300) return "C";
+        return "D";
+    }
+
     /**
      * 初始化按鈕動作
      */
@@ -197,6 +493,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                     quickTradePanel.setQuickTradeEnabled(false);
                 }
             } else {
+                if (gameSettings.getSpeed().isPaused()) {
+                    mainView.appendToInfoArea("目前速度設定為暫停，請先在「遊戲進度」切換速度。");
+                    return;
+                }
                 model.startAutoPriceFluctuation();
                 controlView.getStopButton().setText("暫停");
                 mainView.appendToInfoArea("模擬已繼續。");
@@ -541,6 +841,10 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
      * 啟動模擬
      */
     public void startSimulation() {
+        if (gameSettings.getSpeed().isPaused()) {
+            controlView.getStopButton().setText("繼續");
+            return;
+        }
         model.startAutoPriceFluctuation();
     }
 
@@ -564,6 +868,13 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
                     controlView.getPersonalStatsPanel().updateStatistics(mgr.getStatistics()));
             }
         });
+        GameDashboardPanel gamePanel = controlView.getGameDashboardPanel();
+        if (model.getTimeStep() % 5 == 0 && gamePanel != null) {
+            gamePanel.updateWatchlist(marketWatchlist.update(model.getTimeStep(), currentEventBias));
+            updateGameProgress();
+        }
+        evaluateRiskOrders(price);
+        maybeTriggerScenarioEvent();
     }
 
     @Override
@@ -877,12 +1188,15 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
         report.append(String.format("虧損交易: %d筆\n", stats.getLosingTrades()));
         report.append(String.format("勝率: %.1f%%\n", stats.getWinRate()));
         report.append(String.format("平均每筆損益: %.2f\n", stats.getAvgProfitPerTrade()));
+        report.append(String.format("盈虧比: %.2f\n", stats.getPayoffRatio()));
+        report.append(String.format("平均持倉時間: %.1f 分鐘\n", stats.getAverageHoldingMinutes()));
         report.append("\n");
 
         report.append("【風險指標】\n");
         report.append(String.format("最大回撤: %.2f%%\n", stats.getMaxDrawdown()));
         report.append(String.format("單筆最大獲利: %.2f\n", stats.getMaxSingleProfit()));
         report.append(String.format("單筆最大虧損: %.2f\n", stats.getMaxSingleLoss()));
+        report.append(String.format("風險提示: %s\n", stats.getTradeIntensityWarning()));
         report.append("\n");
 
         report.append("【最近交易紀錄】\n");
@@ -936,6 +1250,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
             }
             SwingUtilities.invokeLater(() ->
                     controlView.getPersonalStatsPanel().updateStatistics(manager.getStatistics()));
+            updateGameProgress();
         });
     }
 
@@ -1009,7 +1324,7 @@ public class StockMarketController implements StockMarketModel.ModelListener, Pr
 
     @Override
     public void onConfigureQuickTrade() {
-        JFrame parent = (controlView != null) ? controlView : mainView;
+        JFrame parent = (mainView != null) ? mainView : controlView;
         StockMainAction.view.components.QuickTradeConfigDialog dialog =
                 new StockMainAction.view.components.QuickTradeConfigDialog(parent, quickTradeManager);
         dialog.setVisible(true);

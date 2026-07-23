@@ -2,9 +2,11 @@
 package StockMainAction.view;
 
 import StockMainAction.MatchingEnginePanel;
+import StockMainAction.view.components.GameDashboardPanel;
 import StockMainAction.view.components.PriceAlertPanel;
 import StockMainAction.view.components.PersonalStatsPanel;
 import StockMainAction.view.components.QuickTradePanel;
+import StockMainAction.view.components.RiskControlPanel;
 import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.view.swing.WindowSizing;
 import javax.swing.*;
@@ -32,6 +34,11 @@ public class ControlView extends JFrame {
     private PriceAlertPanel priceAlertPanel;
     private PersonalStatsPanel personalStatsPanel;
     private QuickTradePanel quickTradePanel;
+    private RiskControlPanel riskControlPanel;
+    private GameDashboardPanel gameDashboardPanel;
+    private JScrollPane matchingEngineScrollPane;
+    private JPanel mainForceStatusPanel;
+    private JSpinner mainForceReplaceSpinner;
 
     // 主力狀態面板元件
     private JLabel mainForcePhaseLabel;
@@ -42,6 +49,7 @@ public class ControlView extends JFrame {
 
     // 分頁面板
     private JTabbedPane tabbedPane;
+    private JPanel rootPanel;
     private Consumer<String> performanceModeListener = mode -> { };
 
     public ControlView() {
@@ -56,6 +64,7 @@ public class ControlView extends JFrame {
 
         // 創建主面板
         JPanel mainPanel = new JPanel(new BorderLayout());
+        rootPanel = mainPanel;
 
         // 創建頂部面板（顯示用戶資訊和系統控制）
         JPanel topPanel = new JPanel(new BorderLayout());
@@ -64,12 +73,15 @@ public class ControlView extends JFrame {
         mainPanel.add(topPanel, BorderLayout.NORTH);
 
         // 創建分頁面板
-        tabbedPane = new JTabbedPane(JTabbedPane.TOP);
+        tabbedPane = new JTabbedPane(JTabbedPane.LEFT);
+        tabbedPane.setTabLayoutPolicy(JTabbedPane.SCROLL_TAB_LAYOUT);
         tabbedPane.setFont(new Font("Microsoft JhengHei", Font.PLAIN, 14));
 
         // 添加各個分頁
+        addGameDashboardTab();
         addTradingTab();        // 交易操作分頁
         addQuickTradeTab();     // 快捷交易分頁
+        addRiskControlTab();    // 風控條件單分頁
         addPriceAlertTab();     // 價格提醒分頁
         addPersonalStatsTab();  // 個人統計分頁
         addMatchingEngineTab(); // 撮合引擎分頁
@@ -77,9 +89,17 @@ public class ControlView extends JFrame {
 
         // 設置分頁圖標（可選）
         setTabIcons();
+        setSandboxToolsVisible(false);
 
         mainPanel.add(tabbedPane, BorderLayout.CENTER);
         add(mainPanel);
+    }
+
+    public JPanel getDockPanel() {
+        if (rootPanel != null && rootPanel.getParent() != null) {
+            rootPanel.getParent().remove(rootPanel);
+        }
+        return rootPanel;
     }
 
     @Override
@@ -160,6 +180,14 @@ public class ControlView extends JFrame {
         performanceModeListener = listener == null ? mode -> { } : listener;
     }
 
+    private void addGameDashboardTab() {
+        gameDashboardPanel = new GameDashboardPanel();
+        JScrollPane scrollPane = new JScrollPane(gameDashboardPanel);
+        scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        tabbedPane.addTab("遊戲進度", scrollPane);
+    }
+
     /**
      * 添加交易操作分頁
      */
@@ -236,6 +264,14 @@ public class ControlView extends JFrame {
         tabbedPane.addTab("快捷交易", scrollPane);
     }
 
+    private void addRiskControlTab() {
+        riskControlPanel = new RiskControlPanel();
+        JScrollPane scrollPane = new JScrollPane(riskControlPanel);
+        scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
+        scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        tabbedPane.addTab("風控", scrollPane);
+    }
+
     /**
      * 添加價格提醒分頁
      */
@@ -284,6 +320,7 @@ public class ControlView extends JFrame {
 
         // 包裝在滾動面板中
         JScrollPane scrollPane = new JScrollPane(matchingEnginePanel);
+        matchingEngineScrollPane = scrollPane;
         scrollPane.setVerticalScrollBarPolicy(JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED);
         scrollPane.setHorizontalScrollBarPolicy(JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
 
@@ -295,6 +332,7 @@ public class ControlView extends JFrame {
      */
     private void addMainForceStatusTab() {
         JPanel panel = new JPanel();
+        mainForceStatusPanel = panel;
         panel.setLayout(new BorderLayout(10, 10));
         panel.setBorder(BorderFactory.createEmptyBorder(20, 20, 20, 20));
 
@@ -333,6 +371,7 @@ public class ControlView extends JFrame {
         ctrlPanel.add(new JLabel("撤換間隔(ticks):"), gbc);
         gbc.gridx = 1;
         JSpinner replaceSpinner = new JSpinner(new SpinnerNumberModel(10, 1, 200, 1));
+        mainForceReplaceSpinner = replaceSpinner;
         ctrlPanel.add(replaceSpinner, gbc);
 
         gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
@@ -356,13 +395,21 @@ public class ControlView extends JFrame {
         // ImageIcon tradeIcon = new ImageIcon("icons/trade.png");
         // tabbedPane.setIconAt(0, tradeIcon);
 
-        // 設置分頁提示文字
-        tabbedPane.setToolTipTextAt(0, "進行限價和市價交易");
-        tabbedPane.setToolTipTextAt(1, "使用快捷鍵快速交易");
-        tabbedPane.setToolTipTextAt(2, "設置價格提醒");
-        tabbedPane.setToolTipTextAt(3, "查看個人交易統計");
-        tabbedPane.setToolTipTextAt(4, "調整撮合引擎參數");
-        tabbedPane.setToolTipTextAt(5, "查看並手動干預主力策略"); // [FIX] 補齊第6個分頁的提示
+        setTabToolTip("遊戲進度", "查看任務、成就、事件與本局分數");
+        setTabToolTip("交易操作", "進行限價和市價交易");
+        setTabToolTip("快捷交易", "使用快捷鍵快速交易");
+        setTabToolTip("風控", "設定停損、停利、移動停損與 OCO 條件單");
+        setTabToolTip("價格提醒", "設置價格提醒");
+        setTabToolTip("個人統計", "查看個人交易統計");
+        setTabToolTip("撮合引擎", "調整撮合引擎參數");
+        setTabToolTip("主力狀態", "查看並手動干預主力策略");
+    }
+
+    private void setTabToolTip(String title, String tip) {
+        int index = tabbedPane.indexOfTab(title);
+        if (index >= 0) {
+            tabbedPane.setToolTipTextAt(index, tip);
+        }
     }
 
     /**
@@ -383,6 +430,27 @@ public class ControlView extends JFrame {
                 tabbedPane.setSelectedIndex(i);
                 break;
             }
+        }
+    }
+
+    public void setSandboxToolsVisible(boolean visible) {
+        if (quickTradePanel != null) {
+            quickTradePanel.setSandboxInterventionVisible(visible);
+        }
+        setOptionalTabVisible("撮合引擎", matchingEngineScrollPane, visible);
+        setOptionalTabVisible("主力狀態", mainForceStatusPanel, visible);
+    }
+
+    private void setOptionalTabVisible(String title, Component component, boolean visible) {
+        if (component == null) {
+            return;
+        }
+        int index = tabbedPane.indexOfComponent(component);
+        if (visible && index < 0) {
+            tabbedPane.addTab(title, component);
+            setTabIcons();
+        } else if (!visible && index >= 0) {
+            tabbedPane.removeTabAt(index);
         }
     }
 
@@ -441,6 +509,14 @@ public class ControlView extends JFrame {
         return quickTradePanel;
     }
 
+    public RiskControlPanel getRiskControlPanel() {
+        return riskControlPanel;
+    }
+
+    public GameDashboardPanel getGameDashboardPanel() {
+        return gameDashboardPanel;
+    }
+
     public JTabbedPane getTabbedPane() {
         return tabbedPane;
     }
@@ -471,12 +547,8 @@ public class ControlView extends JFrame {
 
     public Integer getMainForceReplaceIntervalOrNull() {
         try {
-            Component comp = getTabbedPane().getComponentAt(getTabbedPane().getTabCount() - 1);
-            if (comp instanceof JPanel) {
-                Object v = ((JPanel) comp).getClientProperty("replaceSpinner");
-                if (v instanceof JSpinner) {
-                    return (Integer) ((JSpinner) v).getValue();
-                }
+            if (mainForceReplaceSpinner != null) {
+                return (Integer) mainForceReplaceSpinner.getValue();
             }
         } catch (Exception ignored) { reportUiFailure(ignored); }
         return null;

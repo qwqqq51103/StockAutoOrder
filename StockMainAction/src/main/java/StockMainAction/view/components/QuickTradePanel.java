@@ -35,6 +35,7 @@ public class QuickTradePanel extends JPanel implements AutoCloseable {
     private JButton configButton;
     private JButton pumpButton;
     private JButton dumpButton;
+    private JPanel interventionPanel;
 
     // 狀態變數
     private QuickTradeConfig selectedConfig;
@@ -173,6 +174,7 @@ public class QuickTradePanel extends JPanel implements AutoCloseable {
      */
     private JPanel createInterventionPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
+        interventionPanel = panel;
         panel.setBorder(BorderFactory.createTitledBorder("市場介入（實驗）"));
         GridBagConstraints gc = new GridBagConstraints();
         gc.insets = new Insets(2, 4, 2, 4);
@@ -197,6 +199,14 @@ public class QuickTradePanel extends JPanel implements AutoCloseable {
         panel.add(dumpButton, gc);
 
         return panel;
+    }
+
+    public void setSandboxInterventionVisible(boolean visible) {
+        if (interventionPanel != null) {
+            interventionPanel.setVisible(visible);
+            revalidate();
+            repaint();
+        }
     }
 
     private void showInterventionDialog(boolean pump) {

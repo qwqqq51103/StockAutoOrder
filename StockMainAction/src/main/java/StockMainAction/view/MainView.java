@@ -10,6 +10,8 @@ import StockMainAction.util.logging.MarketLogger;
 import StockMainAction.view.chart.ChartDataLimiter;
 import StockMainAction.view.chart.TradeTapeMetrics;
 import StockMainAction.view.main.ChartUpdateCoordinator;
+import StockMainAction.view.main.KlineQuickControlBar;
+import StockMainAction.view.main.MainDashboardStrip;
 import StockMainAction.view.main.MainWindowShell;
 import StockMainAction.view.main.MainViewState;
 import StockMainAction.view.main.MarketChartPanel;
@@ -39,6 +41,7 @@ import org.jfree.data.time.RegularTimePeriod;
 import org.jfree.data.time.ohlc.OHLCSeries;
 import org.jfree.data.time.ohlc.OHLCSeriesCollection;
 import org.jfree.chart.renderer.xy.CandlestickRenderer;
+import org.jfree.chart.renderer.xy.XYItemRenderer;
 import org.jfree.chart.renderer.xy.XYLineAndShapeRenderer;
 import org.jfree.chart.ui.RectangleAnchor;
 import org.jfree.chart.ui.TextAnchor;
@@ -114,6 +117,17 @@ public class MainView extends JFrame {
     private JFreeChart wapChart;
     private JFreeChart retailProfitChart;
     private JFreeChart mainForceProfitChart;
+    private MainWindowShell mainWindowShell;
+    private ChartPanel combinedChartPanel;
+    private KlineQuickControlBar klineQuickControlBar;
+    private XYItemRenderer candleStickRenderer;
+    private XYLineAndShapeRenderer candleCloseLineRenderer;
+    private boolean autoFitVisibleCandles = true;
+    private boolean showAllCandles = false;
+    private boolean closeLineModeActive = false;
+    private static final int MIN_CANDLE_PIXEL_WIDTH = 10;
+    private static final int LINE_MODE_VISIBLE_THRESHOLD = 260;
+    private static final int AGGREGATE_MODE_TOTAL_THRESHOLD = 900;
 
     // 新增技術指標圖表
     private JFreeChart macdChart;
@@ -365,6 +379,9 @@ public class MainView extends JFrame {
     private record InfoEvent(String message, InfoType type) { }
     private OrderBookView orderBookView;
     private JTabbedPane tabbedPane;
+    private MainDashboardStrip dashboardStrip;
+    private JMenuItem openLogViewerItem;
+    private final java.util.LinkedHashMap<String, Component> mainTabRegistry = new java.util.LinkedHashMap<>();
     // [UI] 市場資訊分頁 + 內外盤分析分頁
     private JTabbedPane infoTabs; // [UI]
     private InOutAnalyticsPanel inOutPanel; // [UI]
@@ -515,6 +532,7 @@ public class MainView extends JFrame {
 
         // 創建主分頁面板
         tabbedPane = new JTabbedPane();
+        dashboardStrip = new MainDashboardStrip();
 
         // 創建圖表
         createCharts();
@@ -522,33 +540,35 @@ public class MainView extends JFrame {
         // 創建主分頁
         JPanel mainPanel = createMainPanel();
         // [UI] 原本頂部工具列改為「浮動參數設定視窗」，此處不再佔用主畫面高度
-        tabbedPane.addTab("市場圖表", new MarketChartPanel(mainPanel));
+        registerMainTab("市場圖表", new MarketChartPanel(mainPanel));
 
         // 創建損益表分頁
         JPanel profitPanel = createProfitPanel();
-        tabbedPane.addTab("損益表", profitPanel);
+        registerMainTab("損益表", profitPanel);
 
         // 新增：散戶資訊分頁
         JPanel retailPanel = createRetailInfoPanel();
-        tabbedPane.addTab("散戶資訊", new MarketOverviewPanel(retailPanel));
+        registerMainTab("散戶資訊", new MarketOverviewPanel(retailPanel));
 
         // 新增：散戶策略分頁（獨立分頁，參數更詳細）
         retailConfigTabPanel = createRetailConfigPanel();
-        tabbedPane.addTab("散戶策略", retailConfigTabPanel);
+        registerMainTab("散戶策略", retailConfigTabPanel);
 
         // 新增：市場參與者分頁（包含主力/做市商/噪音/散戶/個人）
         JPanel traderPanel = createTraderInfoPanel();
-        tabbedPane.addTab("市場參與者", traderPanel);
+        registerMainTab("市場參與者", traderPanel);
 
         // 新增：噪音統計分頁（移到大分頁）
         if (noiseStatsTabPanel != null) {
-            tabbedPane.addTab("噪音統計", noiseStatsTabPanel);
+            registerMainTab("噪音統計", noiseStatsTabPanel);
         }
 
         // 精簡：移除技術指標分頁
 
         // 添加分頁面板到視窗
-        getContentPane().add(new MainWindowShell(tabbedPane), BorderLayout.CENTER);
+        mainWindowShell = new MainWindowShell(tabbedPane);
+        mainWindowShell.add(dashboardStrip, BorderLayout.NORTH);
+        getContentPane().add(mainWindowShell, BorderLayout.CENTER);
 
         // 設置全局快捷鍵
         setupKeyboardShortcuts();
@@ -573,8 +593,9 @@ public class MainView extends JFrame {
         resetChartsItem.addActionListener(e -> resetAllCharts((JPanel) tabbedPane.getSelectedComponent()));
         toolsMenu.add(resetChartsItem);
 
-        JMenuItem openLogViewerItem = new JMenuItem("開啟日誌查看器");
+        openLogViewerItem = new JMenuItem("開啟日誌查看器");
         openLogViewerItem.addActionListener(e -> LogViewerWindow.openOrFocus());
+        openLogViewerItem.setVisible(false);
         toolsMenu.addSeparator();
         toolsMenu.add(openLogViewerItem);
 
@@ -600,8 +621,99 @@ public class MainView extends JFrame {
 
         // 設置選單欄到窗口
         setJMenuBar(menuBar);
+        applyPlayerUiMode("新手模式", false, false);
+        updateGameHeader("新手模式", "1x", 0L, 0, "-", "尚無事件");
 
         // 如果你想載入設置，可以在這裡調用 loadSettings();
+    }
+
+    private void registerMainTab(String title, Component component) {
+        mainTabRegistry.put(title, component);
+        tabbedPane.addTab(title, component);
+    }
+
+    private void setMainTabVisible(String title, boolean visible) {
+        Component component = mainTabRegistry.get(title);
+        if (component == null || tabbedPane == null) {
+            return;
+        }
+        int existingIndex = tabbedPane.indexOfComponent(component);
+        if (!visible) {
+            if (existingIndex >= 0) {
+                tabbedPane.removeTabAt(existingIndex);
+            }
+            return;
+        }
+        if (existingIndex >= 0) {
+            return;
+        }
+        int insertIndex = 0;
+        for (Map.Entry<String, Component> entry : mainTabRegistry.entrySet()) {
+            if (entry.getKey().equals(title)) {
+                break;
+            }
+            int index = tabbedPane.indexOfComponent(entry.getValue());
+            if (index >= 0) {
+                insertIndex = index + 1;
+            }
+        }
+        tabbedPane.insertTab(title, null, component, null, Math.min(insertIndex, tabbedPane.getTabCount()));
+    }
+
+    public void applyPlayerUiMode(String modeName, boolean sandboxToolsVisible, boolean advancedVisible) {
+        Runnable task = () -> {
+            setMainTabVisible("散戶策略", advancedVisible || sandboxToolsVisible);
+            setMainTabVisible("市場參與者", advancedVisible || sandboxToolsVisible);
+            setMainTabVisible("噪音統計", sandboxToolsVisible);
+            if (openLogViewerItem != null) {
+                openLogViewerItem.setVisible(advancedVisible || sandboxToolsVisible);
+            }
+            if (dashboardStrip != null) {
+                dashboardStrip.setMode(modeName);
+            }
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            task.run();
+        } else {
+            uiUpdates.submit("player-ui-mode", task);
+        }
+    }
+
+    public void updateGameHeader(String modeName, String speedName, long seed,
+            int score, String rank, String latestEvent) {
+        if (dashboardStrip == null) {
+            return;
+        }
+        dashboardStrip.update(modeName, speedName, seed, score, rank, latestEvent);
+    }
+
+    public void dockControlView(ControlView controlView) {
+        if (controlView == null || mainWindowShell == null) {
+            return;
+        }
+        Runnable task = () -> {
+            JPanel dockPanel = controlView.getDockPanel();
+            dockPanel.setBorder(BorderFactory.createCompoundBorder(
+                    BorderFactory.createMatteBorder(0, 1, 0, 0, new Color(210, 210, 210)),
+                    BorderFactory.createEmptyBorder(0, 0, 0, 0)));
+            dockPanel.setMinimumSize(new Dimension(360, 620));
+            dockPanel.setPreferredSize(new Dimension(430, 760));
+
+            JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, tabbedPane, dockPanel);
+            splitPane.setResizeWeight(0.74);
+            splitPane.setDividerSize(7);
+            splitPane.setContinuousLayout(true);
+            splitPane.setOneTouchExpandable(true);
+            mainWindowShell.setContent(splitPane);
+            mainWindowShell.add(dashboardStrip, BorderLayout.NORTH);
+            revalidate();
+            repaint();
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            task.run();
+        } else {
+            SwingUtilities.invokeLater(task);
+        }
     }
 
     private void openSettingsDialog() {
@@ -1688,7 +1800,7 @@ public class MainView extends JFrame {
         try {
             if (combinedChart != null && combinedChart.getPlot() instanceof org.jfree.chart.plot.CombinedDomainXYPlot) {
                 org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot =
-                    (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
+                        (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
                 if (combinedPlot.getSubplots() != null && !combinedPlot.getSubplots().isEmpty()) {
                     return combinedPlot.getSubplots().get(0);
                 }
@@ -1700,7 +1812,164 @@ public class MainView extends JFrame {
         return null;
     }
 
+    private XYPlot getVolumePlot() {
+        try {
+            if (combinedChart != null && combinedChart.getPlot() instanceof org.jfree.chart.plot.CombinedDomainXYPlot) {
+                org.jfree.chart.plot.CombinedDomainXYPlot combinedPlot =
+                        (org.jfree.chart.plot.CombinedDomainXYPlot) combinedChart.getPlot();
+                if (combinedPlot.getSubplots() != null && combinedPlot.getSubplots().size() > 1) {
+                    return combinedPlot.getSubplots().get(1);
+                }
+            }
+        } catch (Exception ignore) { reportUiFailure(ignore); }
+        return null;
+    }
+
     // 在 domain range 內估算可見 K 線根數（series 規模上限~600，線性掃描可接受）
+    private void setFixedVisibleCandles(int count) {
+        autoFitVisibleCandles = false;
+        showAllCandles = false;
+        autoFollowLatest = true;
+        visibleCandles = Math.max(5, Math.min(500, count));
+        applyKlineDensityPolicy("K線：最近 " + visibleCandles + " 根", false);
+    }
+
+    private void showAllKlineData() {
+        autoFitVisibleCandles = false;
+        showAllCandles = true;
+        autoFollowLatest = false;
+        resetCandleDomainToAll();
+        applyKlineDensityPolicy("K線：顯示全部", false);
+    }
+
+    private void setAutoFitKline(boolean enabled) {
+        autoFitVisibleCandles = enabled;
+        showAllCandles = !enabled;
+        autoFollowLatest = enabled;
+        if (enabled) {
+            updateAutoVisibleCandlesFromWidth();
+        } else {
+            showAllKlineData();
+        }
+    }
+
+    private void updateAutoVisibleCandlesFromWidth() {
+        int width = combinedChartPanel == null ? 900 : Math.max(300, combinedChartPanel.getWidth());
+        int calculated = Math.max(20, Math.min(180, width / MIN_CANDLE_PIXEL_WIDTH));
+        if (Math.abs(calculated - visibleCandles) >= 3) {
+            visibleCandles = calculated;
+        }
+        applyKlineDensityPolicy("K線：自動最近 " + visibleCandles + " 根", true);
+    }
+
+    private void applyKlineDensityPolicy(String statusText, boolean autoSelected) {
+        maybeAutoAggregateForLargeData();
+        if (showAllCandles) {
+            resetCandleDomainToAll();
+        } else {
+            applyCandleDomainWindow();
+        }
+        applyCandleRangeWindow(!showAllCandles);
+        applyVisibleVolumeRange();
+        applyLargeDataRendererMode();
+        try { updateMarkerVisibilityByZoom(); } catch (Exception ignore) { reportUiFailure(ignore); }
+        if (klineQuickControlBar != null) {
+            klineQuickControlBar.setStatus(statusText, autoSelected);
+        }
+        scheduleChartFlush();
+    }
+
+    private void maybeAutoAggregateForLargeData() {
+        if (!autoFitVisibleCandles || showAllCandles || currentKlineMinutes != -1) {
+            return;
+        }
+        OHLCSeries oneSecond = minuteToSeries.get(-1);
+        if (oneSecond == null || oneSecond.getItemCount() < AGGREGATE_MODE_TOTAL_THRESHOLD) {
+            return;
+        }
+        int target = oneSecond.getItemCount() > AGGREGATE_MODE_TOTAL_THRESHOLD * 2 ? -30 : -10;
+        if (minuteToSeries.containsKey(target)) {
+            currentKlineMinutes = target;
+            updateChartDataset(target);
+            if (klineIntervalCombo != null) {
+                for (int i = 0; i < klineIntervalCombo.getItemCount(); i++) {
+                    if (periodOptionAt(i) == target) {
+                        klineIntervalCombo.setSelectedIndex(i);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    private int periodOptionAt(int index) {
+        return index >= 0 && index < periodChain.length ? periodChain[index] : currentKlineMinutes;
+    }
+
+    private void applyLargeDataRendererMode() {
+        XYPlot candlePlot = getCandlePlot();
+        if (candlePlot == null || candleStickRenderer == null || candleCloseLineRenderer == null) {
+            return;
+        }
+        int visible = estimateCurrentlyVisibleCandles();
+        boolean shouldUseLine = showAllCandles && visible > LINE_MODE_VISIBLE_THRESHOLD;
+        if (shouldUseLine == closeLineModeActive) {
+            return;
+        }
+        candlePlot.setRenderer(0, shouldUseLine ? candleCloseLineRenderer : candleStickRenderer);
+        closeLineModeActive = shouldUseLine;
+        if (klineQuickControlBar != null) {
+            klineQuickControlBar.setStatus(shouldUseLine ? "K線：資料量大，已切為收盤線" : "K線：K棒模式",
+                    autoFitVisibleCandles);
+        }
+    }
+
+    private int estimateCurrentlyVisibleCandles() {
+        try {
+            XYPlot candlePlot = getCandlePlot();
+            OHLCSeries series = minuteToSeries.get(currentKlineMinutes);
+            if (candlePlot == null || series == null) {
+                return 0;
+            }
+            org.jfree.chart.axis.ValueAxis axis = candlePlot.getDomainAxis();
+            if (axis == null || axis.getRange() == null) {
+                return series.getItemCount();
+            }
+            Range range = axis.getRange();
+            return estimateVisibleCandles(series, (long) range.getLowerBound(), (long) range.getUpperBound());
+        } catch (Exception ignore) {
+            reportUiFailure(ignore);
+            return 0;
+        }
+    }
+
+    private void applyVisibleVolumeRange() {
+        try {
+            XYPlot volumePlot = getVolumePlot();
+            XYSeries series = periodToVolume.get(currentKlineMinutes);
+            XYPlot candlePlot = getCandlePlot();
+            if (volumePlot == null || series == null || series.getItemCount() == 0 || candlePlot == null) {
+                return;
+            }
+            org.jfree.chart.axis.ValueAxis domainAxis = candlePlot.getDomainAxis();
+            if (domainAxis == null || domainAxis.getRange() == null) {
+                return;
+            }
+            Range range = domainAxis.getRange();
+            double max = 0.0;
+            for (int i = 0; i < series.getItemCount(); i++) {
+                long x = series.getDataItem(i).getX().longValue();
+                if (x >= range.getLowerBound() && x <= range.getUpperBound()) {
+                    max = Math.max(max, series.getDataItem(i).getY().doubleValue());
+                }
+            }
+            volumePlot.getRangeAxis().setAutoRange(false);
+            volumePlot.getRangeAxis().setRange(0.0, max <= 0.0 ? 1.0 : max * 1.18);
+        } catch (Exception ignore) {
+            reportUiFailure(ignore);
+        }
+    }
+
     private int estimateVisibleCandles(OHLCSeries s, long loMs, long hiMs) {
         int n = s.getItemCount();
         if (n <= 0) return 0;
@@ -1748,10 +2017,36 @@ public class MainView extends JFrame {
 
         // === [TradingView] 創建組合圖表面板（K線+成交量） ===
         JPanel chartPanel = new JPanel(new BorderLayout());
+        klineQuickControlBar = new KlineQuickControlBar();
+        klineQuickControlBar.setListener(new KlineQuickControlBar.Listener() {
+            @Override
+            public void onFixedCandles(int count) {
+                setFixedVisibleCandles(count);
+            }
+
+            @Override
+            public void onShowAll() {
+                showAllKlineData();
+            }
+
+            @Override
+            public void onAuto(boolean enabled) {
+                setAutoFitKline(enabled);
+            }
+        });
+        chartPanel.add(klineQuickControlBar, BorderLayout.NORTH);
 
         // 創建組合圖表面板（K線在上，成交量在下，已整合）
-        ChartPanel combinedChartPanel = new ChartPanel(combinedChart);
+        combinedChartPanel = new ChartPanel(combinedChart);
         combinedChartPanel.setMinimumSize(new Dimension(480, 320));
+        combinedChartPanel.addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override
+            public void componentResized(java.awt.event.ComponentEvent e) {
+                if (autoFitVisibleCandles && !showAllCandles) {
+                    updateAutoVisibleCandlesFromWidth();
+                }
+            }
+        });
         
         // === TradingView 風格：添加 OHLC 信息面板（疊加在圖表上） ===
         // 創建左上角的OHLC信息面板
@@ -3339,6 +3634,11 @@ public class MainView extends JFrame {
         candleRenderer.setUseOutlinePaint(true);
         candleRenderer.setDrawVolume(false);
         
+        candleStickRenderer = candleRenderer;
+        candleCloseLineRenderer = new XYLineAndShapeRenderer(true, false);
+        candleCloseLineRenderer.setSeriesPaint(0, new Color(33, 150, 243));
+        candleCloseLineRenderer.setSeriesStroke(0, new BasicStroke(1.4f));
+        candleCloseLineRenderer.setDefaultSeriesVisibleInLegend(false);
         candlePlot.setRenderer(candleRenderer);
 
         // === TradingView 風格的時間軸 ===
@@ -4527,9 +4827,15 @@ public class MainView extends JFrame {
 
     // [PERF] 節流域軸更新（避免長時間 setRange 重複執行）
     private void maybeApplyCandleDomainWindow() {
+        if (showAllCandles) {
+            applyVisibleVolumeRange();
+            applyLargeDataRendererMode();
+            return;
+        }
         long now = System.currentTimeMillis();
         // 先讀出最新K線的 X（若沒資料就跳過）
         try {
+            maybeAutoAggregateForLargeData();
             OHLCSeries s = minuteToSeries.get(currentKlineMinutes);
             if (s == null || s.getItemCount() == 0) return;
             OHLCItem last = (OHLCItem) s.getDataItem(s.getItemCount() - 1);
@@ -4540,13 +4846,14 @@ public class MainView extends JFrame {
                 domainLastXMs = xMs;
                 domainLastUpdateMs = now;
                 applyCandleDomainWindow();
+                applyVisibleVolumeRange();
+                applyLargeDataRendererMode();
             }
         } catch (Exception ignore) { reportUiFailure(ignore); }
     }
 
     // [Y-AXIS] 節流更新Y軸（依K線可見範圍），避免指標極值拉爆導致K線被壓扁
     private void maybeApplyCandleRangeWindow() {
-        if (!lockRangeToOhlc) return;
         long now = System.currentTimeMillis();
         try {
             OHLCSeries s = minuteToSeries.get(currentKlineMinutes);
@@ -4557,7 +4864,11 @@ public class MainView extends JFrame {
             if (xMs != rangeLastXMs || (now - rangeLastUpdateMs) >= 300) {
                 rangeLastXMs = xMs;
                 rangeLastUpdateMs = now;
-                applyCandleRangeWindow(autoFollowLatest);
+                if (lockRangeToOhlc) {
+                    applyCandleRangeWindow(autoFollowLatest);
+                }
+                applyVisibleVolumeRange();
+                applyLargeDataRendererMode();
             }
         } catch (Exception ignore) { reportUiFailure(ignore); }
     }
